@@ -29,6 +29,7 @@
 #include "editor.h"
 #include <stdio.h>
 #include <unistd.h>
+#include <time.h>
 
 bool headless_loop_run(struct persistent_state *ps)
 {
@@ -61,8 +62,16 @@ bool headless_loop_run(struct persistent_state *ps)
   fprintf(stdout, "{\"type\":\"status\",\"state\":\"ready\"}\n");
   fflush(stdout);
 
-  // Do initial compilation
+  // Do initial compilation - similar to GUI mode's approach
   send(step, eng, ps->ctx, true);
+
+  // Continue stepping until compilation is complete
+  // Use time-bounded stepping (5ms chunks) like the GUI mode does
+  while (engine_lifecycle_step_bounded(ps->ctx, eng, 999, false))
+  {
+    // engine_lifecycle_step_bounded returns true if more work is needed
+    // It internally limits itself to ~5ms of work per call
+  }
 
   int page_count = engine_lifecycle_get_page_count(eng);
   fprintf(stderr, "[headless] initial compilation complete, %d pages\n", page_count);
@@ -200,6 +209,12 @@ bool headless_loop_run(struct persistent_state *ps)
     {
       fprintf(stderr, "[headless] changes detected, stepping engine\n");
       send(step, eng, ps->ctx, true);
+
+      // Continue stepping until compilation is complete
+      while (engine_lifecycle_step_bounded(ps->ctx, eng, 999, false))
+      {
+        // engine_lifecycle_step_bounded returns true if more work is needed
+      }
 
       page_count = engine_lifecycle_get_page_count(eng);
       fprintf(stdout, "{\"type\":\"doc.pageCount\",\"count\":%d}\n", page_count);
