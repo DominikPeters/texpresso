@@ -126,6 +126,7 @@ int main(int argc, const char **argv)
   const char *doc_arg = NULL;
   enum editor_protocol protocol = EDITOR_SEXP;
   bool line_output = 0;
+  bool headless = 0;
 
   int inclusion_path_size = 1;
   for (int i = 1; i < argc; i++)
@@ -141,6 +142,10 @@ int main(int argc, const char **argv)
         arg[5] == '\0')
       {
         protocol = EDITOR_JSON;
+      }
+      else if (strcmp(arg, "--headless") == 0 || strcmp(arg, "-headless") == 0)
+      {
+        headless = 1;
       }
       else if (arg[1] == 'I' && arg[2] == '\0')
       {
@@ -183,7 +188,7 @@ int main(int argc, const char **argv)
 
   if (doc_arg == NULL)
   {
-    fprintf(stderr, "Usage: texpresso [-I path]* [-json] root_file.tex\n");
+    fprintf(stderr, "Usage: texpresso [-I path]* [-json] [--headless] root_file.tex\n");
     exit(1);
   }
 
@@ -225,51 +230,60 @@ int main(int argc, const char **argv)
   fz_context *ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
   fz_register_document_handlers(ctx);
 
-  bool init = 0;
+  SDL_Window *window = NULL;
+  SDL_Renderer *renderer = NULL;
 
-  //Initialize SDL
-  if (init == 0 && SDL_Init(SDL_INIT_VIDEO) < 0)
+  if (!headless)
   {
-    fprintf(stderr, "SDL could not initialize! SDL_Error: %s\n", SDL_GetError());
-    abort();
-  }
+    //Initialize SDL
+    if (SDL_Init(SDL_INIT_VIDEO) < 0)
+    {
+      fprintf(stderr, "SDL could not initialize! SDL_Error: %s\n", SDL_GetError());
+      abort();
+    }
 
-  custom_event = SDL_RegisterEvents(1);
-  signal(SIGUSR1, signal_usr1);
+    custom_event = SDL_RegisterEvents(1);
+    signal(SIGUSR1, signal_usr1);
 
-  //Create window
-  char window_title[128] = "TeXpresso ";
-  strcat(window_title, doc_name);
+    //Create window
+    char window_title[128] = "TeXpresso ";
+    strcat(window_title, doc_name);
 
 #if SDL_VERSION_ATLEAST(2, 0, 8)
-  SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
+    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
 #endif
 
-  SDL_Window *window;
-  window = SDL_CreateWindow(window_title,
-    SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-    700, 900,
-    SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE
-  );
+    window = SDL_CreateWindow(window_title,
+      SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+      700, 900,
+      SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE
+    );
 
-  if (window == NULL)
-  {
-    fprintf(stderr, "Window could not be created! SDL_Error: %s\n", SDL_GetError() );
-    abort();
+    if (window == NULL)
+    {
+      fprintf(stderr, "Window could not be created! SDL_Error: %s\n", SDL_GetError() );
+      abort();
+    }
+
+    SDL_Surface *logo = texpresso_logo();
+    fprintf(stderr, "texpresso logo: %dx%d\n", logo->w, logo->h);
+    SDL_SetWindowIcon(window, logo);
+    SDL_FreeSurface(logo);
+
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE);
   }
-
-  SDL_Surface *logo = texpresso_logo();
-  fprintf(stderr, "texpresso logo: %dx%d\n", logo->w, logo->h);
-  SDL_SetWindowIcon(window, logo);
-  SDL_FreeSurface(logo);
-
-  SDL_Renderer *renderer;
-  renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE);
+  else
+  {
+    fprintf(stderr, "[info] running in headless mode\n");
+    // In headless mode, force JSON protocol for stdin/stdout communication
+    protocol = EDITOR_JSON;
+  }
 
   struct persistent_state pstate = {
       .initial = {0,},
       .protocol = protocol,
       .line_output = line_output,
+      .headless = headless,
       .window = window,
       .renderer = renderer,
       .ctx = ctx,
@@ -284,9 +298,12 @@ int main(int argc, const char **argv)
 
   while (texpresso_main(&pstate));
 
-  SDL_DestroyRenderer(renderer);
-  SDL_DestroyWindow(window);
-  SDL_Quit();
+  if (!headless)
+  {
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+  }
   fz_drop_context(ctx);
 
   return 0;

@@ -59,6 +59,7 @@ struct persistent_state {
   struct initial_state initial;
   enum editor_protocol protocol;
   int line_output;
+  bool headless;
   Uint32 custom_event;
 
   void (*schedule_event)(enum custom_events ev);
