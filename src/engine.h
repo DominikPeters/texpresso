@@ -67,6 +67,7 @@ struct txp_engine_class
   bool (*end_changes)(txp_engine *self, fz_context *ctx);
   int (*page_count)(txp_engine *self);
   fz_display_list *(*render_page)(txp_engine *self, fz_context *ctx, int page);
+  void (*render_page_to_json)(txp_engine *self, fz_context *ctx, int page, fz_buffer *output);
   txp_engine_status (*get_status)(txp_engine *self);
   float (*scale_factor)(txp_engine *self);
   synctex_t *(*synctex)(txp_engine *self, fz_buffer **buf);
@@ -78,6 +79,9 @@ struct txp_engine_class
   static void engine_destroy(txp_engine *_self, fz_context *ctx);           \
   static fz_display_list *engine_render_page(txp_engine *_self,             \
                                              fz_context *ctx, int page);    \
+  static void engine_render_page_to_json(txp_engine *_self,                 \
+                                         fz_context *ctx, int page,         \
+                                         fz_buffer *output);                \
   static bool engine_step(txp_engine *_self, fz_context *ctx,               \
                           bool restart_if_needed);                          \
   static void engine_begin_changes(txp_engine *_self, fz_context *ctx);     \
@@ -97,6 +101,7 @@ struct txp_engine_class
       .step = engine_step,                                                  \
       .page_count = engine_page_count,                                      \
       .render_page = engine_render_page,                                    \
+      .render_page_to_json = engine_render_page_to_json,                    \
       .get_status = engine_get_status,                                      \
       .scale_factor = engine_scale_factor,                                  \
       .synctex = engine_synctex,                                            \

@@ -26,6 +26,7 @@
 #include <mupdf/fitz.h>
 #include "engine.h"
 #include "incdvi.h"
+#include "cmd_device.h"
 
 struct dvi_engine
 {
@@ -61,6 +62,33 @@ static fz_display_list *engine_render_page(txp_engine *_self,
   fz_close_device(ctx, dev);
   fz_drop_device(ctx, dev);
   return dl;
+}
+
+static void engine_render_page_to_json(txp_engine *_self,
+                                       fz_context *ctx,
+                                       int page,
+                                       fz_buffer *output)
+{
+  SELF;
+  float width, height;
+  incdvi_page_dim(self->dvi, self->buffer, page, &width, &height, NULL);
+
+  cmd_device *cmd = cmd_device_new(ctx, output, page, width, height);
+  fz_device *dev = cmd_device_get_device(ctx, cmd);
+
+  fz_try(ctx)
+  {
+    incdvi_render_page(ctx, self->dvi, self->buffer, page, dev);
+    cmd_device_flush(ctx, cmd);
+  }
+  fz_always(ctx)
+  {
+    cmd_device_drop(ctx, cmd);
+  }
+  fz_catch(ctx)
+  {
+    fz_rethrow(ctx);
+  }
 }
 
 static bool engine_step(txp_engine *_self,

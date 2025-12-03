@@ -38,6 +38,7 @@
 #include "synctex.h"
 #include "editor.h"
 #include "mupdf_compat.h"
+#include "cmd_device.h"
 
 typedef struct
 {
@@ -1064,6 +1065,33 @@ static fz_display_list *engine_render_page(txp_engine *_self, fz_context *ctx, i
   fz_close_device(ctx, dev);
   fz_drop_device(ctx, dev);
   return dl;
+}
+
+static void engine_render_page_to_json(txp_engine *_self, fz_context *ctx, int page, fz_buffer *output)
+{
+  SELF;
+
+  float pw, ph;
+  bool landscape;
+  fz_buffer *data = self->st.document.entry->saved.data;
+  incdvi_page_dim(self->dvi, data, page, &pw, &ph, &landscape);
+
+  cmd_device *cmd = cmd_device_new(ctx, output, page, pw, ph);
+  fz_device *dev = cmd_device_get_device(ctx, cmd);
+
+  fz_try(ctx)
+  {
+    incdvi_render_page(ctx, self->dvi, data, page, dev);
+    cmd_device_flush(ctx, cmd);
+  }
+  fz_always(ctx)
+  {
+    cmd_device_drop(ctx, cmd);
+  }
+  fz_catch(ctx)
+  {
+    fz_rethrow(ctx);
+  }
 }
 
 static bool engine_step(txp_engine *_self, fz_context *ctx, bool restart_if_needed)

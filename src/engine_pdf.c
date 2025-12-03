@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <mupdf/fitz.h>
 #include "engine.h"
+#include "cmd_device.h"
 
 struct pdf_engine
 {
@@ -57,6 +58,37 @@ static fz_display_list *engine_render_page(txp_engine *_self,
   fz_display_list *dl = fz_new_display_list_from_page(ctx, page);
   fz_drop_page(ctx, page);
   return dl;
+}
+
+static void engine_render_page_to_json(txp_engine *_self,
+                                       fz_context *ctx,
+                                       int page_num,
+                                       fz_buffer *output)
+{
+  SELF;
+  fz_page *page = fz_load_page(ctx, self->doc, page_num);
+
+  fz_try(ctx)
+  {
+    fz_rect bounds = fz_bound_page(ctx, page);
+    float width = bounds.x1 - bounds.x0;
+    float height = bounds.y1 - bounds.y0;
+
+    cmd_device *cmd = cmd_device_new(ctx, output, page_num, width, height);
+    fz_device *dev = cmd_device_get_device(ctx, cmd);
+
+    fz_run_page(ctx, page, dev, fz_identity, NULL);
+    cmd_device_flush(ctx, cmd);
+    cmd_device_drop(ctx, cmd);
+  }
+  fz_always(ctx)
+  {
+    fz_drop_page(ctx, page);
+  }
+  fz_catch(ctx)
+  {
+    fz_rethrow(ctx);
+  }
 }
 
 static bool engine_step(txp_engine *_self,

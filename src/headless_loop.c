@@ -69,6 +69,38 @@ bool headless_loop_run(struct persistent_state *ps)
   fprintf(stdout, "{\"type\":\"doc.pageCount\",\"count\":%d}\n", page_count);
   fflush(stdout);
 
+  // Output initial rendering commands
+  fprintf(stderr, "[headless] rendering %d pages to JSON commands\n", page_count);
+  for (int i = 0; i < page_count; i++)
+  {
+    fz_buffer *output = fz_new_buffer(ps->ctx, 4096);
+    fz_try(ps->ctx)
+    {
+      send(render_page_to_json, eng, ps->ctx, i, output);
+
+      // Output the buffer contents to stdout
+      unsigned char *data;
+      size_t len = fz_buffer_storage(ps->ctx, output, &data);
+      if (len > 0)
+      {
+        fwrite(data, 1, len, stdout);
+        fflush(stdout);
+      }
+    }
+    fz_always(ps->ctx)
+    {
+      fz_drop_buffer(ps->ctx, output);
+    }
+    fz_catch(ps->ctx)
+    {
+      fprintf(stderr, "[headless] error rendering page %d: %s\n",
+              i, fz_caught_message(ps->ctx));
+      fprintf(stdout, "{\"type\":\"error\",\"code\":\"RENDER_ERROR\",\"page\":%d,\"message\":\"%s\"}\n",
+              i, fz_caught_message(ps->ctx));
+      fflush(stdout);
+    }
+  }
+
   // Main event loop
   bool quit = false;
   char buffer[4096];
@@ -173,7 +205,37 @@ bool headless_loop_run(struct persistent_state *ps)
       fprintf(stdout, "{\"type\":\"doc.pageCount\",\"count\":%d}\n", page_count);
       fflush(stdout);
 
-      // TODO: Output rendering commands in Phase 2
+      // Output rendering commands for all pages
+      fprintf(stderr, "[headless] rendering %d pages to JSON commands\n", page_count);
+      for (int i = 0; i < page_count; i++)
+      {
+        fz_buffer *output = fz_new_buffer(ps->ctx, 4096);
+        fz_try(ps->ctx)
+        {
+          send(render_page_to_json, eng, ps->ctx, i, output);
+
+          // Output the buffer contents to stdout
+          unsigned char *data;
+          size_t len = fz_buffer_storage(ps->ctx, output, &data);
+          if (len > 0)
+          {
+            fwrite(data, 1, len, stdout);
+            fflush(stdout);
+          }
+        }
+        fz_always(ps->ctx)
+        {
+          fz_drop_buffer(ps->ctx, output);
+        }
+        fz_catch(ps->ctx)
+        {
+          fprintf(stderr, "[headless] error rendering page %d: %s\n",
+                  i, fz_caught_message(ps->ctx));
+          fprintf(stdout, "{\"type\":\"error\",\"code\":\"RENDER_ERROR\",\"page\":%d,\"message\":\"%s\"}\n",
+                  i, fz_caught_message(ps->ctx));
+          fflush(stdout);
+        }
+      }
     }
   }
 
