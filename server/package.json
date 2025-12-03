@@ -1,0 +1,22 @@
+{
+  "name": "texpresso-server",
+  "version": "0.1.0",
+  "description": "WebSocket server for web-based TeXpresso",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node src/test.js"
+  },
+  "keywords": [
+    "latex",
+    "texpresso",
+    "websocket"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

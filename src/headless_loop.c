@@ -30,6 +30,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <time.h>
+#include <errno.h>
 
 bool headless_loop_run(struct persistent_state *ps)
 {
@@ -110,104 +111,118 @@ bool headless_loop_run(struct persistent_state *ps)
     }
   }
 
-  // Main event loop
-  bool quit = false;
+  // Main event loop - matches GUI version structure
+  bool stdin_eof = false;
   char buffer[4096];
 
-  while (!quit)
+  while (!stdin_eof)
   {
-    // Read from stdin (blocking)
-    ssize_t n = read(STDIN_FILENO, buffer, sizeof(buffer));
-
-    if (n <= 0)
-    {
-      if (n == 0)
-        fprintf(stderr, "[headless] stdin closed, exiting\n");
-      else
-        perror("[headless] read stdin");
-      break;
-    }
-
-    fprintf(stderr, "[headless] received %zd bytes\n", n);
-
-    // Begin transaction
+    // Begin transaction (matches GUI: send(begin_changes, ...))
     core_loop_begin_transaction(eng, ps->ctx);
 
-    // Parse JSON commands
-    const char *ptr = buffer, *lim = buffer + n;
-    fz_try(ps->ctx)
+    // Read all available stdin (matches GUI while loop pattern)
+    ssize_t n = -1;
+    while (!stdin_eof && (n = read(STDIN_FILENO, buffer, sizeof(buffer))) != 0)
     {
-      while ((ptr = prot_parse(ps->ctx, &parser->cmd_parser, parser->cmd_stack, ptr, lim)))
+      if (n == -1)
       {
-        val cmds = vstack_get_values(ps->ctx, parser->cmd_stack);
-        int n_cmds = val_array_length(ps->ctx, parser->cmd_stack, cmds);
+        if (errno == EINTR)
+          continue;
+        perror("[headless] read stdin");
+        break;
+      }
 
-        for (int i = 0; i < n_cmds; i++)
+      fprintf(stderr, "[headless] received %zd bytes\n", n);
+
+      // Parse JSON commands (matches GUI pattern)
+      const char *ptr = buffer, *lim = buffer + n;
+      fz_try(ps->ctx)
+      {
+        while ((ptr = prot_parse(ps->ctx, &parser->cmd_parser, parser->cmd_stack, ptr, lim)))
         {
-          val cmd = val_array_get(ps->ctx, parser->cmd_stack, cmds, i);
+          val cmds = vstack_get_values(ps->ctx, parser->cmd_stack);
+          int n_cmds = val_array_length(ps->ctx, parser->cmd_stack, cmds);
 
-          // Parse the editor command
-          struct editor_command ecmd;
-          if (!editor_parse(ps->ctx, parser->cmd_stack, cmd, &ecmd))
+          for (int i = 0; i < n_cmds; i++)
           {
-            fprintf(stderr, "[headless] failed to parse command\n");
-            continue;
-          }
+            val cmd = val_array_get(ps->ctx, parser->cmd_stack, cmds, i);
 
-          fprintf(stderr, "[headless] received command type: %d\n", ecmd.tag);
+            // Parse the editor command
+            struct editor_command ecmd;
+            if (!editor_parse(ps->ctx, parser->cmd_stack, cmd, &ecmd))
+            {
+              fprintf(stderr, "[headless] failed to parse command\n");
+              continue;
+            }
 
-          // Process the command using shared command processor
-          switch (ecmd.tag)
-          {
-            case EDIT_OPEN:
-              fprintf(stderr, "[headless] open file: %s\n", ecmd.open.path);
-              command_processor_interpret_open(ps->ctx, eng, ps->doc_path,
-                                              ecmd.open.path, ecmd.open.data, ecmd.open.length);
-              break;
+            fprintf(stderr, "[headless] received command type: %d\n", ecmd.tag);
 
-            case EDIT_CHANGE:
-              fprintf(stderr, "[headless] change file: %s\n", ecmd.change.path);
-              command_processor_interpret_change(ps->ctx, eng, ps->doc_path, &ecmd.change);
-              break;
+            // Process the command using shared command processor
+            switch (ecmd.tag)
+            {
+              case EDIT_OPEN:
+                fprintf(stderr, "[headless] open file: %s\n", ecmd.open.path);
+                command_processor_interpret_open(ps->ctx, eng, ps->doc_path,
+                                                ecmd.open.path, ecmd.open.data, ecmd.open.length);
+                break;
 
-            case EDIT_CLOSE:
-              fprintf(stderr, "[headless] close file: %s\n", ecmd.close.path);
-              command_processor_interpret_close(ps->ctx, eng, ps->doc_path, ecmd.close.path);
-              break;
+              case EDIT_CHANGE:
+                fprintf(stderr, "[headless] change file: %s\n", ecmd.change.path);
+                command_processor_interpret_change(ps->ctx, eng, ps->doc_path, &ecmd.change);
+                break;
 
-            case EDIT_SYNCTEX_FORWARD:
-              fprintf(stderr, "[headless] synctex forward: %s:%d\n",
-                      ecmd.synctex_forward.path, ecmd.synctex_forward.line);
-              // TODO: Implement synctex output in Phase 5
-              break;
+              case EDIT_CLOSE:
+                fprintf(stderr, "[headless] close file: %s\n", ecmd.close.path);
+                command_processor_interpret_close(ps->ctx, eng, ps->doc_path, ecmd.close.path);
+                break;
 
-            case EDIT_RESCAN:
-              fprintf(stderr, "[headless] rescan filesystem\n");
-              send(detect_changes, eng, ps->ctx);
-              break;
+              case EDIT_SYNCTEX_FORWARD:
+                fprintf(stderr, "[headless] synctex forward: %s:%d\n",
+                        ecmd.synctex_forward.path, ecmd.synctex_forward.line);
+                // TODO: Implement synctex output in Phase 5
+                break;
 
-            default:
-              fprintf(stderr, "[headless] unhandled command type: %d\n", ecmd.tag);
-              break;
+              case EDIT_RESCAN:
+                fprintf(stderr, "[headless] rescan filesystem\n");
+                send(detect_changes, eng, ps->ctx);
+                break;
+
+              default:
+                fprintf(stderr, "[headless] unhandled command type: %d\n", ecmd.tag);
+                break;
+            }
           }
         }
       }
-    }
-    fz_catch(ps->ctx)
-    {
-      fprintf(stderr, "[headless] error parsing command: %s\n",
-              fz_caught_message(ps->ctx));
-      fprintf(stdout, "{\"type\":\"error\",\"code\":\"PARSE_ERROR\",\"message\":\"%s\"}\n",
-              fz_caught_message(ps->ctx));
-      fflush(stdout);
-      vstack_reset(ps->ctx, parser->cmd_stack);
-      prot_reinitialize(&parser->cmd_parser);
+      fz_catch(ps->ctx)
+      {
+        fprintf(stderr, "[headless] error parsing command: %s\n",
+                fz_caught_message(ps->ctx));
+        fprintf(stdout, "{\"type\":\"error\",\"code\":\"PARSE_ERROR\",\"message\":\"%s\"}\n",
+                fz_caught_message(ps->ctx));
+        fflush(stdout);
+        vstack_reset(ps->ctx, parser->cmd_stack);
+        prot_reinitialize(&parser->cmd_parser);
+      }
+
+      // Exit the read loop after one chunk in headless mode (stdin is blocking)
+      // Unlike GUI which polls and reads multiple chunks
+      break;
     }
 
-    // End transaction and check if we need to recompile
+    if (n == 0)
+    {
+      stdin_eof = true;
+      fprintf(stderr, "[headless] stdin closed\n");
+    }
+
+    // Flush buffered changes before ending transaction
+    command_processor_flush_changes(ps->ctx, eng, ps->doc_path);
+
+    // End transaction (matches GUI: send(end_changes, ...))
     if (core_loop_end_transaction(eng, ps->ctx))
     {
-      fprintf(stderr, "[headless] changes detected, stepping engine\n");
+      fprintf(stderr, "[headless] changes detected, recompiling\n");
       send(step, eng, ps->ctx, true);
 
       // Continue stepping until compilation is complete
