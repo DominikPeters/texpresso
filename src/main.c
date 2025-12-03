@@ -40,6 +40,10 @@
 #include "prot_parser.h"
 #include "editor.h"
 #include "mupdf_compat.h"
+#include "engine_lifecycle.h"
+#include "command_processor.h"
+#include "core_loop.h"
+#include "headless_loop.h"
 
 struct persistent_state *pstate;
 
@@ -1033,8 +1037,15 @@ static void interpret_command(struct persistent_state *ps,
 
 /* Entry point */
 
+// Forward declaration for headless mode
+static bool texpresso_main_headless(struct persistent_state *ps);
+
 bool texpresso_main(struct persistent_state *ps)
 {
+  // Route to headless implementation if in headless mode
+  if (ps->headless)
+    return texpresso_main_headless(ps);
+
   editor_set_protocol(ps->protocol);
   editor_set_line_output(ps->line_output);
   pstate = ps;
@@ -1429,4 +1440,11 @@ bool texpresso_main(struct persistent_state *ps)
   send(destroy, ui->eng, ps->ctx);
 
   return reload;
+}
+
+/* Headless mode implementation - now delegated to headless_loop module */
+
+static bool texpresso_main_headless(struct persistent_state *ps)
+{
+  return headless_loop_run(ps);
 }
