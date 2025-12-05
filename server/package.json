@@ -7,8 +7,10 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node test-real.js",
-    "test:quick": "node test-simple.js"
+    "test": "node test-real.js && node test-change-range.js",
+    "test:integration": "node test-real.js",
+    "test:change": "node test-change-range.js",
+    "test:protocol": "node test-protocol.js"
   },
   "keywords": [
     "latex",

@@ -4,6 +4,7 @@
 
 import { spawn } from 'child_process';
 import { createInterface } from 'readline';
+import { join, isAbsolute } from 'path';
 import { toSExpression, translateFileChanges, fromSExpression } from './protocol.js';
 
 /**
@@ -36,6 +37,22 @@ export class Session {
 
     // Buffering for partial JSON lines
     this.stderrBuffer = '';
+
+    // Working directory for path resolution
+    this.workingDir = null;
+  }
+
+  /**
+   * Convert a path to absolute, relative to the working directory
+   * TeXpresso's relative_path() function requires absolute paths
+   * @param {string} path - The path to convert
+   * @returns {string} Absolute path
+   */
+  toAbsolutePath(path) {
+    if (isAbsolute(path)) {
+      return path;
+    }
+    return join(this.workingDir || process.cwd(), path);
   }
 
   /**
@@ -56,13 +73,13 @@ export class Session {
 
     // Determine working directory - if a specific document path includes directories,
     // we need to ensure TeXpresso can find it
-    const workingDir = this.config.workingDir || process.cwd();
+    this.workingDir = this.config.workingDir || process.cwd();
 
     try {
       // Spawn headless TeXpresso process
       this.process = spawn(texpressoPath, args, {
         stdio: ['pipe', 'pipe', 'pipe'],
-        cwd: workingDir
+        cwd: this.workingDir
       });
 
       this.isRunning = true;
@@ -100,10 +117,11 @@ export class Session {
       });
 
       // Send initial document using S-expression
+      // Use absolute path since TeXpresso's relative_path() requires it
       const initSexp = toSExpression({
         type: 'init',
         document: {
-          name: document.name,
+          name: this.toAbsolutePath(document.name),
           content: document.content
         }
       });
@@ -264,7 +282,11 @@ export class Session {
    */
   handleFileOpen(msg) {
     this.vfs.set(msg.path, { content: msg.content, dirty: false });
-    const sexp = toSExpression(msg);
+    // Convert to absolute path for TeXpresso
+    const sexp = toSExpression({
+      ...msg,
+      path: this.toAbsolutePath(msg.path)
+    });
     if (sexp) {
       this.sendSExpression(sexp);
     }
@@ -285,6 +307,8 @@ export class Session {
       });
       return;
     }
+
+    this.log(`File changed (change-range): ${msg.path} (${msg.startLine}:${msg.startCol} - ${msg.endLine}:${msg.endCol})`);
 
     // Apply change to VFS
     // Convert line/col to byte offsets
@@ -310,13 +334,14 @@ export class Session {
     file.content = before + msg.text + after;
     file.dirty = true;
 
-    // Translate and send to TeXpresso
-    const sexp = toSExpression(msg);
+    // Translate and send to TeXpresso (use absolute path to match open command)
+    const sexp = toSExpression({
+      ...msg,
+      path: this.toAbsolutePath(msg.path)
+    });
     if (sexp) {
       this.sendSExpression(sexp);
     }
-
-    this.log(`File changed (range): ${msg.path} (${msg.startLine}:${msg.startCol} - ${msg.endLine}:${msg.endCol})`);
   }
 
   /**
@@ -348,8 +373,8 @@ export class Session {
     file.content = content;
     file.dirty = true;
 
-    // Translate to S-expressions and send to TeXpresso
-    const sexps = translateFileChanges(msg.path, msg.changes);
+    // Translate to S-expressions and send to TeXpresso with absolute path
+    const sexps = translateFileChanges(this.toAbsolutePath(msg.path), msg.changes);
     for (const sexp of sexps) {
       this.sendSExpression(sexp);
     }
@@ -379,8 +404,11 @@ export class Session {
     file.content = lines.join('\n');
     file.dirty = true;
 
-    // Translate and forward to TeXpresso
-    const sexp = toSExpression(msg);
+    // Translate and forward to TeXpresso with absolute path
+    const sexp = toSExpression({
+      ...msg,
+      path: this.toAbsolutePath(msg.path)
+    });
     if (sexp) {
       this.sendSExpression(sexp);
     }
@@ -393,7 +421,11 @@ export class Session {
    */
   handleFileClose(msg) {
     this.vfs.delete(msg.path);
-    const sexp = toSExpression(msg);
+    // Convert to absolute path for TeXpresso
+    const sexp = toSExpression({
+      ...msg,
+      path: this.toAbsolutePath(msg.path)
+    });
     if (sexp) {
       this.sendSExpression(sexp);
     }

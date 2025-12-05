@@ -431,7 +431,7 @@ Communication between Node.js and TeXpresso uses **newline-delimited JSON (NDJSO
 **Node.js → TeXpresso (stdin):**
 ```json
 {"type":"init","document":{"name":"main.tex","content":"\\documentclass{article}..."}}
-{"type":"file.change","path":"main.tex","changes":[{"offset":100,"length":5,"text":"hello"}]}
+{"type":"file.change","path":"main.tex","changes":[{"offset":100,"length":5,"text":"hello"}]} // but actually we should use the change-range command
 {"type":"synctex.forward","path":"main.tex","line":42}
 ```
 
@@ -566,7 +566,7 @@ All messages are JSON-encoded. The protocol supports both request/response patte
   "path": "main.tex",
   "changes": [
     {
-      "offset": 100,      // byte offset in UTF-8
+      "offset": 100,      // byte offset in UTF-8 // but we should use the change-range command
       "length": 5,        // bytes to remove
       "text": "hello"     // replacement text
     }

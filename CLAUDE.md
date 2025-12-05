@@ -5,6 +5,18 @@ Claude should use good git commit practices, including clear commit messages and
 
 For background information, this repo contains a copy of the mupdf repository in the folder mupdf-master-copy, for Claude to look for API definitions, e.g. in mupdf-master-copy/include/mupdf/fitz/text.h for the text rendering API.
 
+Note that we should use the `change-range` command for file edits, not the legacy `change` command (because `change` uses bytes / UTF-8 offsets which are incompatible with modern editors). From EDITOR-PROTOCOL.md:
+
+<EDITOR-PROTOCOL.md>
+```scheme
+(change-range "path" start-line start-column end-line end-column "replacement-text")
+```
+
+Update file at "path" in VFS (it should have been `open`ed before), by replacing the characters in range starting from line `start-line` at column `start-column` (implemented by counting the number of UTF-16 code units, with 0 being the beginning of the line) up to line `end-line` at column `end-column`. This is designed to be compatible with [LSP position encoding](https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#positionEncodingKind) using the default 'utf-16' encoding.
+</EDITOR-PROTOCOL.md>
+
+Note that paths should always be absolute paths within the TeXpresso VFS.
+
 A detailed implementation plan is provided in the file web-texpresso-implementation-plan.md.
 Here we will only provide a short summary, in particular including just headings and section line numbers to look at in the full plan.
 

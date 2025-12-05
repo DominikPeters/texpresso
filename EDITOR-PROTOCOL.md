@@ -47,8 +47,8 @@ LaTeX consumes files as a stream of bytes (8-bit integers). TeXpresso makes no a
 
 However, this might not be the case for the content communicated by the editor. 
 JSON strings, for instance, are serialized sequences of unicode codepoints. TeXpresso will convert it to an UTF-8 encoded byte string before sharing with LaTeX.
-Offsets specified in byte-based delta commands (`change`) should therefore refer to byte offsets of the UTF-8 representation.
-Alternatively, one can use line-based communication (using `change-lines` for editor->TeXpresso communication, and by passing `-lines` argument for TeXpresso->editor messages). Lines are numbered by counting '\n'.
+The legacy way to send changes use offsets specified in byte-based delta commands (`change`) should therefore refer to byte offsets of the UTF-8 representation.
+We will instead use the `change-range` command to specify changes in terms of line/column positions, which are more natural to editors.
 
 ## Commands (editor -> texpresso)
 
@@ -70,6 +70,7 @@ Remove file at "path" from TeXpresso VFS.
 ```
 
 Update file at "path" in VFS (it should have been `open`ed before), by replacing `length` bytes starting at `offset` (both are integers) with the contents of "data".
+Deprecated! Use change-range instead.
 
 ```scheme
 (change-lines "path" offset count "data")
