@@ -160,6 +160,13 @@ export class Session {
       } else if (parsed.type) {
         // Already WebSocket JSON format
         msg = parsed;
+      } else if (parsed.cmd) {
+        // Rendering command from TeXpresso (beginPage, fillText, etc.)
+        // Wrap it in a render message type for the client
+        msg = {
+          type: 'render',
+          command: parsed
+        };
       } else {
         this.log(`Unknown message format: ${line.substring(0, 100)}`);
         return;

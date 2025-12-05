@@ -104,6 +104,28 @@ client.on('doc.inputFile', (data) => {
   console.log('Input file:', data.path);
 });
 
+client.on('render', (data) => {
+  // Rendering commands from TeXpresso (beginPage, fillText, etc.)
+  const cmd = data.command;
+  switch (cmd.cmd) {
+    case 'beginPage':
+      console.log(`Render: Begin page ${cmd.page} (${cmd.width}x${cmd.height})`);
+      break;
+    case 'endPage':
+      console.log(`Render: End page ${cmd.page}`);
+      break;
+    case 'fillText':
+      // Don't log every text command, it would be too noisy
+      break;
+    case 'fillPath':
+    case 'strokePath':
+      // Path commands
+      break;
+    default:
+      console.log('Render command:', cmd.cmd, cmd);
+  }
+});
+
 client.on('message', (data) => {
   // Catch-all for other message types
   console.log('Received message:', data.type, data);
