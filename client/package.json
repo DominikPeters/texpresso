@@ -1,0 +1,17 @@
+{
+  "name": "texpresso-client",
+  "version": "0.1.0",
+  "description": "Web client for TeXpresso live LaTeX editing",
+  "type": "module",
+  "scripts": {
+    "start": "node serve.js",
+    "dev": "node --watch serve.js"
+  },
+  "keywords": [
+    "latex",
+    "texpresso",
+    "editor"
+  ],
+  "author": "",
+  "license": "MIT"
+}

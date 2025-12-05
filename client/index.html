@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TeXpresso Web</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <h1>TeXpresso Web</h1>
+      <div class="status">
+        <span class="status-indicator" id="connection-status">●</span>
+        <span id="status-text">Disconnected</span>
+        <span class="divider">|</span>
+        <span id="page-count">0 pages</span>
+      </div>
+    </header>
+
+    <!-- Main content -->
+    <div class="main">
+      <!-- Editor pane -->
+      <div class="pane editor-pane">
+        <div class="pane-header">
+          <h2>Editor</h2>
+          <div class="toolbar">
+            <button id="btn-connect" class="btn">Connect</button>
+            <button id="btn-compile" class="btn" disabled>Compile</button>
+            <button id="btn-clear-log" class="btn">Clear Log</button>
+          </div>
+        </div>
+        <div class="pane-content">
+          <textarea
+            id="editor"
+            spellcheck="false"
+            placeholder="Enter LaTeX code here..."
+          >\documentclass{article}
+\begin{document}
+
+Hello, World!
+
+This is a test document for TeXpresso.
+
+\section{Introduction}
+LaTeX is a document preparation system.
+
+\subsection{Mathematics}
+Inline math: $E = mc^2$
+
+Display math:
+\begin{equation}
+  \int_0^\infty e^{-x^2} dx = \frac{\sqrt{\pi}}{2}
+\end{equation}
+
+\end{document}</textarea>
+        </div>
+      </div>
+
+      <!-- Log pane -->
+      <div class="pane log-pane">
+        <div class="pane-header">
+          <h2>Compilation Log</h2>
+          <div class="log-stats">
+            <span id="log-lines">0 lines</span>
+          </div>
+        </div>
+        <div class="pane-content">
+          <pre id="log-output" class="log-content"></pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div class="footer-info">
+        <span id="char-count">0 characters</span>
+        <span class="divider">|</span>
+        <span id="cursor-pos">Line 1, Col 1</span>
+      </div>
+      <div class="footer-info">
+        WebSocket: <span id="ws-url">ws://localhost:8080</span>
+      </div>
+    </footer>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

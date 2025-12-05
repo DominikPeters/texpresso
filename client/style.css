@@ -1,0 +1,253 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #f5f5f5;
+  color: #333;
+  overflow: hidden;
+}
+
+.container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* Header */
+.header {
+  background: #2c3e50;
+  color: white;
+  padding: 1rem 1.5rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 3px solid #34495e;
+}
+
+.header h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.status-indicator {
+  font-size: 1.2rem;
+  transition: color 0.3s;
+}
+
+.status-indicator.connected {
+  color: #2ecc71;
+}
+
+.status-indicator.disconnected {
+  color: #e74c3c;
+}
+
+.status-indicator.compiling {
+  color: #f39c12;
+  animation: pulse 1s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.divider {
+  color: #7f8c8d;
+}
+
+/* Main content */
+.main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  background: white;
+  border-right: 1px solid #ddd;
+}
+
+.editor-pane {
+  flex: 1;
+}
+
+.log-pane {
+  flex: 1;
+  border-right: none;
+}
+
+.pane-header {
+  background: #ecf0f1;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #ddd;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.pane-header h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+.toolbar {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.log-stats {
+  font-size: 0.85rem;
+  color: #7f8c8d;
+}
+
+.btn {
+  padding: 0.4rem 0.8rem;
+  background: #3498db;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.btn:hover:not(:disabled) {
+  background: #2980b9;
+}
+
+.btn:disabled {
+  background: #bdc3c7;
+  cursor: not-allowed;
+}
+
+.pane-content {
+  flex: 1;
+  overflow: auto;
+  position: relative;
+}
+
+/* Editor */
+#editor {
+  width: 100%;
+  height: 100%;
+  padding: 1rem;
+  font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  border: none;
+  outline: none;
+  resize: none;
+  background: #fafafa;
+  color: #2c3e50;
+  tab-size: 2;
+}
+
+#editor::selection {
+  background: #3498db;
+  color: white;
+}
+
+/* Log */
+.log-content {
+  padding: 1rem;
+  font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #2c3e50;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  background: #fafafa;
+  min-height: 100%;
+}
+
+.log-content:empty::before {
+  content: 'Compilation log will appear here...';
+  color: #95a5a6;
+  font-style: italic;
+}
+
+/* Log message types */
+.log-error {
+  color: #e74c3c;
+  font-weight: 500;
+}
+
+.log-warning {
+  color: #f39c12;
+}
+
+.log-info {
+  color: #3498db;
+}
+
+.log-success {
+  color: #2ecc71;
+  font-weight: 500;
+}
+
+/* Footer */
+.footer {
+  background: #ecf0f1;
+  padding: 0.5rem 1.5rem;
+  border-top: 1px solid #ddd;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+  color: #7f8c8d;
+}
+
+.footer-info {
+  display: flex;
+  gap: 1rem;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .main {
+    flex-direction: column;
+  }
+
+  .pane {
+    border-right: none;
+    border-bottom: 1px solid #ddd;
+  }
+
+  .log-pane {
+    border-bottom: none;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #bdc3c7;
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #95a5a6;
+}
