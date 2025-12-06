@@ -85,6 +85,10 @@ body {
   flex: 1;
 }
 
+.viewer-pane {
+  flex: 1.5;
+}
+
 .log-pane {
   flex: 1;
   border-right: none;
@@ -135,6 +139,12 @@ body {
   cursor: not-allowed;
 }
 
+.btn-small {
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8rem;
+  min-width: 28px;
+}
+
 .pane-content {
   flex: 1;
   overflow: auto;
@@ -179,6 +189,33 @@ body {
   content: 'Compilation log will appear here...';
   color: #95a5a6;
   font-style: italic;
+}
+
+/* Viewer */
+#viewer-container {
+  background: #808080;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 20px;
+  min-height: 100%;
+}
+
+#viewer-canvas {
+  background: white;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+.viewer-pane .toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.viewer-pane .toolbar span {
+  min-width: 20px;
+  text-align: center;
 }
 
 /* Log message types */

@@ -31,6 +31,20 @@
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
+#include <string.h>
+
+// Callback for synctex forward search results
+static void headless_synctex_callback(void *user_data, int page, int x, int y)
+{
+  const char *path = (const char *)user_data;
+
+  // Output synctex result using editor_synctex()
+  // This outputs in format: ["synctex", "path", line, column] for JSON
+  editor_synctex("", path, strlen(path), page, x);
+  fflush(stdout);
+
+  fprintf(stderr, "[headless] synctex result: page=%d, x=%d, y=%d\n", page, x, y);
+}
 
 bool headless_loop_run(struct persistent_state *ps)
 {
@@ -64,15 +78,31 @@ bool headless_loop_run(struct persistent_state *ps)
   fflush(stdout);
 
   // Do initial compilation - similar to GUI mode's approach
+  fprintf(stdout, "{\"type\":\"status\",\"state\":\"compiling\"}\n");
+  fflush(stdout);
+
   send(step, eng, ps->ctx, true);
 
   // Continue stepping until compilation is complete
   // Use time-bounded stepping (5ms chunks) like the GUI mode does
+  int step_count = 0;
   while (engine_lifecycle_step_bounded(ps->ctx, eng, 999, false))
   {
     // engine_lifecycle_step_bounded returns true if more work is needed
     // It internally limits itself to ~5ms of work per call
+    step_count++;
+
+    // Output progress every 10 steps to avoid flooding
+    if (step_count % 10 == 0)
+    {
+      int current_pages = engine_lifecycle_get_page_count(eng);
+      fprintf(stdout, "{\"type\":\"status\",\"state\":\"compiling\",\"pages\":%d}\n", current_pages);
+      fflush(stdout);
+    }
   }
+
+  fprintf(stdout, "{\"type\":\"status\",\"state\":\"ready\"}\n");
+  fflush(stdout);
 
   int page_count = engine_lifecycle_get_page_count(eng);
   fprintf(stderr, "[headless] initial compilation complete, %d pages\n", page_count);
@@ -179,7 +209,13 @@ bool headless_loop_run(struct persistent_state *ps)
               case EDIT_SYNCTEX_FORWARD:
                 fprintf(stderr, "[headless] synctex forward: %s:%d\n",
                         ecmd.synctex_forward.path, ecmd.synctex_forward.line);
-                // TODO: Implement synctex output in Phase 5
+                command_processor_interpret_synctex_forward(
+                    ps->ctx, eng, ps->doc_path,
+                    0,  // current_page: use 0 (first page) for now
+                    ecmd.synctex_forward.path,
+                    ecmd.synctex_forward.line,
+                    headless_synctex_callback,
+                    (void *)ecmd.synctex_forward.path);
                 break;
 
               case EDIT_RESCAN:
@@ -223,13 +259,29 @@ bool headless_loop_run(struct persistent_state *ps)
     if (core_loop_end_transaction(eng, ps->ctx))
     {
       fprintf(stderr, "[headless] changes detected, recompiling\n");
+      fprintf(stdout, "{\"type\":\"status\",\"state\":\"compiling\"}\n");
+      fflush(stdout);
+
       send(step, eng, ps->ctx, true);
 
       // Continue stepping until compilation is complete
+      step_count = 0;
       while (engine_lifecycle_step_bounded(ps->ctx, eng, 999, false))
       {
         // engine_lifecycle_step_bounded returns true if more work is needed
+        step_count++;
+
+        // Output progress every 10 steps to avoid flooding
+        if (step_count % 10 == 0)
+        {
+          int current_pages = engine_lifecycle_get_page_count(eng);
+          fprintf(stdout, "{\"type\":\"status\",\"state\":\"compiling\",\"pages\":%d}\n", current_pages);
+          fflush(stdout);
+        }
       }
+
+      fprintf(stdout, "{\"type\":\"status\",\"state\":\"ready\"}\n");
+      fflush(stdout);
 
       page_count = engine_lifecycle_get_page_count(eng);
       fprintf(stdout, "{\"type\":\"doc.pageCount\",\"count\":%d}\n", page_count);

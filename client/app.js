@@ -6,6 +6,8 @@
 import { TeXpressoClient } from './client.js';
 import { EditorManager } from './editor.js';
 import { LogViewer } from './log.js';
+import { Viewer } from './viewer.js';
+import { Renderer } from './renderer.js';
 
 // Configuration
 const WS_URL = 'ws://localhost:8080';
@@ -25,12 +27,36 @@ const elements = {
   cursorPos: document.getElementById('cursor-pos'),
   logLines: document.getElementById('log-lines'),
   wsUrl: document.getElementById('ws-url'),
+  // Viewer elements
+  viewerCanvas: document.getElementById('viewer-canvas'),
+  viewerContainer: document.getElementById('viewer-container'),
+  btnPrevPage: document.getElementById('btn-prev-page'),
+  btnNextPage: document.getElementById('btn-next-page'),
+  currentPage: document.getElementById('current-page'),
+  totalPages: document.getElementById('total-pages'),
+  btnZoomIn: document.getElementById('btn-zoom-in'),
+  btnZoomOut: document.getElementById('btn-zoom-out'),
+  zoomLevel: document.getElementById('zoom-level'),
 };
 
 // Initialize components
 const client = new TeXpressoClient(WS_URL);
 const editor = new EditorManager(elements.editor, DOCUMENT_NAME);
 const log = new LogViewer(elements.logOutput);
+const viewer = new Viewer(elements.viewerCanvas, elements.viewerContainer);
+const renderer = new Renderer(viewer);
+
+// Set up viewer callbacks
+viewer.onPageChange = (currentPage, pageCount) => {
+  elements.currentPage.textContent = currentPage + 1;
+  elements.totalPages.textContent = pageCount;
+  elements.btnPrevPage.disabled = currentPage <= 0;
+  elements.btnNextPage.disabled = currentPage >= pageCount - 1;
+};
+
+viewer.onZoomChange = (zoom) => {
+  elements.zoomLevel.textContent = viewer.getZoomString();
+};
 
 // Update UI with WebSocket URL
 elements.wsUrl.textContent = WS_URL;
@@ -97,7 +123,8 @@ client.on('output.append', (data) => {
 client.on('doc.pageCount', (data) => {
   console.log('Page count:', data.count);
   elements.pageCount.textContent = `${data.count} page${data.count !== 1 ? 's' : ''}`;
-  log.success(`✓ Document compiled: ${data.count} page(s)`);
+  viewer.setPageCount(data.count);
+  log.success(`Document compiled: ${data.count} page(s)`);
 });
 
 client.on('doc.inputFile', (data) => {
@@ -105,25 +132,8 @@ client.on('doc.inputFile', (data) => {
 });
 
 client.on('render', (data) => {
-  // Rendering commands from TeXpresso (beginPage, fillText, etc.)
-  const cmd = data.command;
-  switch (cmd.cmd) {
-    case 'beginPage':
-      console.log(`Render: Begin page ${cmd.page} (${cmd.width}x${cmd.height})`);
-      break;
-    case 'endPage':
-      console.log(`Render: End page ${cmd.page}`);
-      break;
-    case 'fillText':
-      // Don't log every text command, it would be too noisy
-      break;
-    case 'fillPath':
-    case 'strokePath':
-      // Path commands
-      break;
-    default:
-      console.log('Render command:', cmd.cmd, cmd);
-  }
+  // Pass rendering commands to the renderer
+  renderer.processCommand(data.command);
 });
 
 client.on('message', (data) => {
@@ -181,6 +191,15 @@ elements.btnCompile.addEventListener('click', () => {
 
 elements.btnClearLog.addEventListener('click', () => {
   log.clear();
+});
+
+// Viewer controls
+elements.btnZoomIn.addEventListener('click', () => {
+  viewer.zoomIn();
+});
+
+elements.btnZoomOut.addEventListener('click', () => {
+  viewer.zoomOut();
 });
 
 // ============================================================================

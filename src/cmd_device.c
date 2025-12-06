@@ -177,6 +177,13 @@ cmd_fill_text(fz_context *ctx, fz_device *dev_, const fz_text *text, fz_matrix c
     json_write_key(ctx, jw, "font");
     json_write_string(ctx, jw, fz_font_name(ctx, span->font));
 
+    // Check if font has OpenType tables (for Unicode rendering)
+    fz_font_flags_t *flags = fz_font_flags(span->font);
+    int has_opentype = flags ? flags->has_opentype : 0;
+
+    json_write_key(ctx, jw, "hasOpentype");
+    json_write_bool(ctx, jw, has_opentype);
+
     // Transform matrix (text matrix concatenated with CTM)
     json_write_key(ctx, jw, "matrix");
     json_write_matrix(ctx, jw, fz_concat(span->trm, ctm));
@@ -207,6 +214,22 @@ cmd_fill_text(fz_context *ctx, fz_device *dev_, const fz_text *text, fz_matrix c
       {
         json_write_key(ctx, jw, "ucs");
         json_write_int(ctx, jw, item->ucs);
+      }
+
+      // For non-OpenType fonts or missing/invalid Unicode, output glyph path
+      // ucs <= 0 means no valid Unicode mapping (0 = NUL, -1 = undefined)
+      if (!has_opentype || item->ucs <= 0)
+      {
+        fz_path *glyph_path = fz_outline_glyph(ctx, span->font, item->gid, fz_identity);
+        if (glyph_path)
+        {
+          json_write_key(ctx, jw, "path");
+          json_write_array_start(ctx, jw);
+          path_walk_ctx pw = { ctx, jw };
+          fz_walk_path(ctx, glyph_path, &path_walker, &pw);
+          json_write_array_end(ctx, jw);
+          fz_drop_path(ctx, glyph_path);
+        }
       }
 
       json_write_object_end(ctx, jw);
@@ -262,6 +285,13 @@ cmd_stroke_text(fz_context *ctx, fz_device *dev_, const fz_text *text,
     json_write_key(ctx, jw, "font");
     json_write_string(ctx, jw, fz_font_name(ctx, span->font));
 
+    // Check if font has OpenType tables (for Unicode rendering)
+    fz_font_flags_t *flags = fz_font_flags(span->font);
+    int has_opentype = flags ? flags->has_opentype : 0;
+
+    json_write_key(ctx, jw, "hasOpentype");
+    json_write_bool(ctx, jw, has_opentype);
+
     // Transform matrix
     json_write_key(ctx, jw, "matrix");
     json_write_matrix(ctx, jw, fz_concat(span->trm, ctm));
@@ -292,6 +322,22 @@ cmd_stroke_text(fz_context *ctx, fz_device *dev_, const fz_text *text,
       {
         json_write_key(ctx, jw, "ucs");
         json_write_int(ctx, jw, item->ucs);
+      }
+
+      // For non-OpenType fonts or missing/invalid Unicode, output glyph path
+      // ucs <= 0 means no valid Unicode mapping (0 = NUL, -1 = undefined)
+      if (!has_opentype || item->ucs <= 0)
+      {
+        fz_path *glyph_path = fz_outline_glyph(ctx, span->font, item->gid, fz_identity);
+        if (glyph_path)
+        {
+          json_write_key(ctx, jw, "path");
+          json_write_array_start(ctx, jw);
+          path_walk_ctx pw = { ctx, jw };
+          fz_walk_path(ctx, glyph_path, &path_walker, &pw);
+          json_write_array_end(ctx, jw);
+          fz_drop_path(ctx, glyph_path);
+        }
       }
 
       json_write_object_end(ctx, jw);

@@ -154,7 +154,26 @@ void json_write_int(fz_context *ctx, json_writer *writer, int value)
 void json_write_float(fz_context *ctx, json_writer *writer, float value)
 {
     write_separator(writer);
-    fz_append_printf(ctx, writer->buf, "%.6g", value);
+    // Use %f format to ensure leading zero for values like 0.5 (not .5)
+    // JSON requires the leading zero
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.6g", value);
+    // If the number starts with '.' or '-.' we need to add a leading zero
+    if (buf[0] == '.')
+    {
+        fz_append_byte(ctx, writer->buf, '0');
+        fz_append_string(ctx, writer->buf, buf);
+    }
+    else if (buf[0] == '-' && buf[1] == '.')
+    {
+        fz_append_byte(ctx, writer->buf, '-');
+        fz_append_byte(ctx, writer->buf, '0');
+        fz_append_string(ctx, writer->buf, buf + 1);
+    }
+    else
+    {
+        fz_append_string(ctx, writer->buf, buf);
+    }
     writer->needs_comma = true;
 }
 

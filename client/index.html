@@ -37,6 +37,8 @@
             spellcheck="false"
             placeholder="Enter LaTeX code here..."
           >\documentclass{article}
+\usepackage{tikz}
+
 \begin{document}
 
 Hello, World!
@@ -54,7 +56,43 @@ Display math:
   \int_0^\infty e^{-x^2} dx = \frac{\sqrt{\pi}}{2}
 \end{equation}
 
+\subsection{TikZ Graphics}
+Here is a simple TikZ drawing:
+
+\begin{tikzpicture}
+  % A simple shape
+  \draw[thick, blue] (0,0) rectangle (2,1.5);
+  \draw[thick, red] (0,0) -- (2,1.5);
+  \draw[thick, red] (2,0) -- (0,1.5);
+
+  % A circle
+  \draw[thick, green!50!black, fill=green!20] (4,0.75) circle (0.7);
+
+  % Some text
+  \node at (1, -0.5) {Rectangle};
+  \node at (4, -0.5) {Circle};
+\end{tikzpicture}
+
 \end{document}</textarea>
+        </div>
+      </div>
+
+      <!-- Viewer pane -->
+      <div class="pane viewer-pane">
+        <div class="pane-header">
+          <h2>Preview</h2>
+          <div class="toolbar">
+            <button id="btn-prev-page" class="btn btn-small" disabled title="Previous page">&#x2190;</button>
+            <span id="current-page">1</span>/<span id="total-pages">1</span>
+            <button id="btn-next-page" class="btn btn-small" disabled title="Next page">&#x2192;</button>
+            <span class="divider">|</span>
+            <button id="btn-zoom-out" class="btn btn-small" title="Zoom out">&#x2212;</button>
+            <span id="zoom-level">100%</span>
+            <button id="btn-zoom-in" class="btn btn-small" title="Zoom in">+</button>
+          </div>
+        </div>
+        <div class="pane-content" id="viewer-container">
+          <canvas id="viewer-canvas"></canvas>
         </div>
       </div>
 
