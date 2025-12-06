@@ -13,6 +13,16 @@ export class Renderer {
 
     // Graphics state stack for save/restore
     this.stateStack = [];
+
+    // Glyph path cache: maps cache_id (cid) to Path2D object
+    this.glyphCache = new Map();
+  }
+
+  /**
+   * Clear the glyph cache (call when server resets its cache)
+   */
+  clearGlyphCache() {
+    this.glyphCache.clear();
   }
 
   /**
@@ -207,14 +217,27 @@ export class Renderer {
         // Translate to glyph position in document coordinates
         this.ctx.translate(glyph.x, glyph.y);
 
-        if (glyph.path) {
+        // Try to get path from cache or from glyph data
+        let path = null;
+        if (glyph.cid) {
+          // Check if we have this glyph cached
+          path = this.glyphCache.get(glyph.cid);
+          if (!path && glyph.path) {
+            // First time seeing this glyph - build and cache it
+            path = this.buildPath(glyph.path);
+            this.glyphCache.set(glyph.cid, path);
+          }
+        } else if (glyph.path) {
+          // No cache ID - just build the path
+          path = this.buildPath(glyph.path);
+        }
+
+        if (path) {
           // Apply span transformation matrix for the glyph shape
           // The matrix scales (font size) and may flip Y axis
           if (span.matrix) {
             this.applyMatrix(span.matrix);
           }
-          // Glyph has path data - render as filled path
-          const path = this.buildPath(glyph.path);
           this.ctx.fill(path);
         } else if (glyph.ucs > 0) {
           // Has valid Unicode - try to render with canvas text
@@ -251,12 +274,26 @@ export class Renderer {
         // Translate to glyph position in document coordinates
         this.ctx.translate(glyph.x, glyph.y);
 
-        if (glyph.path) {
+        // Try to get path from cache or from glyph data
+        let path = null;
+        if (glyph.cid) {
+          // Check if we have this glyph cached
+          path = this.glyphCache.get(glyph.cid);
+          if (!path && glyph.path) {
+            // First time seeing this glyph - build and cache it
+            path = this.buildPath(glyph.path);
+            this.glyphCache.set(glyph.cid, path);
+          }
+        } else if (glyph.path) {
+          // No cache ID - just build the path
+          path = this.buildPath(glyph.path);
+        }
+
+        if (path) {
           // Apply span transformation matrix for the glyph shape
           if (span.matrix) {
             this.applyMatrix(span.matrix);
           }
-          const path = this.buildPath(glyph.path);
           this.ctx.stroke(path);
         } else if (glyph.ucs > 0) {
           // Has valid Unicode - try to render with canvas text

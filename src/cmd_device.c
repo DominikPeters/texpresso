@@ -26,6 +26,76 @@
 #include "json_writer.h"
 #include <mupdf/fitz.h>
 #include <stdio.h>
+#include <string.h>
+
+/* Glyph cache for avoiding repeated path transmission */
+#define GLYPH_CACHE_SIZE 4096
+
+typedef struct {
+  fz_font *font;      // Font pointer (used as identifier)
+  int gid;            // Glyph ID within font
+  int cache_id;       // Assigned cache ID for client reference
+} glyph_cache_entry;
+
+static glyph_cache_entry glyph_cache[GLYPH_CACHE_SIZE];
+static int glyph_cache_next_id = 1;  // Start from 1, 0 means not cached
+
+/* Simple hash function for font+glyph lookup */
+static unsigned int glyph_hash(fz_font *font, int gid)
+{
+  return ((unsigned int)(uintptr_t)font * 31 + (unsigned int)gid) % GLYPH_CACHE_SIZE;
+}
+
+/* Look up glyph in cache, returns cache_id or 0 if not found */
+static int glyph_cache_lookup(fz_font *font, int gid)
+{
+  unsigned int hash = glyph_hash(font, gid);
+  int probes = 0;
+
+  while (probes < GLYPH_CACHE_SIZE)
+  {
+    glyph_cache_entry *e = &glyph_cache[hash];
+    if (e->font == NULL)
+      return 0;  // Empty slot, not found
+    if (e->font == font && e->gid == gid)
+      return e->cache_id;  // Found
+    hash = (hash + 1) % GLYPH_CACHE_SIZE;
+    probes++;
+  }
+  return 0;  // Cache full, not found
+}
+
+/* Insert glyph into cache, returns assigned cache_id */
+static int glyph_cache_insert(fz_font *font, int gid)
+{
+  unsigned int hash = glyph_hash(font, gid);
+  int probes = 0;
+
+  while (probes < GLYPH_CACHE_SIZE)
+  {
+    glyph_cache_entry *e = &glyph_cache[hash];
+    if (e->font == NULL)
+    {
+      // Empty slot, insert here
+      e->font = font;
+      e->gid = gid;
+      e->cache_id = glyph_cache_next_id++;
+      return e->cache_id;
+    }
+    if (e->font == font && e->gid == gid)
+      return e->cache_id;  // Already exists
+    hash = (hash + 1) % GLYPH_CACHE_SIZE;
+    probes++;
+  }
+  return 0;  // Cache full, couldn't insert
+}
+
+/* Reset glyph cache (call when client disconnects) */
+void cmd_device_reset_glyph_cache(void)
+{
+  memset(glyph_cache, 0, sizeof(glyph_cache));
+  glyph_cache_next_id = 1;
+}
 
 struct cmd_device
 {
@@ -216,19 +286,38 @@ cmd_fill_text(fz_context *ctx, fz_device *dev_, const fz_text *text, fz_matrix c
         json_write_int(ctx, jw, item->ucs);
       }
 
-      // For non-OpenType fonts or missing/invalid Unicode, output glyph path
+      // For non-OpenType fonts or missing/invalid Unicode, output glyph path or cache reference
       // ucs <= 0 means no valid Unicode mapping (0 = NUL, -1 = undefined)
       if (!has_opentype || item->ucs <= 0)
       {
-        fz_path *glyph_path = fz_outline_glyph(ctx, span->font, item->gid, fz_identity);
-        if (glyph_path)
+        // Check if glyph is already cached
+        int cache_id = glyph_cache_lookup(span->font, item->gid);
+        if (cache_id > 0)
         {
-          json_write_key(ctx, jw, "path");
-          json_write_array_start(ctx, jw);
-          path_walk_ctx pw = { ctx, jw };
-          fz_walk_path(ctx, glyph_path, &path_walker, &pw);
-          json_write_array_end(ctx, jw);
-          fz_drop_path(ctx, glyph_path);
+          // Glyph is cached, just output the cache reference
+          json_write_key(ctx, jw, "cid");
+          json_write_int(ctx, jw, cache_id);
+        }
+        else
+        {
+          // Glyph not cached, output full path and cache it
+          fz_path *glyph_path = fz_outline_glyph(ctx, span->font, item->gid, fz_identity);
+          if (glyph_path)
+          {
+            cache_id = glyph_cache_insert(span->font, item->gid);
+            if (cache_id > 0)
+            {
+              // Output cache ID so client knows to cache this path
+              json_write_key(ctx, jw, "cid");
+              json_write_int(ctx, jw, cache_id);
+            }
+            json_write_key(ctx, jw, "path");
+            json_write_array_start(ctx, jw);
+            path_walk_ctx pw = { ctx, jw };
+            fz_walk_path(ctx, glyph_path, &path_walker, &pw);
+            json_write_array_end(ctx, jw);
+            fz_drop_path(ctx, glyph_path);
+          }
         }
       }
 
@@ -324,19 +413,38 @@ cmd_stroke_text(fz_context *ctx, fz_device *dev_, const fz_text *text,
         json_write_int(ctx, jw, item->ucs);
       }
 
-      // For non-OpenType fonts or missing/invalid Unicode, output glyph path
+      // For non-OpenType fonts or missing/invalid Unicode, output glyph path or cache reference
       // ucs <= 0 means no valid Unicode mapping (0 = NUL, -1 = undefined)
       if (!has_opentype || item->ucs <= 0)
       {
-        fz_path *glyph_path = fz_outline_glyph(ctx, span->font, item->gid, fz_identity);
-        if (glyph_path)
+        // Check if glyph is already cached
+        int cache_id = glyph_cache_lookup(span->font, item->gid);
+        if (cache_id > 0)
         {
-          json_write_key(ctx, jw, "path");
-          json_write_array_start(ctx, jw);
-          path_walk_ctx pw = { ctx, jw };
-          fz_walk_path(ctx, glyph_path, &path_walker, &pw);
-          json_write_array_end(ctx, jw);
-          fz_drop_path(ctx, glyph_path);
+          // Glyph is cached, just output the cache reference
+          json_write_key(ctx, jw, "cid");
+          json_write_int(ctx, jw, cache_id);
+        }
+        else
+        {
+          // Glyph not cached, output full path and cache it
+          fz_path *glyph_path = fz_outline_glyph(ctx, span->font, item->gid, fz_identity);
+          if (glyph_path)
+          {
+            cache_id = glyph_cache_insert(span->font, item->gid);
+            if (cache_id > 0)
+            {
+              // Output cache ID so client knows to cache this path
+              json_write_key(ctx, jw, "cid");
+              json_write_int(ctx, jw, cache_id);
+            }
+            json_write_key(ctx, jw, "path");
+            json_write_array_start(ctx, jw);
+            path_walk_ctx pw = { ctx, jw };
+            fz_walk_path(ctx, glyph_path, &path_walker, &pw);
+            json_write_array_end(ctx, jw);
+            fz_drop_path(ctx, glyph_path);
+          }
         }
       }
 

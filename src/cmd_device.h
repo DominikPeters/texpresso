@@ -89,4 +89,11 @@ void cmd_device_flush(fz_context *ctx, cmd_device *cmd);
  */
 void cmd_device_drop(fz_context *ctx, cmd_device *cmd);
 
+/**
+ * Reset the glyph path cache.
+ * Call this when a new client connects or when the cache should be invalidated.
+ * The client is responsible for discarding its local glyph cache when this is called.
+ */
+void cmd_device_reset_glyph_cache(void);
+
 #endif /* CMD_DEVICE_H */
