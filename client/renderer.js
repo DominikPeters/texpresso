@@ -1,6 +1,6 @@
 /**
  * TeXpresso Render Command Interpreter
- * Processes JSON render commands and draws to Canvas 2D
+ * Processes JSON render commands and generates SVG
  */
 
 export class Renderer {
@@ -9,20 +9,23 @@ export class Renderer {
    */
   constructor(viewer) {
     this.viewer = viewer;
-    this.ctx = viewer.getContext();
-
-    // Graphics state stack for save/restore
-    this.stateStack = [];
-
-    // Glyph path cache: maps cache_id (cid) to Path2D object
-    this.glyphCache = new Map();
+    this.groupStack = [];
+    this.currentGroup = null;
+    
+    // Set of cached glyph CIDs to avoid querying DOM too often
+    this.cachedGlyphs = new Set();
   }
 
   /**
-   * Clear the glyph cache (call when server resets its cache)
+   * Clear the glyph cache
    */
   clearGlyphCache() {
-    this.glyphCache.clear();
+    this.cachedGlyphs.clear();
+    // Clear defs
+    const defs = this.viewer.getDefs();
+    while (defs.firstChild) {
+      defs.removeChild(defs.firstChild);
+    }
   }
 
   /**
@@ -30,10 +33,7 @@ export class Renderer {
    * @param {object} cmd - The render command object
    */
   processCommand(cmd) {
-    // Update context reference (may change on beginPage)
-    this.ctx = this.viewer.getContext();
-
-    // Store non-page commands in buffer for re-rendering
+    // Store non-page commands in buffer for re-rendering if needed
     if (cmd.cmd !== 'beginPage' && cmd.cmd !== 'endPage') {
       this.viewer.storeCommand(cmd);
     }
@@ -49,7 +49,8 @@ export class Renderer {
     switch (cmd.cmd) {
       case 'beginPage':
         this.viewer.beginPage(cmd.page, cmd.width, cmd.height);
-        this.ctx = this.viewer.getContext();
+        this.currentGroup = this.viewer.getContentGroup();
+        this.groupStack = [];
         break;
 
       case 'endPage':
@@ -73,29 +74,30 @@ export class Renderer {
         break;
 
       case 'save':
-        this.ctx.save();
+        this.pushGroup();
         break;
 
       case 'restore':
-        this.ctx.restore();
+        this.popGroup();
         break;
 
       default:
-        // Unknown command - ignore silently for now
+        // Unknown command
         break;
     }
   }
 
   /**
-   * Replay a list of commands (for re-rendering after zoom)
+   * Replay a list of commands
    * @param {number} page
    * @param {object[]} commands
-   * @param {object} dimensions - {width, height} in points
+   * @param {object} dimensions - {width, height}
    */
   replayCommands(page, commands, dimensions) {
-    // Re-initialize the page with new zoom
+    // Re-initialize the page
     this.viewer.beginPage(page, dimensions.width, dimensions.height);
-    this.ctx = this.viewer.getContext();
+    this.currentGroup = this.viewer.getContentGroup();
+    this.groupStack = [];
 
     // Replay all commands
     for (const cmd of commands) {
@@ -106,12 +108,31 @@ export class Renderer {
   }
 
   /**
+   * Create a new group and push to stack (save state)
+   */
+  pushGroup() {
+    const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    if (this.currentGroup) {
+      this.currentGroup.appendChild(group);
+      this.groupStack.push(this.currentGroup);
+      this.currentGroup = group;
+    }
+  }
+
+  /**
+   * Pop group from stack (restore state)
+   */
+  popGroup() {
+    if (this.groupStack.length > 0) {
+      this.currentGroup = this.groupStack.pop();
+    }
+  }
+
+  /**
    * Convert RGB color array [r, g, b] (0-1 range) to CSS color string
-   * @param {number[]} color - RGB values in 0-1 range
-   * @param {number} alpha - Alpha value (0-1)
-   * @returns {string} CSS rgba color
    */
   colorToCSS(color, alpha = 1.0) {
+    if (!color) return 'black';
     const r = Math.round(color[0] * 255);
     const g = Math.round(color[1] * 255);
     const b = Math.round(color[2] * 255);
@@ -119,222 +140,198 @@ export class Renderer {
   }
 
   /**
-   * Build a Path2D from path operations
-   * @param {object[]} pathOps - Array of path operations
-   * @returns {Path2D}
+   * Convert matrix array to SVG transform string
    */
-  buildPath(pathOps) {
-    const path = new Path2D();
-
-    for (const op of pathOps) {
-      switch (op.op) {
-        case 'M':
-          path.moveTo(op.x, op.y);
-          break;
-        case 'L':
-          path.lineTo(op.x, op.y);
-          break;
-        case 'C':
-          path.bezierCurveTo(op.x1, op.y1, op.x2, op.y2, op.x3, op.y3);
-          break;
-        case 'Z':
-          path.closePath();
-          break;
-        default:
-          console.warn('Unknown path operation:', op.op);
-      }
-    }
-
-    return path;
+  matrixToString(m) {
+    if (!m || m.length !== 6) return '';
+    return `matrix(${m[0]},${m[1]},${m[2]},${m[3]},${m[4]},${m[5]})`;
   }
 
   /**
-   * Apply a transformation matrix [a, b, c, d, e, f]
-   * @param {number[]} matrix
+   * Build SVG path data string
    */
-  applyMatrix(matrix) {
-    if (matrix && matrix.length === 6) {
-      this.ctx.transform(matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]);
+  buildPathData(pathOps) {
+    if (!pathOps) return '';
+    let d = '';
+    for (const op of pathOps) {
+      switch (op.op) {
+        case 'M': d += `M ${op.x} ${op.y} `; break;
+        case 'L': d += `L ${op.x} ${op.y} `; break;
+        case 'C': d += `C ${op.x1} ${op.y1}, ${op.x2} ${op.y2}, ${op.x3} ${op.y3} `; break;
+        case 'Z': d += `Z `; break;
+      }
     }
+    return d;
   }
 
   /**
    * Fill a path with color
-   * @param {object} cmd - fillPath command
    */
   fillPath(cmd) {
     if (!cmd.path || cmd.path.length === 0) return;
 
-    this.ctx.save();
-
-    // Apply transformation matrix if present
-    if (cmd.matrix) {
-      this.applyMatrix(cmd.matrix);
-    }
-
-    // Build the path
-    const path = this.buildPath(cmd.path);
-
-    // Set fill style
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', this.buildPathData(cmd.path));
+    
     const alpha = cmd.alpha !== undefined ? cmd.alpha : 1.0;
-    this.ctx.fillStyle = this.colorToCSS(cmd.color, alpha);
-
-    // Fill with appropriate winding rule
+    path.setAttribute('fill', this.colorToCSS(cmd.color, alpha));
+    
     if (cmd.fillRule === 'evenodd') {
-      this.ctx.fill(path, 'evenodd');
-    } else {
-      this.ctx.fill(path, 'nonzero');
+      path.setAttribute('fill-rule', 'evenodd');
     }
 
-    this.ctx.restore();
+    if (cmd.matrix) {
+      path.setAttribute('transform', this.matrixToString(cmd.matrix));
+    }
+
+    // Default stroke is none
+    path.setAttribute('stroke', 'none');
+
+    this.currentGroup.appendChild(path);
   }
 
   /**
    * Stroke a path outline
-   * @param {object} cmd - strokePath command
    */
   strokePath(cmd) {
     if (!cmd.path || cmd.path.length === 0) return;
 
-    this.ctx.save();
-
-    // Apply transformation matrix if present
-    if (cmd.matrix) {
-      this.applyMatrix(cmd.matrix);
-    }
-
-    // Build the path
-    const path = this.buildPath(cmd.path);
-
-    // Set stroke style
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', this.buildPathData(cmd.path));
+    
     const alpha = cmd.alpha !== undefined ? cmd.alpha : 1.0;
-    this.ctx.strokeStyle = this.colorToCSS(cmd.color, alpha);
-    this.ctx.lineWidth = cmd.lineWidth || 1.0;
+    path.setAttribute('stroke', this.colorToCSS(cmd.color, alpha));
+    path.setAttribute('stroke-width', cmd.lineWidth || 1.0);
+    path.setAttribute('fill', 'none');
 
-    // Apply line cap and join if specified
-    if (cmd.lineCap) {
-      this.ctx.lineCap = cmd.lineCap;
-    }
-    if (cmd.lineJoin) {
-      this.ctx.lineJoin = cmd.lineJoin;
-    }
-    if (cmd.miterLimit) {
-      this.ctx.miterLimit = cmd.miterLimit;
+    if (cmd.lineCap) path.setAttribute('stroke-linecap', cmd.lineCap);
+    if (cmd.lineJoin) path.setAttribute('stroke-linejoin', cmd.lineJoin);
+    if (cmd.miterLimit) path.setAttribute('stroke-miterlimit', cmd.miterLimit);
+
+    if (cmd.matrix) {
+      path.setAttribute('transform', this.matrixToString(cmd.matrix));
     }
 
-    this.ctx.stroke(path);
+    this.currentGroup.appendChild(path);
+  }
 
-    this.ctx.restore();
+  /**
+   * Ensure a glyph is defined in <defs>
+   */
+  ensureGlyph(glyph) {
+    if (glyph.cid && this.cachedGlyphs.has(glyph.cid)) return;
+
+    if (glyph.cid && glyph.path) {
+      const id = `g_${glyph.cid}`;
+      const symbol = document.createElementNS('http://www.w3.org/2000/svg', 'symbol');
+      symbol.setAttribute('id', id);
+      symbol.setAttribute('overflow', 'visible'); // Allow glyphs to extend beyond bbox if needed
+      
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', this.buildPathData(glyph.path));
+      // No fill/stroke on definition usually, as it inherits from <use>
+      // However, PDF glyphs are shapes. <use> fills them if we set fill on <use>.
+      
+      symbol.appendChild(path);
+      this.viewer.getDefs().appendChild(symbol);
+      this.cachedGlyphs.add(glyph.cid);
+    }
   }
 
   /**
    * Fill text glyphs
-   * For now, this is a stub that will be enhanced in Phase 4
-   * @param {object} cmd - fillText command
    */
   fillText(cmd) {
     if (!cmd.spans || cmd.spans.length === 0) return;
 
     const alpha = cmd.alpha !== undefined ? cmd.alpha : 1.0;
-    this.ctx.fillStyle = this.colorToCSS(cmd.color, alpha);
+    const color = this.colorToCSS(cmd.color, alpha);
 
+    // Group for this text command
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('fill', color);
+    
     for (const span of cmd.spans) {
-      // Extract font size from matrix (for font rendering fallback)
-      const m = span.matrix || [1, 0, 0, 1, 0, 0];
-      const fontSize = Math.sqrt(m[0] * m[0] + m[1] * m[1]);
-
+      const spanMatrix = span.matrix || [1, 0, 0, 1, 0, 0];
+      
       for (const glyph of span.glyphs) {
-        this.ctx.save();
-
-        // Translate to glyph position in document coordinates
-        this.ctx.translate(glyph.x, glyph.y);
-
-        // Try to get path from cache or from glyph data
-        let path = null;
         if (glyph.cid) {
-          // Check if we have this glyph cached
-          path = this.glyphCache.get(glyph.cid);
-          if (!path && glyph.path) {
-            // First time seeing this glyph - build and cache it
-            path = this.buildPath(glyph.path);
-            this.glyphCache.set(glyph.cid, path);
-          }
+          this.ensureGlyph(glyph);
+          
+          const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+          use.setAttribute('href', `#g_${glyph.cid}`);
+          
+          // Transform: translate(x,y) then matrix(...)
+          // Note: SVG transform list applies right-to-left in terms of coordinate systems
+          // But in string "translate(...) matrix(...)" they apply left-to-right.
+          // PDF: T = translate(x,y). Text Matrix: Tm. Result: Tm * T? 
+          // Usually position (x,y) is separate from the text matrix (scaling/rotation).
+          // span.matrix includes font scaling.
+          
+          // We can construct a combined matrix or just list them.
+          // translate(glyph.x, glyph.y) matrix(spanMatrix)
+          use.setAttribute('transform', `translate(${glyph.x},${glyph.y}) ${this.matrixToString(spanMatrix)}`);
+          
+          g.appendChild(use);
         } else if (glyph.path) {
-          // No cache ID - just build the path
-          path = this.buildPath(glyph.path);
-        }
-
-        if (path) {
-          // Apply span transformation matrix for the glyph shape
-          // The matrix scales (font size) and may flip Y axis
-          if (span.matrix) {
-            this.applyMatrix(span.matrix);
-          }
-          this.ctx.fill(path);
+          // Uncached glyph
+          const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          path.setAttribute('d', this.buildPathData(glyph.path));
+          path.setAttribute('transform', `translate(${glyph.x},${glyph.y}) ${this.matrixToString(spanMatrix)}`);
+          g.appendChild(path);
         } else if (glyph.ucs > 0) {
-          // Has valid Unicode - try to render with canvas text
-          // Use the font name from span
-          this.ctx.font = `${fontSize}px "${span.font}", serif`;
-          this.ctx.fillText(String.fromCodePoint(glyph.ucs), 0, 0);
+          // Fallback to text element
+          const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          const fontSize = Math.sqrt(spanMatrix[0] * spanMatrix[0] + spanMatrix[1] * spanMatrix[1]);
+          
+          text.setAttribute('x', '0');
+          text.setAttribute('y', '0');
+          text.setAttribute('font-family', `"${span.font}", serif`);
+          text.setAttribute('font-size', fontSize);
+          text.textContent = String.fromCodePoint(glyph.ucs);
+          
+          // Position and transform
+          text.setAttribute('transform', `translate(${glyph.x},${glyph.y}) ${this.matrixToString(spanMatrix)}`);
+          g.appendChild(text);
         }
-        // If neither path nor valid ucs, skip the glyph
-
-        this.ctx.restore();
       }
     }
+    
+    this.currentGroup.appendChild(g);
   }
 
   /**
    * Stroke text outlines
-   * @param {object} cmd - strokeText command
    */
   strokeText(cmd) {
     if (!cmd.spans || cmd.spans.length === 0) return;
 
     const alpha = cmd.alpha !== undefined ? cmd.alpha : 1.0;
-    this.ctx.strokeStyle = this.colorToCSS(cmd.color, alpha);
-    this.ctx.lineWidth = cmd.lineWidth || 1.0;
+    const color = this.colorToCSS(cmd.color, alpha);
+
+    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('stroke', color);
+    g.setAttribute('stroke-width', cmd.lineWidth || 1.0);
+    g.setAttribute('fill', 'none');
 
     for (const span of cmd.spans) {
-      // Extract font size from matrix (for font rendering fallback)
-      const m = span.matrix || [1, 0, 0, 1, 0, 0];
-      const fontSize = Math.sqrt(m[0] * m[0] + m[1] * m[1]);
-
+      const spanMatrix = span.matrix || [1, 0, 0, 1, 0, 0];
+      
       for (const glyph of span.glyphs) {
-        this.ctx.save();
-
-        // Translate to glyph position in document coordinates
-        this.ctx.translate(glyph.x, glyph.y);
-
-        // Try to get path from cache or from glyph data
-        let path = null;
         if (glyph.cid) {
-          // Check if we have this glyph cached
-          path = this.glyphCache.get(glyph.cid);
-          if (!path && glyph.path) {
-            // First time seeing this glyph - build and cache it
-            path = this.buildPath(glyph.path);
-            this.glyphCache.set(glyph.cid, path);
-          }
+          this.ensureGlyph(glyph);
+          const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+          use.setAttribute('href', `#g_${glyph.cid}`);
+          use.setAttribute('transform', `translate(${glyph.x},${glyph.y}) ${this.matrixToString(spanMatrix)}`);
+          g.appendChild(use);
         } else if (glyph.path) {
-          // No cache ID - just build the path
-          path = this.buildPath(glyph.path);
+          const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          path.setAttribute('d', this.buildPathData(glyph.path));
+          path.setAttribute('transform', `translate(${glyph.x},${glyph.y}) ${this.matrixToString(spanMatrix)}`);
+          g.appendChild(path);
         }
-
-        if (path) {
-          // Apply span transformation matrix for the glyph shape
-          if (span.matrix) {
-            this.applyMatrix(span.matrix);
-          }
-          this.ctx.stroke(path);
-        } else if (glyph.ucs > 0) {
-          // Has valid Unicode - try to render with canvas text
-          this.ctx.font = `${fontSize}px "${span.font}", serif`;
-          this.ctx.strokeText(String.fromCodePoint(glyph.ucs), 0, 0);
-        }
-
-        this.ctx.restore();
       }
     }
+    this.currentGroup.appendChild(g);
   }
 }

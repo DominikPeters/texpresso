@@ -257,7 +257,7 @@ body {
 #viewer-container {
   background: #808080;
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
   align-items: flex-start;
   padding: 20px;
   padding-bottom: 40px;
@@ -266,7 +266,7 @@ body {
   box-sizing: border-box;
 }
 
-#viewer-canvas {
+#viewer-container svg {
   background: white;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
   border-radius: 2px;
@@ -274,6 +274,9 @@ body {
   /* The container will scroll if needed */
   image-rendering: auto;
   image-rendering: -webkit-optimize-contrast;
+  display: block; /* Ensure it behaves like a block element */
+  flex-shrink: 0; /* Prevent SVG from shrinking */
+  margin: auto;
 }
 
 .viewer-pane .toolbar {

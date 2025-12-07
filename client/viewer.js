@@ -1,42 +1,89 @@
 /**
  * TeXpresso Viewer Component
- * Manages the PDF preview canvas and page navigation
+ * Manages the PDF preview SVG and page navigation
  */
 
 export class Viewer {
   /**
-   * @param {HTMLCanvasElement} canvas
    * @param {HTMLElement} container
    */
-  constructor(canvas, container) {
-    this.canvas = canvas;
+  constructor(container) {
     this.container = container;
-    this.ctx = canvas.getContext('2d');
+    
+    // Create SVG element
+    this.svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    this.svg.style.display = 'block';
+    this.svg.style.backgroundColor = 'white';
+    this.container.appendChild(this.svg);
+
+    // Create defs for reusable glyphs
+    this.defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    this.svg.appendChild(this.defs);
+
+    // Main content group
+    this.contentGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    this.svg.appendChild(this.contentGroup);
 
     // Page state
     this.currentPage = 0;
     this.pageCount = 0;
 
-    // Page dimensions in points (will be set by beginPage)
+    // Page dimensions in points
     this.pageWidth = 612;   // Default US Letter
     this.pageHeight = 792;
 
     // Zoom level (1.0 = 100%)
     this.zoom = 1.0;
 
-    // Device pixel ratio for sharp rendering on HiDPI displays
-    this.dpr = window.devicePixelRatio || 1;
-
-    // Page command buffers for re-rendering
-    this.pageBuffers = new Map();
-
     // Callbacks
     this.onPageChange = null;
     this.onZoomChange = null;
+    this.onReRender = null; // Still useful if we need to completely rebuild
+    
+    // We still store commands to support page switching/re-rendering if needed
+    this.pageBuffers = new Map();
+    this.pageDimensions = new Map();
+
+    // Trackpad zoom handler
+    this.container.addEventListener('wheel', (e) => {
+      if (e.ctrlKey) {
+        e.preventDefault();
+        
+        // Get mouse position relative to SVG *before* zoom
+        const rect = this.svg.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        
+        // Determine zoom direction
+        const delta = -e.deltaY;
+        const zoomFactor = 1.028; 
+        
+        const oldZoom = this.zoom;
+        const newZoom = Math.max(0.25, Math.min(4.0, oldZoom * (delta > 0 ? zoomFactor : 1/zoomFactor)));
+        
+        if (newZoom !== oldZoom) {
+          this.setZoom(newZoom);
+          
+          // Calculate where the mouse point is now *after* zoom
+          // The point on the SVG is the same proportion or just scaled
+          const newMouseX = mouseX * (newZoom / oldZoom);
+          const newMouseY = mouseY * (newZoom / oldZoom);
+          
+          // Adjust scroll to keep that point stationary relative to viewport
+          // We want: newScreenPos = oldScreenPos
+          // (svgLeft_new + newMouseX) = (svgLeft_old + mouseX)
+          // svgLeft_new = svgLeft_old + mouseX - newMouseX
+          // Since svgLeft is controlled by scroll (-scrollLeft), we adjust scrollLeft by the difference
+          
+          this.container.scrollLeft += (newMouseX - mouseX);
+          this.container.scrollTop += (newMouseY - mouseY);
+        }
+      }
+    }, { passive: false });
   }
 
   /**
-   * Initialize canvas for a new page
+   * Initialize SVG for a new page
    * @param {number} page - Page number (0-indexed)
    * @param {number} width - Page width in points
    * @param {number} height - Page height in points
@@ -46,36 +93,30 @@ export class Viewer {
     this.pageWidth = width;
     this.pageHeight = height;
 
-    // Store page dimensions in the buffer metadata
+    // Store metadata
     if (!this.pageBuffers.has(page)) {
       this.pageBuffers.set(page, []);
     }
-
-    // Store dimensions separately for each page
     if (!this.pageDimensions) {
       this.pageDimensions = new Map();
     }
     this.pageDimensions.set(page, { width, height });
 
-    // Calculate canvas size with zoom and DPR
-    const displayWidth = width * this.zoom;
-    const displayHeight = height * this.zoom;
+    // Update SVG dimensions and viewbox
+    this.svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
+    this.updateZoom();
 
-    // Set canvas size (actual pixels for rendering)
-    this.canvas.width = displayWidth * this.dpr;
-    this.canvas.height = displayHeight * this.dpr;
-
-    // Set display size (CSS pixels)
-    this.canvas.style.width = displayWidth + 'px';
-    this.canvas.style.height = displayHeight + 'px';
-
-    // Reset transform and scale for DPR and zoom
-    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-    this.ctx.scale(this.dpr * this.zoom, this.dpr * this.zoom);
-
-    // Fill with white background
-    this.ctx.fillStyle = 'white';
-    this.ctx.fillRect(0, 0, width, height);
+    // Clear content group for the new page
+    // Note: We keep <defs> populated as glyphs might be shared across pages? 
+    // Actually, usually glyphs are defined per page or per document. 
+    // If the server sends them incrementally, we should keep them.
+    // But if 'beginPage' implies a full refresh, we might want to clear content.
+    // For now, let's clear the content group.
+    while (this.contentGroup.firstChild) {
+      this.contentGroup.removeChild(this.contentGroup.firstChild);
+    }
+    
+    // Reset any state if necessary
   }
 
   /**
@@ -83,7 +124,6 @@ export class Viewer {
    * @param {number} page
    */
   endPage(page) {
-    // Page rendering complete
     if (this.onPageChange) {
       this.onPageChange(page, this.pageCount);
     }
@@ -106,23 +146,19 @@ export class Viewer {
    */
   setZoom(zoom) {
     this.zoom = Math.max(0.25, Math.min(4.0, zoom));
+    this.updateZoom();
+    
     if (this.onZoomChange) {
       this.onZoomChange(this.zoom);
     }
-    // Re-render current page with new zoom
-    this.reRenderCurrentPage();
   }
 
-  /**
-   * Re-render the current page (after zoom or other changes)
-   */
-  reRenderCurrentPage() {
-    const commands = this.pageBuffers.get(this.currentPage);
-    const dimensions = this.pageDimensions && this.pageDimensions.get(this.currentPage);
-
-    if (commands && commands.length > 0 && dimensions && this.onReRender) {
-      this.onReRender(this.currentPage, commands, dimensions);
-    }
+  updateZoom() {
+    const width = this.pageWidth * this.zoom;
+    const height = this.pageHeight * this.zoom;
+    
+    this.svg.style.width = `${width}px`;
+    this.svg.style.height = `${height}px`;
   }
 
   /**
@@ -133,6 +169,23 @@ export class Viewer {
     const buffer = this.pageBuffers.get(this.currentPage);
     if (buffer) {
       buffer.push(cmd);
+    }
+  }
+  
+  /**
+   * Replay commands - useful if we switched pages and need to redraw
+   * The renderer will call this.
+   */
+  reRenderCurrentPage() {
+    const commands = this.pageBuffers.get(this.currentPage);
+    const dimensions = this.pageDimensions && this.pageDimensions.get(this.currentPage);
+
+    if (commands && commands.length > 0 && dimensions && this.onReRender) {
+      // Clear content before replaying
+      while (this.contentGroup.firstChild) {
+        this.contentGroup.removeChild(this.contentGroup.firstChild);
+      }
+      this.onReRender(this.currentPage, commands, dimensions);
     }
   }
 
@@ -151,14 +204,6 @@ export class Viewer {
   }
 
   /**
-   * Get the 2D rendering context
-   * @returns {CanvasRenderingContext2D}
-   */
-  getContext() {
-    return this.ctx;
-  }
-
-  /**
    * Get current zoom level as percentage string
    * @returns {string}
    */
@@ -167,13 +212,13 @@ export class Viewer {
   }
 
   /**
-   * Update device pixel ratio (call when window moves to different display)
+   * Update device pixel ratio - No-op for SVG but kept for interface compatibility
    */
   updateDPR() {
-    const newDPR = window.devicePixelRatio || 1;
-    if (newDPR !== this.dpr) {
-      this.dpr = newDPR;
-      this.reRenderCurrentPage();
-    }
+    // SVG handles scaling automatically
   }
+  
+  // Accessors for Renderer
+  getDefs() { return this.defs; }
+  getContentGroup() { return this.contentGroup; }
 }

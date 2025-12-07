@@ -16,3 +16,4 @@ test/test_utf_mapping
 /mupdf-master-copy
 /.claude
 /mupdf.js-master-copy
+/client-mupdf-poc/node_modules

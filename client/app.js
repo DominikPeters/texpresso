@@ -28,7 +28,6 @@ const elements = {
   logLines: document.getElementById('log-lines'),
   wsUrl: document.getElementById('ws-url'),
   // Viewer elements
-  viewerCanvas: document.getElementById('viewer-canvas'),
   viewerContainer: document.getElementById('viewer-container'),
   btnPrevPage: document.getElementById('btn-prev-page'),
   btnNextPage: document.getElementById('btn-next-page'),
@@ -43,7 +42,7 @@ const elements = {
 const client = new TeXpressoClient(WS_URL);
 const editor = new EditorManager(elements.editor, DOCUMENT_NAME);
 const log = new LogViewer(elements.logOutput);
-const viewer = new Viewer(elements.viewerCanvas, elements.viewerContainer);
+const viewer = new Viewer(elements.viewerContainer);
 const renderer = new Renderer(viewer);
 
 // Set up viewer callbacks
