@@ -58,6 +58,10 @@ viewer.onZoomChange = (zoom) => {
   elements.zoomLevel.textContent = viewer.getZoomString();
 };
 
+viewer.onReRender = (page, commands, dimensions) => {
+  renderer.replayCommands(page, commands, dimensions);
+};
+
 // Update UI with WebSocket URL
 elements.wsUrl.textContent = WS_URL;
 
@@ -203,6 +207,56 @@ elements.btnZoomOut.addEventListener('click', () => {
 });
 
 // ============================================================================
+// Panel Resizing
+// ============================================================================
+
+function initResizers() {
+  const resizers = document.querySelectorAll('.resizer');
+
+  resizers.forEach(resizer => {
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+    let pane = null;
+
+    resizer.addEventListener('mousedown', (e) => {
+      isResizing = true;
+      pane = resizer.parentElement;
+      startX = e.clientX;
+      startWidth = pane.offsetWidth;
+      resizer.classList.add('resizing');
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+
+      const dx = e.clientX - startX;
+      const newWidth = startWidth + dx;
+      const minWidth = parseInt(getComputedStyle(pane).minWidth) || 200;
+
+      if (newWidth >= minWidth) {
+        // Calculate flex-grow based on new width relative to container
+        const mainWidth = pane.parentElement.offsetWidth;
+        const flexGrow = newWidth / (mainWidth / 3.5); // Approximate flex distribution
+        pane.style.flex = `${flexGrow} 1 0`;
+      }
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isResizing) {
+        isResizing = false;
+        resizer.classList.remove('resizing');
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+      }
+    });
+  });
+}
+
+// ============================================================================
 // UI Update Functions
 // ============================================================================
 
@@ -236,6 +290,13 @@ function init() {
   console.log('TeXpresso Web Client initialized');
   updateStats();
   updateCursorPosition();
+  initResizers();
+
+  // Listen for DPR changes (when window moves between displays)
+  if (window.matchMedia) {
+    const updateDPR = () => viewer.updateDPR();
+    window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener('change', updateDPR);
+  }
 
   // Auto-connect on load
   setTimeout(() => {

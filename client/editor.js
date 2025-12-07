@@ -12,7 +12,7 @@ export class EditorManager {
 
     // Debounce timer for change events
     this.changeTimeout = null;
-    this.changeDelay = 500; // ms
+    this.changeDelay = 0; // ms
 
     this.setupListeners();
   }

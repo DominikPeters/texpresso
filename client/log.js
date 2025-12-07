@@ -6,6 +6,7 @@
 export class LogViewer {
   constructor(element) {
     this.element = element;
+    this.container = element.parentElement; // The scrollable container
     this.lines = [];
     this.maxLines = 10000; // Limit to prevent memory issues
   }
@@ -100,7 +101,9 @@ export class LogViewer {
    * Scroll to bottom of log
    */
   scrollToBottom() {
-    this.element.scrollTop = this.element.scrollHeight;
+    if (this.container) {
+      this.container.scrollTop = this.container.scrollHeight;
+    }
   }
 
   /**

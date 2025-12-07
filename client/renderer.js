@@ -33,6 +33,19 @@ export class Renderer {
     // Update context reference (may change on beginPage)
     this.ctx = this.viewer.getContext();
 
+    // Store non-page commands in buffer for re-rendering
+    if (cmd.cmd !== 'beginPage' && cmd.cmd !== 'endPage') {
+      this.viewer.storeCommand(cmd);
+    }
+
+    this.executeCommand(cmd);
+  }
+
+  /**
+   * Execute a single render command
+   * @param {object} cmd
+   */
+  executeCommand(cmd) {
     switch (cmd.cmd) {
       case 'beginPage':
         this.viewer.beginPage(cmd.page, cmd.width, cmd.height);
@@ -71,6 +84,25 @@ export class Renderer {
         // Unknown command - ignore silently for now
         break;
     }
+  }
+
+  /**
+   * Replay a list of commands (for re-rendering after zoom)
+   * @param {number} page
+   * @param {object[]} commands
+   * @param {object} dimensions - {width, height} in points
+   */
+  replayCommands(page, commands, dimensions) {
+    // Re-initialize the page with new zoom
+    this.viewer.beginPage(page, dimensions.width, dimensions.height);
+    this.ctx = this.viewer.getContext();
+
+    // Replay all commands
+    for (const cmd of commands) {
+      this.executeCommand(cmd);
+    }
+
+    this.viewer.endPage(page);
   }
 
   /**

@@ -63,6 +63,22 @@ body {
   50% { opacity: 0.5; }
 }
 
+/* Loading state overlay */
+.viewer-pane.loading::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(128, 128, 128, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 100;
+}
+
 .divider {
   color: #7f8c8d;
 }
@@ -79,19 +95,44 @@ body {
   flex-direction: column;
   background: white;
   border-right: 1px solid #ddd;
+  position: relative;
 }
 
 .editor-pane {
   flex: 1;
+  min-width: 200px;
 }
 
 .viewer-pane {
   flex: 1.5;
+  min-width: 300px;
 }
 
 .log-pane {
   flex: 1;
   border-right: none;
+  min-width: 200px;
+}
+
+.resizer {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 10;
+  transition: background 0.2s;
+}
+
+.resizer:hover,
+.resizer.resizing {
+  background: #3498db;
+}
+
+.log-pane .resizer {
+  display: none;
 }
 
 .pane-header {
@@ -101,12 +142,15 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .pane-header h2 {
   font-size: 1rem;
   font-weight: 600;
   color: #2c3e50;
+  margin: 0;
+  user-select: none;
 }
 
 .toolbar {
@@ -158,13 +202,21 @@ body {
   padding: 1rem;
   font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
   font-size: 14px;
-  line-height: 1.5;
+  line-height: 1.6;
   border: none;
   outline: none;
   resize: none;
   background: #fafafa;
   color: #2c3e50;
   tab-size: 2;
+  overflow: auto;
+  display: block;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.editor-pane .pane-content {
+  overflow: hidden;
 }
 
 #editor::selection {
@@ -172,23 +224,33 @@ body {
   color: white;
 }
 
+#editor:focus {
+  background: #ffffff;
+}
+
 /* Log */
 .log-content {
   padding: 1rem;
   font-family: 'Monaco', 'Menlo', 'Consolas', 'Courier New', monospace;
   font-size: 12px;
-  line-height: 1.4;
+  line-height: 1.5;
   color: #2c3e50;
   white-space: pre-wrap;
   word-wrap: break-word;
   background: #fafafa;
   min-height: 100%;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .log-content:empty::before {
   content: 'Compilation log will appear here...';
   color: #95a5a6;
   font-style: italic;
+}
+
+.log-pane .pane-content {
+  background: #fafafa;
 }
 
 /* Viewer */
@@ -198,12 +260,20 @@ body {
   justify-content: center;
   align-items: flex-start;
   padding: 20px;
+  padding-bottom: 40px;
   min-height: 100%;
+  overflow: auto;
+  box-sizing: border-box;
 }
 
 #viewer-canvas {
   background: white;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  border-radius: 2px;
+  /* Don't constrain canvas size - let it render at its natural dimensions */
+  /* The container will scroll if needed */
+  image-rendering: auto;
+  image-rendering: -webkit-optimize-contrast;
 }
 
 .viewer-pane .toolbar {
@@ -247,6 +317,8 @@ body {
   align-items: center;
   font-size: 0.85rem;
   color: #7f8c8d;
+  flex-shrink: 0;
+  z-index: 5;
 }
 
 .footer-info {
@@ -254,7 +326,36 @@ body {
   gap: 1rem;
 }
 
+/* Smooth transitions */
+.btn,
+.status-indicator,
+.resizer {
+  transition: all 0.2s ease;
+}
+
+/* Focus styles for accessibility */
+button:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #3498db;
+  outline-offset: 2px;
+}
+
+/* Improved button states */
+.btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
 /* Responsive */
+@media (max-width: 1024px) {
+  .header h1 {
+    font-size: 1.2rem;
+  }
+
+  .status {
+    font-size: 0.8rem;
+  }
+}
+
 @media (max-width: 768px) {
   .main {
     flex-direction: column;
@@ -263,10 +364,43 @@ body {
   .pane {
     border-right: none;
     border-bottom: 1px solid #ddd;
+    min-width: unset;
+    min-height: 200px;
   }
 
   .log-pane {
     border-bottom: none;
+  }
+
+  .resizer {
+    display: none !important;
+  }
+
+  .header {
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: flex-start;
+  }
+
+  .footer {
+    flex-direction: column;
+    gap: 0.5rem;
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 480px) {
+  .toolbar {
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    font-size: 0.75rem;
+    padding: 0.3rem 0.6rem;
+  }
+
+  #editor {
+    font-size: 12px;
   }
 }
 

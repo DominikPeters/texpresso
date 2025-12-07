@@ -46,6 +46,17 @@ export class Viewer {
     this.pageWidth = width;
     this.pageHeight = height;
 
+    // Store page dimensions in the buffer metadata
+    if (!this.pageBuffers.has(page)) {
+      this.pageBuffers.set(page, []);
+    }
+
+    // Store dimensions separately for each page
+    if (!this.pageDimensions) {
+      this.pageDimensions = new Map();
+    }
+    this.pageDimensions.set(page, { width, height });
+
     // Calculate canvas size with zoom and DPR
     const displayWidth = width * this.zoom;
     const displayHeight = height * this.zoom;
@@ -65,9 +76,6 @@ export class Viewer {
     // Fill with white background
     this.ctx.fillStyle = 'white';
     this.ctx.fillRect(0, 0, width, height);
-
-    // Clear the command buffer for this page
-    this.pageBuffers.set(page, []);
   }
 
   /**
@@ -101,7 +109,31 @@ export class Viewer {
     if (this.onZoomChange) {
       this.onZoomChange(this.zoom);
     }
-    // Re-render would need to replay command buffer
+    // Re-render current page with new zoom
+    this.reRenderCurrentPage();
+  }
+
+  /**
+   * Re-render the current page (after zoom or other changes)
+   */
+  reRenderCurrentPage() {
+    const commands = this.pageBuffers.get(this.currentPage);
+    const dimensions = this.pageDimensions && this.pageDimensions.get(this.currentPage);
+
+    if (commands && commands.length > 0 && dimensions && this.onReRender) {
+      this.onReRender(this.currentPage, commands, dimensions);
+    }
+  }
+
+  /**
+   * Store a command in the current page's buffer
+   * @param {object} cmd
+   */
+  storeCommand(cmd) {
+    const buffer = this.pageBuffers.get(this.currentPage);
+    if (buffer) {
+      buffer.push(cmd);
+    }
   }
 
   /**
@@ -132,5 +164,16 @@ export class Viewer {
    */
   getZoomString() {
     return Math.round(this.zoom * 100) + '%';
+  }
+
+  /**
+   * Update device pixel ratio (call when window moves to different display)
+   */
+  updateDPR() {
+    const newDPR = window.devicePixelRatio || 1;
+    if (newDPR !== this.dpr) {
+      this.dpr = newDPR;
+      this.reRenderCurrentPage();
+    }
   }
 }
