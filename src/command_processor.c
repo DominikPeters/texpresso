@@ -264,6 +264,14 @@ static void realize_change(fz_context *ctx,
 
 /* Public API */
 
+const char *command_processor_relative_path(
+    const char *path,
+    const char *doc_path,
+    int *go_up)
+{
+  return relative_path(path, doc_path, go_up);
+}
+
 void command_processor_flush_changes(
     fz_context *ctx,
     txp_engine *eng,
@@ -380,15 +388,18 @@ void command_processor_interpret_change(
     fz_context *ctx,
     txp_engine *eng,
     const char *doc_path,
+    int current_page,
     struct editor_change *op)
 {
   int plen = strlen(op->path);
   int page_count = send(page_count, eng);
   int cursor = delayed_changes.cursor;
 
-  // Try to buffer the change for performance
-  // Only buffer if we're near the end of the document and engine is running
-  if (page_count > 0 &&
+  // Smart buffering logic matching GUI behavior (main.c:765-768):
+  // Buffer changes only when engine is 1-2 pages behind current view.
+  // This provides responsive feedback when caught up, but batches during
+  // rapid typing when the engine is falling behind.
+  if ((page_count == current_page - 2 || page_count == current_page - 1) &&
       send(get_status, eng) == DOC_RUNNING &&
       delayed_changes.count < BUFFERED_OPS &&
       cursor + plen + 1 + op->length <= BUFFERED_CHARS)

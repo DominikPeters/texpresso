@@ -152,8 +152,10 @@ static void headless_synctex_callback(void *user_data, int page, int x, int y)
   fprintf(stderr, "[headless] synctex result: page=%d, x=%d, y=%d\n", page, x, y);
 }
 
-/* Render all pages to JSON output */
-static void render_pages_to_json(struct persistent_state *ps, headless_state *hs)
+/* Render current page to JSON output - matches GUI's display_page() behavior.
+ * Like the GUI, we only render the current page (hs->page), not all pages.
+ * The page count is reported separately so the client knows the document size. */
+static void render_page_to_json(struct persistent_state *ps, headless_state *hs)
 {
   int page_count = send(page_count, hs->eng);
 
@@ -163,39 +165,40 @@ static void render_pages_to_json(struct persistent_state *ps, headless_state *hs
 
   hs->render_dirty = false;
 
+  // Report page count so client knows document size (for navigation UI)
   fprintf(stdout, "{\"type\":\"doc.pageCount\",\"count\":%d}\n", page_count);
   fflush(stdout);
 
-  fprintf(stderr, "[headless] rendering %d pages to JSON commands\n", page_count);
-  for (int i = 0; i < page_count; i++)
-  {
-    fz_buffer *output = fz_new_buffer(ps->ctx, 4096);
-    fz_try(ps->ctx)
-    {
-      send(render_page_to_json, hs->eng, ps->ctx, i, output);
+  // Render only the current page, matching GUI behavior (main.c:890-896)
+  int page = hs->page;
+  fprintf(stderr, "[headless] rendering page %d to JSON commands\n", page);
 
-      // Output the buffer contents to stdout
-      unsigned char *data;
-      size_t len = fz_buffer_storage(ps->ctx, output, &data);
-      fprintf(stderr, "[headless] rendered page %d: %zu bytes\n", i, len);
-      if (len > 0)
-      {
-        fwrite(data, 1, len, stdout);
-        fflush(stdout);
-      }
-    }
-    fz_always(ps->ctx)
+  fz_buffer *output = fz_new_buffer(ps->ctx, 4096);
+  fz_try(ps->ctx)
+  {
+    send(render_page_to_json, hs->eng, ps->ctx, page, output);
+
+    // Output the buffer contents to stdout
+    unsigned char *data;
+    size_t len = fz_buffer_storage(ps->ctx, output, &data);
+    fprintf(stderr, "[headless] rendered page %d: %zu bytes\n", page, len);
+    if (len > 0)
     {
-      fz_drop_buffer(ps->ctx, output);
-    }
-    fz_catch(ps->ctx)
-    {
-      fprintf(stderr, "[headless] error rendering page %d: %s\n",
-              i, fz_caught_message(ps->ctx));
-      fprintf(stdout, "{\"type\":\"error\",\"code\":\"RENDER_ERROR\",\"page\":%d,\"message\":\"%s\"}\n",
-              i, fz_caught_message(ps->ctx));
+      fwrite(data, 1, len, stdout);
       fflush(stdout);
     }
+  }
+  fz_always(ps->ctx)
+  {
+    fz_drop_buffer(ps->ctx, output);
+  }
+  fz_catch(ps->ctx)
+  {
+    fprintf(stderr, "[headless] error rendering page %d: %s\n",
+            page, fz_caught_message(ps->ctx));
+    fprintf(stdout, "{\"type\":\"error\",\"code\":\"RENDER_ERROR\",\"page\":%d,\"message\":\"%s\"}\n",
+            page, fz_caught_message(ps->ctx));
+    fflush(stdout);
   }
   fprintf(stderr, "[headless] rendering complete\n");
 }
@@ -216,7 +219,7 @@ static void interpret_command(struct persistent_state *ps,
 
     case EDIT_CHANGE:
       fprintf(stderr, "[headless] change file: %s\n", ecmd->change.path);
-      command_processor_interpret_change(ps->ctx, hs->eng, ps->doc_path, &ecmd->change);
+      command_processor_interpret_change(ps->ctx, hs->eng, ps->doc_path, hs->page, &ecmd->change);
       break;
 
     case EDIT_CLOSE:
@@ -229,15 +232,24 @@ static void interpret_command(struct persistent_state *ps,
       fprintf(stderr, "[headless] synctex forward: %s:%d\n",
               ecmd->synctex_forward.path, ecmd->synctex_forward.line);
 
-      // Set target like GUI does, then let advance_engine find it
+      // Normalize path exactly like GUI does (main.c lines 999-1017)
       fz_buffer *buf;
       synctex_t *stx = send(synctex, hs->eng, &buf);
+      int go_up = 0;
+      const char *path = command_processor_relative_path(
+          ecmd->synctex_forward.path, ps->doc_path, &go_up);
 
-      // Get relative path (simplified - command_processor has full logic)
-      const char *path = ecmd->synctex_forward.path;
-
-      synctex_set_target(stx, hs->page, path, ecmd->synctex_forward.line);
-      events->need_stdin = true;  // Schedule event like GUI does
+      if (go_up > 0)
+      {
+        fprintf(stderr,
+                "[headless] synctex-forward %s: file has a different root, skipping\n",
+                path);
+      }
+      else
+      {
+        synctex_set_target(stx, hs->page, path, ecmd->synctex_forward.line);
+        events->need_stdin = true;  // Schedule event like GUI does (prevents waiting)
+      }
       break;
     }
 
@@ -420,7 +432,8 @@ bool headless_loop_run(struct persistent_state *ps)
 
       // If no work to do and stdin not closed, wait for input
       // This replaces GUI's SDL_WaitEvent
-      if (!stdin_eof && !events.need_reload && !events.need_scan)
+      // Note: need_stdin prevents waiting when synctex target is pending (matches GUI's STDIN_EVENT)
+      if (!stdin_eof && !events.need_reload && !events.need_scan && !events.need_stdin)
       {
         // Wait for stdin with timeout (100ms to allow periodic checks)
         wait_for_stdin(100);
@@ -480,10 +493,10 @@ bool headless_loop_run(struct persistent_state *ps)
           hs.page = page_count - 1;
       }
 
-      // Render pages first (if dirty)
+      // Render current page (if dirty) - matches GUI's display_page call
       if (hs.page < page_count)
       {
-        render_pages_to_json(ps, &hs);
+        render_page_to_json(ps, &hs);
       }
 
       // Send "ready" status after rendering is complete

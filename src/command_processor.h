@@ -75,18 +75,38 @@ void command_processor_interpret_close(
 
 /**
  * Process a CHANGE command - modify a file in the virtual file system.
- * Changes may be buffered for performance.
+ * Changes may be buffered for performance when the engine is catching up.
+ *
+ * The buffering logic matches the GUI behavior: changes are buffered only when
+ * the engine is 1-2 pages behind the current view (catching up), providing
+ * responsive feedback when possible while batching during rapid edits.
  *
  * @param ctx MuPDF context
  * @param eng Engine to apply changes to
  * @param doc_path Base document path for resolving relative paths
+ * @param current_page Current page being viewed (for smart buffering decision)
  * @param op Change operation to apply
  */
 void command_processor_interpret_change(
     fz_context *ctx,
     txp_engine *eng,
     const char *doc_path,
+    int current_page,
     struct editor_change *op);
+
+/**
+ * Get a relative path from an absolute path, relative to the document root.
+ * Used for path normalization in synctex and file operations.
+ *
+ * @param path Absolute path to normalize
+ * @param doc_path Document root directory
+ * @param go_up Output: number of parent directory traversals needed (>0 means path is outside doc_path)
+ * @return Pointer to the relative portion of the path
+ */
+const char *command_processor_relative_path(
+    const char *path,
+    const char *doc_path,
+    int *go_up);
 
 /**
  * Callback type for SyncTeX results.
