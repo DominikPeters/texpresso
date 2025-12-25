@@ -32,6 +32,49 @@
  * Opaque command device structure.
  * This device intercepts MuPDF rendering operations and outputs
  * JSON commands suitable for rendering in a web browser.
+ *
+ * Supported commands (all output as JSON lines):
+ *
+ * Page structure:
+ *   - beginPage: Start of page with dimensions
+ *   - endPage: End of page
+ *
+ * Path operations:
+ *   - fillPath: Fill a path with color
+ *   - strokePath: Stroke a path with color
+ *   - clipPath: Set clip region from path
+ *   - clipStrokePath: Set clip region from stroked path
+ *   - popClip: Restore previous clip
+ *
+ * Text operations:
+ *   - fillText: Fill text with color
+ *   - strokeText: Stroke text with color
+ *   - clipText: Set clip region from text
+ *   - clipStrokeText: Set clip region from stroked text
+ *
+ * Image operations (include filename when available for client-side caching):
+ *   - fillImage: Draw an image (includes "filename" field if known)
+ *   - fillImageMask: Use image as mask to paint color (includes "filename" field if known)
+ *   - clipImageMask: Set clip region from image mask (includes "filename" field if known)
+ *   Note: The "filename" field contains the source file path. Clients can use
+ *   this to cache images by filename rather than fetching via imageId.
+ *
+ * Shading/gradient operations:
+ *   - fillShade: Fill with gradient (linear, radial, or mesh)
+ *
+ * Transparency:
+ *   - beginGroup: Start transparency group
+ *   - endGroup: End transparency group
+ *   - beginMask: Start soft mask definition
+ *   - endMask: End soft mask definition
+ *
+ * Patterns:
+ *   - beginTile: Start tile pattern definition
+ *   - endTile: End tile pattern definition
+ *
+ * Layers:
+ *   - beginLayer: Start optional content layer
+ *   - endLayer: End optional content layer
  */
 typedef struct cmd_device cmd_device;
 
@@ -44,7 +87,8 @@ typedef struct cmd_device cmd_device;
  *
  * Example output:
  *   {"cmd":"beginPage","page":1,"width":612,"height":792}
- *   {"cmd":"text","font":1,"matrix":[1,0,0,1,72,720],"glyphs":[...]}
+ *   {"cmd":"fillText","color":"#000000","spans":[...]}
+ *   {"cmd":"fillImage","imageId":1,"width":100,"height":100,"matrix":[...]}
  *   {"cmd":"endPage","page":1}
  *
  * @param ctx MuPDF context
@@ -95,5 +139,41 @@ void cmd_device_drop(fz_context *ctx, cmd_device *cmd);
  * The client is responsible for discarding its local glyph cache when this is called.
  */
 void cmd_device_reset_glyph_cache(void);
+
+/* ============================================================================
+ * Image Store API - for separate fetch of image data
+ *
+ * When the device encounters an image, it stores it and outputs only the image ID.
+ * The client can then fetch the actual image data using these functions.
+ * This approach keeps the command stream small and allows image caching.
+ * ============================================================================ */
+
+/**
+ * Get an image by its ID.
+ * Returns the fz_image pointer, or NULL if not found.
+ * The returned image is owned by the store - do not drop it.
+ *
+ * @param id Image ID from a fillImage/fillImageMask/clipImageMask command
+ * @return The image, or NULL if not found
+ */
+fz_image *cmd_device_get_image(int id);
+
+/**
+ * Get image data as PNG.
+ * The returned buffer contains PNG-encoded image data.
+ * Caller is responsible for dropping the buffer with fz_drop_buffer().
+ *
+ * @param ctx MuPDF context
+ * @param id Image ID
+ * @return Buffer containing PNG data, or NULL if image not found
+ */
+fz_buffer *cmd_device_get_image_as_png(fz_context *ctx, int id);
+
+/**
+ * Reset the image store.
+ * Call this when a new client connects or when images should be invalidated.
+ * All stored images are dropped.
+ */
+void cmd_device_reset_image_store(void);
 
 #endif /* CMD_DEVICE_H */

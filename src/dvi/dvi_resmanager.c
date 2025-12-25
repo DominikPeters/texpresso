@@ -78,6 +78,69 @@ struct dvi_resmanager {
   tex_fontmap *map;
 };
 
+/* ============================================================================
+ * Global image filename registry
+ *
+ * Maps fz_image pointers to their source filenames. This allows the cmd_device
+ * to output filenames instead of image data, enabling efficient caching on the
+ * client side. The registry is populated when images are loaded via
+ * dvi_resmanager_get_img().
+ * ============================================================================ */
+
+#define IMAGE_REGISTRY_SIZE 256
+
+typedef struct {
+  fz_image *image;
+  char *filename;
+} image_registry_entry;
+
+static image_registry_entry image_registry[IMAGE_REGISTRY_SIZE];
+static int image_registry_count = 0;
+
+/* Register an image with its filename */
+static void image_registry_add(fz_image *image, const char *filename)
+{
+  if (image_registry_count >= IMAGE_REGISTRY_SIZE)
+  {
+    // Registry full - just don't add (oldest entries will be used)
+    return;
+  }
+
+  // Check if already registered
+  for (int i = 0; i < image_registry_count; i++)
+  {
+    if (image_registry[i].image == image)
+      return;
+  }
+
+  image_registry[image_registry_count].image = image;
+  image_registry[image_registry_count].filename = strdup(filename);
+  image_registry_count++;
+}
+
+/* Lookup filename for an image (returns NULL if not found) */
+const char *dvi_resmanager_lookup_img_filename(fz_image *image)
+{
+  for (int i = 0; i < image_registry_count; i++)
+  {
+    if (image_registry[i].image == image)
+      return image_registry[i].filename;
+  }
+  return NULL;
+}
+
+/* Reset the image registry (call when resources are invalidated) */
+void dvi_resmanager_reset_img_registry(void)
+{
+  for (int i = 0; i < image_registry_count; i++)
+  {
+    free(image_registry[i].filename);
+    image_registry[i].filename = NULL;
+    image_registry[i].image = NULL;
+  }
+  image_registry_count = 0;
+}
+
 static void
 default_hooks_free_env(fz_context *ctx, void *env)
 {
@@ -979,8 +1042,14 @@ pdf_document *dvi_resmanager_get_pdf(fz_context *ctx, dvi_resmanager *rm, const 
 fz_image *dvi_resmanager_get_img(fz_context *ctx, dvi_resmanager *rm, const char *filename)
 {
   for (cell_image *cell = rm->first_image; cell; cell = cell->next)
+  {
     if (strcmp(filename, cell->name) == 0)
+    {
+      // Ensure image is in the global registry for cmd_device lookup
+      image_registry_add(cell->img, filename);
       return cell->img;
+    }
+  }
 
   fz_ptr(cell_image, cell);
   fz_ptr(char, pname);
@@ -992,6 +1061,8 @@ fz_image *dvi_resmanager_get_img(fz_context *ctx, dvi_resmanager *rm, const char
     cell->name = pname;
     cell->next = rm->first_image;
     cell->img = fz_new_image_from_file(ctx, filename);
+    // Register in global registry for cmd_device lookup
+    image_registry_add(cell->img, filename);
   }
   fz_catch(ctx)
   {

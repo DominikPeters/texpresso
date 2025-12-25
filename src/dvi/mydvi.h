@@ -226,6 +226,10 @@ pdf_document *dvi_resmanager_get_pdf(fz_context *ctx, dvi_resmanager *rm, const 
 fz_image *dvi_resmanager_get_img(fz_context *ctx, dvi_resmanager *rm, const char *filename);
 void dvi_resmanager_invalidate(fz_context *ctx, dvi_resmanager *rm, dvi_reskind kind, const char *name);
 
+/* Image filename registry - for reverse lookup from fz_image* to filename */
+const char *dvi_resmanager_lookup_img_filename(fz_image *image);
+void dvi_resmanager_reset_img_registry(void);
+
 /****************************************/
 /* Definition of DVI runtime structures */
 /****************************************/
