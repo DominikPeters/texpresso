@@ -254,7 +254,8 @@ bool editor_parse(fz_context *ctx,
   }
   else if (strcmp(verb, "synctex-forward") == 0)
   {
-    if (len != 3)
+    // Accept both ["synctex-forward", path, line] and ["synctex-forward", path, line, column]
+    if (len != 3 && len != 4)
       goto arity;
     val path = val_array_get(ctx, stack, command, 1);
     val line = val_array_get(ctx, stack, command, 2);
@@ -266,6 +267,25 @@ bool editor_parse(fz_context *ctx,
             {
                 .path = val_string(ctx, stack, path),
                 .line = val_number(ctx, line),
+            },
+    };
+  }
+  else if (strcmp(verb, "synctex-backward") == 0)
+  {
+    if (len != 4)
+      goto arity;
+    val page = val_array_get(ctx, stack, command, 1);
+    val x = val_array_get(ctx, stack, command, 2);
+    val y = val_array_get(ctx, stack, command, 3);
+    if (!val_is_number(page) || !val_is_number(x) || !val_is_number(y))
+      goto arguments;
+    *out = (struct editor_command){
+        .tag = EDIT_SYNCTEX_BACKWARD,
+        .synctex_backward =
+            {
+                .page = val_number(ctx, page),
+                .x = val_number(ctx, x),
+                .y = val_number(ctx, y),
             },
     };
   }

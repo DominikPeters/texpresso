@@ -39,12 +39,16 @@ export class Viewer {
     this.onPageChange = null;
     this.onZoomChange = null;
     this.onReRender = null; // Still useful if we need to completely rebuild
+    this.onSyncTexClick = null; // SyncTeX backward sync (PDF → source)
     
     // Page command cache with LRU eviction
     this.pageBuffers = new Map();
     this.pageDimensions = new Map();
     this.maxCachedPages = 5;
     this.previousBuffer = null; // Temporary storage during page render
+
+    // Pending highlight for SyncTeX forward (applied after page renders)
+    this.pendingHighlight = null;
 
     // Trackpad zoom handler
     this.container.addEventListener('wheel', (e) => {
@@ -82,6 +86,27 @@ export class Viewer {
         }
       }
     }, { passive: false });
+
+    // SyncTeX backward sync - Cmd+Click (Mac) or Ctrl+Click (Windows/Linux) on PDF
+    this.svg.addEventListener('click', (e) => {
+      // Only trigger on Cmd/Ctrl+click
+      if (!e.metaKey && !e.ctrlKey) return;
+
+      // Get click coordinates relative to SVG
+      const rect = this.svg.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+
+      // Convert from screen coordinates to page coordinates (PDF points)
+      // viewBox is "0 0 width height", display size is width*zoom x height*zoom
+      const x = clickX / this.zoom;
+      const y = clickY / this.zoom;
+
+      // Emit synctex backward event
+      if (this.onSyncTexClick) {
+        this.onSyncTexClick(this.currentPage, x, y);
+      }
+    });
   }
 
   /**
@@ -144,6 +169,17 @@ export class Viewer {
 
     if (this.onPageChange) {
       this.onPageChange(page, this.pageCount);
+    }
+
+    // Apply pending SyncTeX highlight if this is the target page
+    if (this.pendingHighlight && this.pendingHighlight.page === page) {
+      const { x, y } = this.pendingHighlight;
+      this.pendingHighlight = null;
+      // Delay slightly to ensure rendering is complete
+      setTimeout(() => {
+        this.scrollToCoordinates(x, y);
+        this.highlightPosition(x, y);
+      }, 50);
     }
 
     return suffixCommands;
@@ -262,4 +298,80 @@ export class Viewer {
   // Accessors for Renderer
   getDefs() { return this.defs; }
   getContentGroup() { return this.contentGroup; }
+
+  /**
+   * Scroll to a specific position in the document (for forward SyncTeX)
+   * @param {number} page - Page number (0-indexed)
+   * @param {number} x - X coordinate in PDF points
+   * @param {number} y - Y coordinate in PDF points
+   */
+  scrollToPosition(page, x, y) {
+    // If we need to change pages, set a pending highlight to apply after render
+    if (page !== this.currentPage) {
+      // Store pending highlight - will be applied in endPage()
+      this.pendingHighlight = { page, x, y };
+
+      // Request the page change - this will trigger a re-render
+      this.currentPage = page;
+      if (this.onPageChange) {
+        this.onPageChange(page, this.pageCount);
+      }
+      // The actual scroll and highlight happen in endPage() after rendering
+    } else {
+      // Same page - scroll and highlight immediately
+      this.scrollToCoordinates(x, y);
+      this.highlightPosition(x, y);
+    }
+  }
+
+  /**
+   * Scroll the container to center on given coordinates
+   * @param {number} x - X coordinate in PDF points
+   * @param {number} y - Y coordinate in PDF points
+   */
+  scrollToCoordinates(x, y) {
+    // Convert page coordinates to screen coordinates
+    const screenX = x * this.zoom;
+    const screenY = y * this.zoom;
+
+    // Scroll to center on position (with some offset to show context)
+    const targetScrollX = Math.max(0, screenX - this.container.clientWidth / 2);
+    const targetScrollY = Math.max(0, screenY - this.container.clientHeight / 2);
+
+    this.container.scrollLeft = targetScrollX;
+    this.container.scrollTop = targetScrollY;
+  }
+
+  /**
+   * Show a brief visual highlight at a position (for SyncTeX forward result)
+   * @param {number} x - X coordinate in PDF points
+   * @param {number} y - Y coordinate in PDF points
+   */
+  highlightPosition(x, y) {
+    // Create a temporary highlight circle
+    const highlight = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    highlight.setAttribute('cx', x);
+    highlight.setAttribute('cy', y);
+    highlight.setAttribute('r', '10');
+    highlight.setAttribute('fill', 'rgba(255, 200, 0, 0.6)');
+    highlight.setAttribute('stroke', 'orange');
+    highlight.setAttribute('stroke-width', '2');
+    highlight.style.pointerEvents = 'none';
+
+    this.contentGroup.appendChild(highlight);
+
+    // Animate and remove after a short delay
+    let opacity = 0.6;
+    const fadeInterval = setInterval(() => {
+      opacity -= 0.1;
+      if (opacity <= 0) {
+        clearInterval(fadeInterval);
+        if (highlight.parentNode) {
+          highlight.parentNode.removeChild(highlight);
+        }
+      } else {
+        highlight.setAttribute('fill', `rgba(255, 200, 0, ${opacity})`);
+      }
+    }, 100);
+  }
 }

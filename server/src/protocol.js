@@ -183,8 +183,39 @@ export function fromSExpression(sexp) {
         landscape: args[1] > args[2]
       };
 
+    case 'synctex':
+      // ["synctex", "path", line, column] - backward sync result from editor_synctex()
+      return {
+        type: 'synctex.result',
+        direction: 'backward',
+        locations: [{
+          file: args[0],
+          line: args[1],
+          column: args[2],
+          x: 0,
+          y: 0,
+          page: 0
+        }]
+      };
+
+    case 'synctex-forward-result':
+      // ["synctex-forward-result", page, x, y] - forward sync result from headless
+      return {
+        type: 'synctex.result',
+        direction: 'forward',
+        locations: [{
+          file: '',
+          line: 0,
+          column: 0,
+          x: args[1],
+          y: args[2],
+          page: args[0]
+        }]
+      };
+
     case 'synctex-result':
       // ["synctex-result", "forward"|"backward", [[file, line, col, x, y, page], ...]]
+      // (kept for compatibility, though not currently used)
       return {
         type: 'synctex.result',
         direction: args[0],

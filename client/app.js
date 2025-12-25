@@ -65,6 +65,14 @@ viewer.onReRender = (page, commands, dimensions) => {
   renderer.replayCommands(page, commands, dimensions);
 };
 
+// SyncTeX backward sync - click on PDF to find source
+viewer.onSyncTexClick = (page, x, y) => {
+  if (client.isConnected()) {
+    console.log(`SyncTeX backward: page ${page}, (${x.toFixed(1)}, ${y.toFixed(1)})`);
+    client.syncTexBackward(x, y, page);
+  }
+};
+
 // Update UI with WebSocket URL
 elements.wsUrl.textContent = WS_URL;
 
@@ -150,6 +158,26 @@ client.on('render', (data) => {
   renderer.processCommand(data.command);
 });
 
+client.on('synctex.result', (data) => {
+  console.log('SyncTeX result:', data.direction, data.locations);
+
+  if (data.locations && data.locations.length > 0) {
+    const loc = data.locations[0];
+
+    if (data.direction === 'forward') {
+      // Forward sync: scroll viewer to the PDF location
+      viewer.scrollToPosition(loc.page, loc.x, loc.y);
+      log.info(`SyncTeX: jumped to page ${loc.page + 1}`);
+    } else if (data.direction === 'backward') {
+      // Backward sync: jump to source location in editor
+      // TODO: When we switch to Monaco/CodeMirror, use proper line navigation
+      // For now with textarea, we do a simple scroll-to-line
+      goToLine(loc.line, loc.column);
+      log.info(`SyncTeX: ${loc.file}:${loc.line}`);
+    }
+  }
+});
+
 client.on('message', (data) => {
   // Catch-all for other message types
   console.log('Received message:', data.type, data);
@@ -183,6 +211,16 @@ editor.on('change', (changes) => {
 elements.editor.addEventListener('selectionchange', updateCursorPosition);
 elements.editor.addEventListener('keyup', updateCursorPosition);
 elements.editor.addEventListener('click', updateCursorPosition);
+
+// SyncTeX forward sync - Cmd+Click (Mac) or Ctrl+Click (Windows/Linux) in editor
+elements.editor.addEventListener('click', (e) => {
+  // metaKey = Command on Mac, ctrlKey = Ctrl on Windows/Linux
+  if ((e.metaKey || e.ctrlKey) && client.isConnected()) {
+    const pos = getCursorLineColumn();
+    console.log(`SyncTeX forward: ${DOCUMENT_NAME}:${pos.line}:${pos.column}`);
+    client.syncTexForward(DOCUMENT_NAME, pos.line, pos.column);
+  }
+});
 
 // ============================================================================
 // Button Handlers
@@ -297,14 +335,66 @@ function updateStats() {
 }
 
 function updateCursorPosition() {
-  const editor = elements.editor;
-  const pos = editor.selectionStart;
-  const text = editor.value.substring(0, pos);
+  const editorEl = elements.editor;
+  const pos = editorEl.selectionStart;
+  const text = editorEl.value.substring(0, pos);
   const lines = text.split('\n');
   const line = lines.length;
   const col = lines[lines.length - 1].length + 1;
 
   elements.cursorPos.textContent = `Line ${line}, Col ${col}`;
+}
+
+/**
+ * Jump to a specific line in the editor (for SyncTeX backward results)
+ * TODO: Replace with proper Monaco/CodeMirror API when we upgrade
+ * @param {number} line - 1-indexed line number
+ * @param {number} column - 1-indexed column number
+ */
+function goToLine(line, column) {
+  const editorEl = elements.editor;
+  const text = editorEl.value;
+  const lines = text.split('\n');
+
+  // Calculate character offset for the target line
+  let offset = 0;
+  for (let i = 0; i < Math.min(line - 1, lines.length); i++) {
+    offset += lines[i].length + 1; // +1 for newline
+  }
+  offset += Math.min(column - 1, (lines[line - 1] || '').length);
+
+  // Set cursor position and scroll into view
+  editorEl.focus();
+  editorEl.setSelectionRange(offset, offset);
+
+  // Scroll the line into view - approximate by calculating scroll position
+  // This is a rough approximation since textarea doesn't expose line height
+  const lineHeight = 20; // Approximate line height in pixels
+  const targetScroll = Math.max(0, (line - 5) * lineHeight); // Show some context above
+  editorEl.scrollTop = targetScroll;
+
+  // Highlight the line briefly (flash effect)
+  // TODO: With Monaco/CodeMirror we can do proper line highlighting
+  editorEl.style.transition = 'background-color 0.2s';
+  editorEl.style.backgroundColor = 'rgba(255, 200, 0, 0.3)';
+  setTimeout(() => {
+    editorEl.style.backgroundColor = '';
+  }, 300);
+}
+
+/**
+ * Get current cursor position (line, column) from textarea
+ * @returns {{line: number, column: number}}
+ */
+function getCursorLineColumn() {
+  const editorEl = elements.editor;
+  const pos = editorEl.selectionStart;
+  const text = editorEl.value.substring(0, pos);
+  const lines = text.split('\n');
+  return {
+    line: lines.length,
+    column: lines[lines.length - 1].length + 1
+  };
 }
 
 // ============================================================================

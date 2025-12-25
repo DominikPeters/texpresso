@@ -267,6 +267,16 @@ export class Session {
           break;
 
         case 'synctex.forward':
+          // Convert path to absolute for synctex forward
+          const forwardSexp = toSExpression({
+            ...msg,
+            path: this.toAbsolutePath(msg.path)
+          });
+          if (forwardSexp) {
+            this.sendSExpression(forwardSexp);
+          }
+          break;
+
         case 'synctex.backward':
         case 'config.theme':
         case 'render.request':

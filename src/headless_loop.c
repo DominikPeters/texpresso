@@ -246,6 +246,35 @@ static void interpret_command(struct persistent_state *ps,
       break;
     }
 
+    case EDIT_SYNCTEX_BACKWARD:
+    {
+      fprintf(stderr, "[headless] synctex backward: page %d at (%.1f, %.1f)\n",
+              ecmd->synctex_backward.page, ecmd->synctex_backward.x, ecmd->synctex_backward.y);
+
+      fz_buffer *buf;
+      synctex_t *stx = send(synctex, hs->eng, &buf);
+      if (stx && buf)
+      {
+        // Convert PDF coordinates to DVI coordinates (same as GUI in main.c:263)
+        float f = 1.0f / send(scale_factor, hs->eng);
+        float x = f * ecmd->synctex_backward.x;
+        float y = f * ecmd->synctex_backward.y;
+
+        fprintf(stderr, "[headless] synctex backward: scaled coords (%.1f, %.1f), scale_factor=%.3f\n",
+                x, y, 1.0f/f);
+
+        // synctex_scan calls editor_synctex() which outputs ["synctex", "path", line, column]
+        synctex_scan(ps->ctx, stx, buf, ps->doc_path,
+                     ecmd->synctex_backward.page, x, y);
+        fflush(stdout);
+      }
+      else
+      {
+        fprintf(stderr, "[headless] synctex backward: no synctex data available\n");
+      }
+      break;
+    }
+
     case EDIT_RESCAN:
       fprintf(stderr, "[headless] rescan filesystem\n");
       events->need_scan = true;
@@ -437,8 +466,13 @@ bool headless_loop_run(struct persistent_state *ps)
       int page = -1, x = -1, y = -1;
       if (synctex_find_target(ps->ctx, stx, buf, &page, &x, &y))
       {
-        fprintf(stderr, "[headless] synctex forward: hit page %d, coordinates (%d, %d)\n",
-                page, x, y);
+        // Convert synctex coordinates (scaled points) to PDF points
+        float f = send(scale_factor, eng);
+        float pdf_x = f * x;
+        float pdf_y = f * y;
+
+        fprintf(stderr, "[headless] synctex forward: hit page %d, coords (%d, %d) -> PDF (%.1f, %.1f)\n",
+                page, x, y, pdf_x, pdf_y);
 
         if (page != hs.page)
         {
@@ -446,10 +480,10 @@ bool headless_loop_run(struct persistent_state *ps)
           events.need_reload = true;
         }
 
-        // Output synctex result
+        // Output synctex forward result in S-expression format with PDF coordinates
         // (In GUI this would scroll the view; here we just report it)
-        fprintf(stdout, "{\"type\":\"synctex\",\"page\":%d,\"x\":%d,\"y\":%d}\n",
-                page, x, y);
+        fprintf(stdout, "[\"synctex-forward-result\", %d, %.1f, %.1f]\n",
+                page, pdf_x, pdf_y);
         fflush(stdout);
       }
     }
