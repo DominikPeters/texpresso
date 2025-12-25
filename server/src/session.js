@@ -41,6 +41,14 @@ export class Session {
     // Working directory for path resolution
     this.workingDir = null;
 
+    // Render command diffing state
+    // Maps page number -> array of commands from last render
+    this.prevPageCommands = new Map();
+    // Buffer for current page being rendered
+    this.currentPageBuffer = null;
+    this.currentPageNum = null;
+    this.currentPageMeta = null; // {width, height}
+
     // Initialization tracking
     this.initializationState = 'not_started'; // not_started, waiting_first_compile, waiting_open, done
     this.pendingInitDocument = null;
@@ -168,11 +176,9 @@ export class Session {
         msg = parsed;
       } else if (parsed.cmd) {
         // Rendering command from TeXpresso (beginPage, fillText, etc.)
-        // Wrap it in a render message type for the client
-        msg = {
-          type: 'render',
-          command: parsed
-        };
+        // Handle render command diffing
+        this.handleRenderCommand(parsed);
+        return; // Don't forward directly - handleRenderCommand manages sending
       } else {
         this.log(`Unknown message format: ${line.substring(0, 100)}`);
         return;
@@ -518,6 +524,111 @@ export class Session {
   log(message) {
     const shortId = this.sessionId.split('-')[0];
     console.log(`[${shortId}] ${message}`);
+  }
+
+  /**
+   * Handle render commands with prefix/suffix diffing
+   * @param {Object} cmd - Render command from TeXpresso
+   */
+  handleRenderCommand(cmd) {
+    if (cmd.cmd === 'beginPage') {
+      // Start buffering commands for this page
+      this.currentPageNum = cmd.page;
+      this.currentPageBuffer = [];
+      this.currentPageMeta = { width: cmd.width, height: cmd.height };
+      // Don't send beginPage yet - we'll send it with diff info at endPage
+    } else if (cmd.cmd === 'endPage') {
+      // Compute diff and send
+      this.sendPageWithDiff();
+    } else if (this.currentPageBuffer !== null) {
+      // Buffer visual commands
+      this.currentPageBuffer.push(cmd);
+    } else {
+      // No page context, send directly (shouldn't happen in normal flow)
+      this.sendToClient({ type: 'render', command: cmd });
+    }
+  }
+
+  /**
+   * Compute prefix/suffix diff and send page to client
+   */
+  sendPageWithDiff() {
+    const page = this.currentPageNum;
+    const newCommands = this.currentPageBuffer;
+    const prevCommands = this.prevPageCommands.get(page) || [];
+    const meta = this.currentPageMeta;
+
+    // Compute matching prefix length
+    let prefixCount = 0;
+    const minLen = Math.min(newCommands.length, prevCommands.length);
+    while (prefixCount < minLen &&
+           this.commandsEqual(newCommands[prefixCount], prevCommands[prefixCount])) {
+      prefixCount++;
+    }
+
+    // Compute matching suffix length (don't overlap with prefix)
+    let suffixCount = 0;
+    const maxSuffix = Math.min(newCommands.length, prevCommands.length) - prefixCount;
+    while (suffixCount < maxSuffix &&
+           this.commandsEqual(
+             newCommands[newCommands.length - 1 - suffixCount],
+             prevCommands[prevCommands.length - 1 - suffixCount]
+           )) {
+      suffixCount++;
+    }
+
+    // Send beginPage with replayPrefix
+    const beginPageCmd = {
+      cmd: 'beginPage',
+      page: page,
+      width: meta.width,
+      height: meta.height
+    };
+    if (prefixCount > 0) {
+      beginPageCmd.replayPrefix = prefixCount;
+    }
+    this.sendToClient({ type: 'render', command: beginPageCmd });
+
+    // Send only the middle commands (between prefix and suffix)
+    const middleStart = prefixCount;
+    const middleEnd = newCommands.length - suffixCount;
+    for (let i = middleStart; i < middleEnd; i++) {
+      this.sendToClient({ type: 'render', command: newCommands[i] });
+    }
+
+    // Send endPage with replaySuffix
+    const endPageCmd = { cmd: 'endPage', page: page };
+    if (suffixCount > 0) {
+      endPageCmd.replaySuffix = suffixCount;
+    }
+    this.sendToClient({ type: 'render', command: endPageCmd });
+
+    // Log diff stats
+    const totalNew = newCommands.length;
+    const sentCount = middleEnd - middleStart;
+    if (prevCommands.length > 0) {
+      this.log(`[DIFF] Page ${page}: ${totalNew} total, sent ${sentCount} (prefix=${prefixCount}, suffix=${suffixCount})`);
+    }
+
+    // Store current commands for next diff
+    this.prevPageCommands.set(page, newCommands);
+
+    // Clear buffer state
+    this.currentPageBuffer = null;
+    this.currentPageNum = null;
+    this.currentPageMeta = null;
+  }
+
+  /**
+   * Compare two render commands for equality
+   * @param {Object} a - First command
+   * @param {Object} b - Second command
+   * @returns {boolean}
+   */
+  commandsEqual(a, b) {
+    // Deep equality via JSON serialization
+    // This is simple and correct; could optimize if needed
+    return JSON.stringify(a) === JSON.stringify(b);
   }
 
   /**

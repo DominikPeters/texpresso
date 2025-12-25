@@ -66,14 +66,30 @@ export class Renderer {
 
     if (cmd.cmd === 'beginPage') {
       // Initialize page rendering - headless always sends the current page
-      this.viewer.beginPage(cmd.page, cmd.width, cmd.height);
+      const replayPrefix = cmd.replayPrefix || 0;
+      const prefixCommands = this.viewer.beginPage(cmd.page, cmd.width, cmd.height, replayPrefix);
+
       this.isRendering = true;
       this.currentGroup = this.viewer.getContentGroup();
       this.groupStack = [];
       this.clipStack = [];
       this.layerStack = [];
+
+      // Replay prefix commands from cache
+      for (const prefixCmd of prefixCommands) {
+        this.viewer.storeCommand(prefixCmd);
+        this.executeVisualCommand(prefixCmd);
+      }
     } else if (cmd.cmd === 'endPage') {
-      this.viewer.endPage(cmd.page);
+      // Replay suffix commands from cache
+      const replaySuffix = cmd.replaySuffix || 0;
+      const suffixCommands = this.viewer.endPage(cmd.page, replaySuffix);
+
+      for (const suffixCmd of suffixCommands) {
+        this.viewer.storeCommand(suffixCmd);
+        this.executeVisualCommand(suffixCmd);
+      }
+
       this.isRendering = false; // Stop rendering until next beginPage
     } else if (this.isRendering) {
       this.executeVisualCommand(cmd);
@@ -239,6 +255,63 @@ export class Renderer {
   }
 
   /**
+   * Map numeric line cap/join values to SVG strings
+   */
+  mapLineCap(lineCap) {
+    if (lineCap === undefined || lineCap === null) return undefined;
+    if (typeof lineCap === 'string') return lineCap;
+    const caps = ['butt', 'round', 'square'];
+    return caps[lineCap] || 'butt';
+  }
+
+  mapLineJoin(lineJoin) {
+    if (lineJoin === undefined || lineJoin === null) return undefined;
+    if (typeof lineJoin === 'string') return lineJoin;
+    const joins = ['miter', 'round', 'bevel'];
+    return joins[lineJoin] || 'miter';
+  }
+
+  applyStrokeStyle(element, cmd) {
+    if (cmd.lineWidth !== undefined) {
+      element.setAttribute('stroke-width', cmd.lineWidth);
+    }
+    if (cmd.lineCap !== undefined) {
+      element.setAttribute('stroke-linecap', this.mapLineCap(cmd.lineCap));
+    }
+    if (cmd.lineJoin !== undefined) {
+      element.setAttribute('stroke-linejoin', this.mapLineJoin(cmd.lineJoin));
+    }
+    if (cmd.miterLimit !== undefined) {
+      element.setAttribute('stroke-miterlimit', cmd.miterLimit);
+    }
+    if (cmd.dashArray && cmd.dashArray.length > 0) {
+      element.setAttribute('stroke-dasharray', cmd.dashArray.join(','));
+      if (cmd.dashPhase !== undefined) {
+        element.setAttribute('stroke-dashoffset', cmd.dashPhase);
+      }
+    }
+  }
+
+  applyMaskBounds(mask, bounds) {
+    mask.setAttribute('maskUnits', 'userSpaceOnUse');
+    mask.setAttribute('maskContentUnits', 'userSpaceOnUse');
+
+    if (Array.isArray(bounds) && bounds.length === 4) {
+      const [x0, y0, x1, y1] = bounds;
+      mask.setAttribute('x', x0);
+      mask.setAttribute('y', y0);
+      mask.setAttribute('width', x1 - x0);
+      mask.setAttribute('height', y1 - y0);
+      return;
+    }
+
+    mask.setAttribute('x', 0);
+    mask.setAttribute('y', 0);
+    mask.setAttribute('width', this.viewer.pageWidth);
+    mask.setAttribute('height', this.viewer.pageHeight);
+  }
+
+  /**
    * Convert matrix array to SVG transform string
    */
   matrixToString(m) {
@@ -304,12 +377,9 @@ export class Renderer {
 
     const alpha = cmd.alpha !== undefined ? cmd.alpha : 1.0;
     path.setAttribute('stroke', this.colorToCSS(cmd.color, alpha));
-    path.setAttribute('stroke-width', cmd.lineWidth || 1.0);
     path.setAttribute('fill', 'none');
 
-    if (cmd.lineCap) path.setAttribute('stroke-linecap', cmd.lineCap);
-    if (cmd.lineJoin) path.setAttribute('stroke-linejoin', cmd.lineJoin);
-    if (cmd.miterLimit) path.setAttribute('stroke-miterlimit', cmd.miterLimit);
+    this.applyStrokeStyle(path, cmd);
 
     if (cmd.matrix) {
       path.setAttribute('transform', this.matrixToString(cmd.matrix));
@@ -329,12 +399,18 @@ export class Renderer {
     // Create clipPath element in defs
     const clipPathEl = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
     clipPathEl.setAttribute('id', clipId);
+    clipPathEl.setAttribute('clipPathUnits', 'userSpaceOnUse');
+    clipPathEl.setAttribute('clipPathUnits', 'userSpaceOnUse');
 
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.setAttribute('d', this.buildPathData(cmd.path));
 
     if (cmd.fillRule === 'evenodd') {
-      clipPathEl.setAttribute('clip-rule', 'evenodd');
+      path.setAttribute('clip-rule', 'evenodd');
+    }
+
+    if (cmd.matrix) {
+      path.setAttribute('transform', this.matrixToString(cmd.matrix));
     }
 
     clipPathEl.appendChild(path);
@@ -364,7 +440,7 @@ export class Renderer {
     // Create mask with black background (transparent) and white stroke (opaque)
     const mask = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
     mask.setAttribute('id', maskId);
-    mask.setAttribute('maskUnits', 'userSpaceOnUse');
+    this.applyMaskBounds(mask);
 
     // Black background covering the page (hides everything)
     const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -380,26 +456,7 @@ export class Renderer {
     path.setAttribute('d', this.buildPathData(cmd.path));
     path.setAttribute('fill', 'none');
     path.setAttribute('stroke', 'white');
-    path.setAttribute('stroke-width', cmd.lineWidth || 1.0);
-
-    // Apply stroke properties
-    if (cmd.lineCap !== undefined) {
-      const caps = ['butt', 'round', 'square'];
-      path.setAttribute('stroke-linecap', caps[cmd.lineCap] || 'butt');
-    }
-    if (cmd.lineJoin !== undefined) {
-      const joins = ['miter', 'round', 'bevel'];
-      path.setAttribute('stroke-linejoin', joins[cmd.lineJoin] || 'miter');
-    }
-    if (cmd.miterLimit) {
-      path.setAttribute('stroke-miterlimit', cmd.miterLimit);
-    }
-    if (cmd.dashArray && cmd.dashArray.length > 0) {
-      path.setAttribute('stroke-dasharray', cmd.dashArray.join(','));
-      if (cmd.dashPhase) {
-        path.setAttribute('stroke-dashoffset', cmd.dashPhase);
-      }
-    }
+    this.applyStrokeStyle(path, cmd);
 
     if (cmd.matrix) {
       path.setAttribute('transform', this.matrixToString(cmd.matrix));
@@ -524,8 +581,8 @@ export class Renderer {
 
     const g = this.buildTextGroup(cmd);
     g.setAttribute('stroke', color);
-    g.setAttribute('stroke-width', cmd.lineWidth || 1.0);
     g.setAttribute('fill', 'none');
+    this.applyStrokeStyle(g, cmd);
 
     this.currentGroup.appendChild(g);
   }
@@ -540,6 +597,7 @@ export class Renderer {
 
     const clipPathEl = document.createElementNS('http://www.w3.org/2000/svg', 'clipPath');
     clipPathEl.setAttribute('id', clipId);
+    clipPathEl.setAttribute('clipPathUnits', 'userSpaceOnUse');
 
     const textGroup = this.buildTextGroup(cmd);
     clipPathEl.appendChild(textGroup);
@@ -569,7 +627,7 @@ export class Renderer {
     // Create mask with black background and white stroked text
     const mask = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
     mask.setAttribute('id', maskId);
-    mask.setAttribute('maskUnits', 'userSpaceOnUse');
+    this.applyMaskBounds(mask);
 
     // Black background covering the page
     const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -584,7 +642,7 @@ export class Renderer {
     const textGroup = this.buildTextGroup(cmd);
     textGroup.setAttribute('fill', 'none');
     textGroup.setAttribute('stroke', 'white');
-    textGroup.setAttribute('stroke-width', cmd.lineWidth || 1.0);
+    this.applyStrokeStyle(textGroup, cmd);
 
     mask.appendChild(textGroup);
     this.viewer.getDefs().appendChild(mask);
@@ -608,6 +666,8 @@ export class Renderer {
   // - Have the server serve images via HTTP endpoint
   // - Fetch images via WebSocket and use data: URLs
   // - Use a client-side file system abstraction
+  // TODO: Image masks currently rely on SVG luminance/alpha masking. PDF stencil
+  // semantics (hard clip vs soft mask, polarity) are not fully reproduced.
   // ============================================================================
 
   /**
@@ -626,8 +686,9 @@ export class Renderer {
       return;
     }
 
-    image.setAttribute('width', cmd.width || 1);
-    image.setAttribute('height', cmd.height || 1);
+    const hasMatrix = !!cmd.matrix;
+    image.setAttribute('width', hasMatrix ? 1 : (cmd.width || 1));
+    image.setAttribute('height', hasMatrix ? 1 : (cmd.height || 1));
 
     // Apply transform matrix
     if (cmd.matrix) {
@@ -658,6 +719,7 @@ export class Renderer {
     // Create mask element
     const mask = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
     mask.setAttribute('id', maskId);
+    this.applyMaskBounds(mask);
 
     // Add image to mask
     const maskImage = document.createElementNS('http://www.w3.org/2000/svg', 'image');
@@ -668,9 +730,14 @@ export class Renderer {
       console.warn(`[Renderer] fillImageMask: no filename, imageId=${cmd.imageId}`);
       return;
     }
-    maskImage.setAttribute('width', cmd.width || 1);
-    maskImage.setAttribute('height', cmd.height || 1);
+    const hasMatrix = !!cmd.matrix;
+    maskImage.setAttribute('width', hasMatrix ? 1 : (cmd.width || 1));
+    maskImage.setAttribute('height', hasMatrix ? 1 : (cmd.height || 1));
     maskImage.setAttribute('preserveAspectRatio', 'none');
+
+    if (cmd.matrix) {
+      maskImage.setAttribute('transform', this.matrixToString(cmd.matrix));
+    }
 
     mask.appendChild(maskImage);
     this.viewer.getDefs().appendChild(mask);
@@ -679,8 +746,8 @@ export class Renderer {
     const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
     rect.setAttribute('x', '0');
     rect.setAttribute('y', '0');
-    rect.setAttribute('width', cmd.width || 1);
-    rect.setAttribute('height', cmd.height || 1);
+    rect.setAttribute('width', hasMatrix ? 1 : (cmd.width || 1));
+    rect.setAttribute('height', hasMatrix ? 1 : (cmd.height || 1));
 
     const alpha = cmd.alpha !== undefined ? cmd.alpha : 1.0;
     rect.setAttribute('fill', this.colorToCSS(cmd.color, alpha));
@@ -706,6 +773,7 @@ export class Renderer {
 
     const mask = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
     mask.setAttribute('id', maskId);
+    this.applyMaskBounds(mask);
 
     const maskImage = document.createElementNS('http://www.w3.org/2000/svg', 'image');
     // TODO: Same filename assumption as fillImage
@@ -715,8 +783,9 @@ export class Renderer {
       console.warn(`[Renderer] clipImageMask: no filename, imageId=${cmd.imageId}`);
       return;
     }
-    maskImage.setAttribute('width', cmd.width || 1);
-    maskImage.setAttribute('height', cmd.height || 1);
+    const hasMatrix = !!cmd.matrix;
+    maskImage.setAttribute('width', hasMatrix ? 1 : (cmd.width || 1));
+    maskImage.setAttribute('height', hasMatrix ? 1 : (cmd.height || 1));
     maskImage.setAttribute('preserveAspectRatio', 'none');
 
     if (cmd.matrix) {
@@ -738,35 +807,105 @@ export class Renderer {
   // ============================================================================
   // Shading/Gradients
   //
-  // TODO: NOT IMPLEMENTED. This is a placeholder that shows a visual indicator.
-  //
-  // To implement properly:
-  // - Linear gradients: Create <linearGradient> with stop colors from cmd
-  // - Radial gradients: Create <radialGradient> with stop colors from cmd
-  // - Mesh gradients: No direct SVG equivalent; would need to triangulate and
-  //   approximate with many small gradient-filled paths, or use canvas fallback
+  // Linear/radial gradients are mapped to SVG gradients. Mesh gradients still
+  // need a triangulation or canvas fallback.
+  // TODO: Honor non-extend behavior (extend=false) by clipping to bounds.
+  // TODO: Support mesh/function shadings beyond linear/radial.
   // ============================================================================
 
   /**
-   * Fill with gradient (not implemented - logs error and shows placeholder)
+   * Fill with gradient
    */
   fillShade(cmd) {
-    const shadeType = cmd.shadeType || 'unknown';
-    console.error(`[Renderer] fillShade not implemented (type: ${shadeType})`);
+    const shadeType = cmd.type || cmd.shadeType || 'unknown';
+    const coords = cmd.coords || [];
+    const stops = cmd.stops || [];
 
-    // Draw a placeholder rect to show something is there
-    if (cmd.bounds) {
-      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      rect.setAttribute('x', cmd.bounds.x0 || 0);
-      rect.setAttribute('y', cmd.bounds.y0 || 0);
-      rect.setAttribute('width', (cmd.bounds.x1 || 100) - (cmd.bounds.x0 || 0));
-      rect.setAttribute('height', (cmd.bounds.y1 || 100) - (cmd.bounds.y0 || 0));
-      rect.setAttribute('fill', 'rgba(200, 200, 200, 0.5)');
-      rect.setAttribute('stroke', 'red');
-      rect.setAttribute('stroke-width', '1');
-      rect.setAttribute('stroke-dasharray', '4,4');
-      this.currentGroup.appendChild(rect);
+    let gradient;
+    if (shadeType === 'linear' && coords.length >= 4) {
+      gradient = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+      gradient.setAttribute('x1', coords[0]);
+      gradient.setAttribute('y1', coords[1]);
+      gradient.setAttribute('x2', coords[2]);
+      gradient.setAttribute('y2', coords[3]);
+    } else if (shadeType === 'radial' && coords.length >= 6) {
+      gradient = document.createElementNS('http://www.w3.org/2000/svg', 'radialGradient');
+      gradient.setAttribute('cx', coords[3]);
+      gradient.setAttribute('cy', coords[4]);
+      gradient.setAttribute('r', coords[5]);
+      gradient.setAttribute('fx', coords[0]);
+      gradient.setAttribute('fy', coords[1]);
+      if (coords[2] > 0) {
+        gradient.setAttribute('fr', coords[2]);
+      }
+    } else {
+      console.warn(`[Renderer] fillShade unsupported type: ${shadeType}`);
+      return;
     }
+
+    const gradientId = this.generateId('shade');
+    gradient.setAttribute('id', gradientId);
+    gradient.setAttribute('gradientUnits', 'userSpaceOnUse');
+
+    if (cmd.matrix) {
+      gradient.setAttribute('gradientTransform', this.matrixToString(cmd.matrix));
+    }
+
+    if (Array.isArray(cmd.extend) && cmd.extend.length === 2) {
+      if (cmd.extend[0] || cmd.extend[1]) {
+        gradient.setAttribute('spreadMethod', 'pad');
+      }
+    }
+
+    if (stops.length > 0) {
+      for (const stop of stops) {
+        const stopEl = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+        const t = typeof stop.t === 'number' ? stop.t : 0;
+        stopEl.setAttribute('offset', `${Math.max(0, Math.min(1, t)) * 100}%`);
+        stopEl.setAttribute('stop-color', this.colorToCSS(stop.color || [0, 0, 0]));
+        gradient.appendChild(stopEl);
+      }
+    }
+
+    this.viewer.getDefs().appendChild(gradient);
+
+    let bounds = null;
+    if (Array.isArray(cmd.bbox) && cmd.bbox.length === 4) {
+      bounds = cmd.bbox;
+    } else if (Array.isArray(cmd.bounds) && cmd.bounds.length === 4) {
+      bounds = cmd.bounds;
+    }
+
+    const x0 = bounds ? bounds[0] : 0;
+    const y0 = bounds ? bounds[1] : 0;
+    const x1 = bounds ? bounds[2] : this.viewer.pageWidth;
+    const y1 = bounds ? bounds[3] : this.viewer.pageHeight;
+
+    if (cmd.background) {
+      const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      bg.setAttribute('x', x0);
+      bg.setAttribute('y', y0);
+      bg.setAttribute('width', x1 - x0);
+      bg.setAttribute('height', y1 - y0);
+      bg.setAttribute('fill', this.colorToCSS(cmd.background));
+      if (cmd.alpha !== undefined && cmd.alpha < 1.0) {
+        bg.setAttribute('opacity', cmd.alpha);
+      }
+      this.currentGroup.appendChild(bg);
+    }
+
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', x0);
+    rect.setAttribute('y', y0);
+    rect.setAttribute('width', x1 - x0);
+    rect.setAttribute('height', y1 - y0);
+    rect.setAttribute('fill', `url(#${gradientId})`);
+
+    if (cmd.alpha !== undefined && cmd.alpha < 1.0) {
+      rect.setAttribute('opacity', cmd.alpha);
+    }
+
+    this.currentGroup.appendChild(rect);
   }
 
   // ============================================================================
@@ -777,6 +916,7 @@ export class Renderer {
   // - Knockout groups (knockout flag) - affects how overlapping objects composite
   // - Non-isolated groups with backdrop interaction
   // - Alpha source flag
+  // TODO: Blend mode mapping is approximate; some PDF modes have no SVG/CSS match.
   // ============================================================================
 
   /**
@@ -840,7 +980,9 @@ export class Renderer {
   // - Backdrop color (BC) - color to composite against
   // - Transfer function (TR) - remaps mask values
   // - Subtype (Alpha vs Luminosity) - how mask values are derived
-  // Currently we just use SVG's default luminance-based masking.
+  // We set mask-type when provided, but other properties are not modeled.
+  // TODO: Apply backdrop color and transfer function if provided by the command.
+  // TODO: Ensure mask bounds match PDF soft mask bbox semantics in all cases.
   // ============================================================================
 
   /**
@@ -851,6 +993,10 @@ export class Renderer {
 
     const mask = document.createElementNS('http://www.w3.org/2000/svg', 'mask');
     mask.setAttribute('id', maskId);
+    this.applyMaskBounds(mask, cmd.bounds);
+    if (cmd.luminosity !== undefined) {
+      mask.setAttribute('mask-type', cmd.luminosity ? 'luminance' : 'alpha');
+    }
 
     // TODO: Handle mask subtype (Alpha vs Luminosity) via mask-type CSS property
     // TODO: Handle backdrop color and transfer function if provided in cmd
@@ -902,6 +1048,7 @@ export class Renderer {
   // - A way for fillPath commands to reference pattern IDs
   // - Auto-applying the pattern to the next fill after endTile
   // - Extending the protocol to include pattern references in fill commands
+  // TODO: Pattern opacity/alpha and color space handling not implemented.
   // ============================================================================
 
   /**

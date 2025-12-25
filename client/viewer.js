@@ -40,9 +40,11 @@ export class Viewer {
     this.onZoomChange = null;
     this.onReRender = null; // Still useful if we need to completely rebuild
     
-    // We still store commands to support page switching/re-rendering if needed
+    // Page command cache with LRU eviction
     this.pageBuffers = new Map();
     this.pageDimensions = new Map();
+    this.maxCachedPages = 5;
+    this.previousBuffer = null; // Temporary storage during page render
 
     // Trackpad zoom handler
     this.container.addEventListener('wheel', (e) => {
@@ -87,16 +89,19 @@ export class Viewer {
    * @param {number} page - Page number (0-indexed)
    * @param {number} width - Page width in points
    * @param {number} height - Page height in points
+   * @param {number} [replayPrefix] - Number of commands to replay from previous buffer
+   * @returns {Object[]} Previous commands if replayPrefix > 0, empty array otherwise
    */
-  beginPage(page, width, height) {
+  beginPage(page, width, height, replayPrefix = 0) {
     this.currentPage = page;
     this.pageWidth = width;
     this.pageHeight = height;
 
-    // Store metadata
-    if (!this.pageBuffers.has(page)) {
-      this.pageBuffers.set(page, []);
-    }
+    // Save previous buffer for replay, then reset
+    const previousBuffer = this.pageBuffers.get(page) || [];
+    this.pageBuffers.set(page, []);
+    this.previousBuffer = previousBuffer; // Keep for suffix replay in endPage
+
     if (!this.pageDimensions) {
       this.pageDimensions = new Map();
     }
@@ -107,25 +112,61 @@ export class Viewer {
     this.updateZoom();
 
     // Clear content group for the new page
-    // Note: We keep <defs> populated as glyphs might be shared across pages? 
-    // Actually, usually glyphs are defined per page or per document. 
-    // If the server sends them incrementally, we should keep them.
-    // But if 'beginPage' implies a full refresh, we might want to clear content.
-    // For now, let's clear the content group.
     while (this.contentGroup.firstChild) {
       this.contentGroup.removeChild(this.contentGroup.firstChild);
     }
-    
-    // Reset any state if necessary
+
+    // Return prefix commands to replay
+    if (replayPrefix > 0 && previousBuffer.length >= replayPrefix) {
+      return previousBuffer.slice(0, replayPrefix);
+    }
+    return [];
   }
 
   /**
    * Called when page rendering is complete
    * @param {number} page
+   * @param {number} [replaySuffix] - Number of commands to replay from previous buffer's end
+   * @returns {Object[]} Suffix commands if replaySuffix > 0, empty array otherwise
    */
-  endPage(page) {
+  endPage(page, replaySuffix = 0) {
+    // Get suffix commands from previous buffer
+    let suffixCommands = [];
+    if (replaySuffix > 0 && this.previousBuffer && this.previousBuffer.length >= replaySuffix) {
+      suffixCommands = this.previousBuffer.slice(-replaySuffix);
+    }
+
+    // Clear previous buffer reference
+    this.previousBuffer = null;
+
+    // Enforce LRU cache limit
+    this.enforcePageCacheLimit(page);
+
     if (this.onPageChange) {
       this.onPageChange(page, this.pageCount);
+    }
+
+    return suffixCommands;
+  }
+
+  /**
+   * Enforce LRU limit on page cache, keeping the current page
+   * @param {number} currentPage - Page to never evict
+   */
+  enforcePageCacheLimit(currentPage) {
+    // Move current page to end of Map (most recently used)
+    if (this.pageBuffers.has(currentPage)) {
+      const buffer = this.pageBuffers.get(currentPage);
+      this.pageBuffers.delete(currentPage);
+      this.pageBuffers.set(currentPage, buffer);
+    }
+
+    // Evict oldest pages until under limit
+    while (this.pageBuffers.size > this.maxCachedPages) {
+      const oldestPage = this.pageBuffers.keys().next().value;
+      if (oldestPage === currentPage) break; // Safety: don't evict current
+      this.pageBuffers.delete(oldestPage);
+      this.pageDimensions.delete(oldestPage);
     }
   }
 
