@@ -61,12 +61,13 @@ export class Renderer {
   processCommand(cmd) {
     // Store non-page commands in buffer for re-rendering if needed
     if (cmd.cmd !== 'beginPage' && cmd.cmd !== 'endPage') {
-      this.viewer.storeStreamCommand(cmd);
+      this.viewer.storeCommand(cmd);
     }
 
     if (cmd.cmd === 'beginPage') {
-      // Check if we should render this page (is it the active one?)
-      this.isRendering = this.viewer.beginStreamPage(cmd.page, cmd.width, cmd.height);
+      // Initialize page rendering - headless always sends the current page
+      this.viewer.beginPage(cmd.page, cmd.width, cmd.height);
+      this.isRendering = true;
       this.currentGroup = this.viewer.getContentGroup();
       this.groupStack = [];
       this.clipStack = [];
@@ -190,8 +191,8 @@ export class Renderer {
    * @param {object} dimensions - {width, height}
    */
   replayCommands(page, commands, dimensions) {
-    // Re-initialize the view
-    this.viewer.setupSvgForPage(dimensions.width, dimensions.height);
+    // Re-initialize the view using beginPage (handles SVG setup and clearing)
+    this.viewer.beginPage(page, dimensions.width, dimensions.height);
     this.currentGroup = this.viewer.getContentGroup();
     this.groupStack = [];
     this.clipStack = [];

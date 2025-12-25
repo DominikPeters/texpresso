@@ -31,7 +31,7 @@ export class Session {
     this.vfs = new Map();
 
     // State
-    this.currentPage = 1;
+    this.currentPage = 0;  // 0-indexed to match headless backend and client
     this.pageCount = 0;
     this.state = 'initializing'; // initializing, ready, compiling, error
 
@@ -40,6 +40,10 @@ export class Session {
 
     // Working directory for path resolution
     this.workingDir = null;
+
+    // Initialization tracking
+    this.initializationState = 'not_started'; // not_started, waiting_first_compile, waiting_open, done
+    this.pendingInitDocument = null;
   }
 
   /**
@@ -116,20 +120,11 @@ export class Session {
         });
       });
 
-      // Send initial document using S-expression
-      // Use absolute path since TeXpresso's relative_path() requires it
-      const initSexp = toSExpression({
-        type: 'init',
-        document: {
-          name: this.toAbsolutePath(document.name),
-          content: document.content
-        }
-      });
-      if (initSexp) {
-        this.sendSExpression(initSexp);
-      }
+      // Store the document for later - we'll send it after the first compilation
+      this.pendingInitDocument = document;
+      this.initializationState = 'waiting_first_compile';
 
-      this.log('Process started successfully');
+      this.log('Process started successfully, waiting for initial compilation');
 
     } catch (err) {
       this.log(`Failed to start process: ${err.message}`);
@@ -144,6 +139,17 @@ export class Session {
   handleStdout(line) {
     try {
       const parsed = JSON.parse(line);
+
+      // Log timing for render commands
+      if (parsed.cmd === 'beginPage') {
+        this.log(`[TIMING] Received beginPage from TeXpresso at ${Date.now()}`);
+      } else if (parsed.cmd === 'endPage') {
+        this.log(`[TIMING] Received endPage from TeXpresso at ${Date.now()}`);
+      } else if (parsed.type === 'status') {
+        this.log(`[TIMING] Received status=${parsed.state} from TeXpresso at ${Date.now()}`);
+      } else if (parsed.type === 'render.version') {
+        this.log(`[TIMING] Received render.version=${parsed.version} from TeXpresso at ${Date.now()}`);
+      }
 
       // Translate S-expression to WebSocket JSON (if needed)
       let msg;
@@ -177,6 +183,9 @@ export class Session {
         this.pageCount = msg.count;
       } else if (msg.type === 'status') {
         this.state = msg.state;
+
+        // Handle initialization sequence
+        this.handleInitializationState(msg);
       }
 
       // Forward to WebSocket client
@@ -243,11 +252,11 @@ export class Session {
           this.handleFileClose(msg);
           break;
 
-        case 'nav.goto':
-          this.currentPage = msg.page;
-          const gotoSexp = toSExpression(msg);
-          if (gotoSexp) {
-            this.sendSExpression(gotoSexp);
+        case 'nav.next':
+        case 'nav.prev':
+          const navSexp = toSExpression(msg);
+          if (navSexp) {
+            this.sendSExpression(navSexp);
           }
           break;
 
@@ -315,7 +324,8 @@ export class Session {
       return;
     }
 
-    this.log(`File changed (change-range): ${msg.path} (${msg.startLine}:${msg.startCol} - ${msg.endLine}:${msg.endCol})`);
+    this.log(`[TIMING] Received change-range from client at ${Date.now()}`);
+    this.log(`File changed (change-range): ${msg.path} (${msg.startLine}:${msg.startCol} - ${msg.endLine}:${msg.endCol}) text="${msg.text}"`);
 
     // Apply change to VFS
     // Convert line/col to byte offsets
@@ -464,6 +474,40 @@ export class Session {
       this.ws.send(JSON.stringify(msg));
     } else {
       this.log(`Cannot send to client: WebSocket not open (state=${this.ws.readyState})`);
+    }
+  }
+
+  /**
+   * Handle initialization state machine
+   * @param {Object} msg - Status message
+   */
+  handleInitializationState(msg) {
+    if (this.initializationState === 'done') {
+      return; // Already initialized
+    }
+
+    if (this.initializationState === 'waiting_first_compile' && msg.state === 'ready') {
+      // First compilation finished, now send the 'open' command with VFS content
+      this.log('Initial compilation complete, sending open command with VFS content');
+
+      const initSexp = toSExpression({
+        type: 'init',
+        document: {
+          name: this.toAbsolutePath(this.pendingInitDocument.name),
+          content: this.pendingInitDocument.content
+        }
+      });
+
+      if (initSexp) {
+        this.sendSExpression(initSexp);
+      }
+
+      this.initializationState = 'waiting_open';
+    } else if (this.initializationState === 'waiting_open' && msg.state === 'ready') {
+      // Second compilation finished, now we're truly ready
+      this.log('VFS open compilation complete, initialization done');
+      this.initializationState = 'done';
+      this.pendingInitDocument = null;
     }
   }
 

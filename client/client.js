@@ -148,13 +148,19 @@ export class TeXpressoClient {
   }
 
   /**
-   * Navigate to a page
+   * Go to next page
    */
-  gotoPage(page) {
-    return this.send({
-      type: 'nav.goto',
-      page
-    });
+  nextPage() {
+    console.log('[Client] Sending nav.next');
+    return this.send({ type: 'nav.next' });
+  }
+
+  /**
+   * Go to previous page
+   */
+  prevPage() {
+    console.log('[Client] Sending nav.prev');
+    return this.send({ type: 'nav.prev' });
   }
 
   /**

@@ -56,9 +56,13 @@ export function toSExpression(msg) {
       // (synctex-backward page x y)
       return ['synctex-backward', msg.page, msg.x, msg.y];
 
-    case 'nav.goto':
-      // (goto-page page)
-      return ['goto-page', msg.page];
+    case 'nav.next':
+      // (next-page)
+      return ['next-page'];
+
+    case 'nav.prev':
+      // (previous-page)
+      return ['previous-page'];
 
     case 'config.theme':
       // (set-theme bg-r bg-g bg-b fg-r fg-g fg-b)

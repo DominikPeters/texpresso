@@ -9,6 +9,7 @@ export class LogViewer {
     this.container = element.parentElement; // The scrollable container
     this.lines = [];
     this.maxLines = 10000; // Limit to prevent memory issues
+    this.renderedCount = 0; // Track how many lines have been rendered
   }
 
   /**
@@ -19,19 +20,31 @@ export class LogViewer {
 
     // Split into lines if needed
     const newLines = text.split('\n');
+    const linesToAdd = [];
 
     for (const line of newLines) {
       if (line || newLines.length === 1) { // Keep empty lines only if it's a single line
-        this.lines.push({ text: line, level });
+        linesToAdd.push({ text: line, level });
       }
     }
 
+    this.lines.push(...linesToAdd);
+
     // Trim if too many lines
     if (this.lines.length > this.maxLines) {
-      this.lines = this.lines.slice(-this.maxLines);
+      const removeCount = this.lines.length - this.maxLines;
+      this.lines = this.lines.slice(removeCount);
+
+      // Remove old DOM elements
+      for (let i = 0; i < removeCount; i++) {
+        if (this.element.firstChild) {
+          this.element.removeChild(this.element.firstChild);
+        }
+      }
+      this.renderedCount -= removeCount;
     }
 
-    this.render();
+    this.renderNew();
   }
 
   /**
@@ -67,7 +80,8 @@ export class LogViewer {
    */
   clear() {
     this.lines = [];
-    this.render();
+    this.renderedCount = 0;
+    this.element.textContent = ''; // More efficient than innerHTML = ''
   }
 
   /**
@@ -78,23 +92,48 @@ export class LogViewer {
   }
 
   /**
-   * Render the log to the DOM
+   * Render only new lines to the DOM (incremental)
    */
-  render() {
-    // Build HTML with styled lines
-    const html = this.lines
-      .map(({ text, level }) => {
-        const className = level ? `log-${level}` : '';
-        // Escape HTML
-        const escaped = this.escapeHtml(text);
-        return className ? `<span class="${className}">${escaped}</span>` : escaped;
-      })
-      .join('\n');
+  renderNew() {
+    const newLineCount = this.lines.length - this.renderedCount;
+    if (newLineCount <= 0) return;
 
-    this.element.innerHTML = html;
+    // Create a document fragment for batch DOM insertion
+    const fragment = document.createDocumentFragment();
+
+    for (let i = this.renderedCount; i < this.lines.length; i++) {
+      const { text, level } = this.lines[i];
+
+      // Create span element for the line
+      const span = document.createElement('span');
+      span.textContent = text;
+      if (level) {
+        span.className = `log-${level}`;
+      }
+
+      fragment.appendChild(span);
+
+      // Add newline after each line (except possibly the last)
+      if (i < this.lines.length - 1) {
+        fragment.appendChild(document.createTextNode('\n'));
+      }
+    }
+
+    // Single DOM update
+    this.element.appendChild(fragment);
+    this.renderedCount = this.lines.length;
 
     // Auto-scroll to bottom
     this.scrollToBottom();
+  }
+
+  /**
+   * Full render (used when we need to rebuild everything)
+   */
+  render() {
+    this.renderedCount = 0;
+    this.element.textContent = '';
+    this.renderNew();
   }
 
   /**

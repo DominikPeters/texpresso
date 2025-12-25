@@ -51,7 +51,6 @@ typedef struct {
   int page;                    // Current page (for synctex)
   int need_synctex;            // Whether we need synctex data
   bool advancing;              // Whether we're currently advancing the engine
-  bool render_dirty;           // Set to true when content may have changed
 } headless_state;
 
 /* Event flags - mirrors custom_events from driver.h */
@@ -158,12 +157,6 @@ static void headless_synctex_callback(void *user_data, int page, int x, int y)
 static void render_page_to_json(struct persistent_state *ps, headless_state *hs)
 {
   int page_count = send(page_count, hs->eng);
-
-  // Only re-render if marked dirty (content may have changed)
-  if (!hs->render_dirty)
-    return;
-
-  hs->render_dirty = false;
 
   // Report page count so client knows document size (for navigation UI)
   fprintf(stdout, "{\"type\":\"doc.pageCount\",\"count\":%d}\n", page_count);
@@ -316,7 +309,6 @@ bool headless_loop_run(struct persistent_state *ps)
     .page = 0,
     .need_synctex = 1,
     .advancing = false,
-    .render_dirty = true,  // Force initial render
   };
 
   headless_events events = {
@@ -411,7 +403,6 @@ bool headless_loop_run(struct persistent_state *ps)
 
       send(step, eng, ps->ctx, true);
       events.need_reload = true;
-      hs.render_dirty = true;  // Mark for re-render
     }
 
     // ========== DOCUMENT PROCESSING ==========
@@ -476,7 +467,6 @@ bool headless_loop_run(struct persistent_state *ps)
       {
         send(step, eng, ps->ctx, true);
         events.need_reload = true;
-        hs.render_dirty = true;
       }
     }
 
@@ -500,10 +490,11 @@ bool headless_loop_run(struct persistent_state *ps)
       }
 
       // Send "ready" status after rendering is complete
-      // We report "ready" when we've rendered all available pages,
-      // regardless of DOC_RUNNING vs DOC_TERMINATED
-      // (DOC_RUNNING just means the TeX process is still alive for more edits)
-      fprintf(stdout, "{\"type\":\"status\",\"state\":\"ready\",\"pages\":%d}\n", page_count);
+      // Include whether document compilation is complete (DOC_TERMINATED)
+      // so client knows if there might be more pages available
+      bool doc_complete = (send(get_status, eng) == DOC_TERMINATED);
+      fprintf(stdout, "{\"type\":\"status\",\"state\":\"ready\",\"pages\":%d,\"complete\":%s}\n",
+              page_count, doc_complete ? "true" : "false");
       fflush(stdout);
     }
 

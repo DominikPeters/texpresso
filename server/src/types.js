@@ -68,9 +68,13 @@
  */
 
 /**
- * @typedef {Object} NavGotoMessage
- * @property {'nav.goto'} type
- * @property {number} page
+ * @typedef {Object} NavNextMessage
+ * @property {'nav.next'} type
+ */
+
+/**
+ * @typedef {Object} NavPrevMessage
+ * @property {'nav.prev'} type
  */
 
 /**
@@ -105,7 +109,7 @@
 
 /**
  * @typedef {InitMessage | CloseMessage | FileOpenMessage | FileChangeMessage |
- *           FileChangeRangeMessage | FileChangeLineMessage | FileCloseMessage | NavGotoMessage |
+ *           FileChangeRangeMessage | FileChangeLineMessage | FileCloseMessage | NavNextMessage | NavPrevMessage |
  *           SyncTexForwardMessage | SyncTexBackwardMessage | ConfigThemeMessage |
  *           RenderRequestMessage} ClientMessage
  */
@@ -119,6 +123,8 @@
  * @property {'status'} type
  * @property {'compiling' | 'ready' | 'error'} state
  * @property {number} [progress] - Optional, 0-1
+ * @property {number} [pages] - Number of pages compiled so far
+ * @property {boolean} [complete] - True if document compilation is complete (no more pages coming)
  */
 
 /**

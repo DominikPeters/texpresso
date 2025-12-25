@@ -45,12 +45,16 @@ const log = new LogViewer(elements.logOutput);
 const viewer = new Viewer(elements.viewerContainer);
 const renderer = new Renderer(viewer);
 
+// Track whether document compilation is complete (no more pages coming)
+let docComplete = false;
+
 // Set up viewer callbacks
 viewer.onPageChange = (currentPage, pageCount) => {
   elements.currentPage.textContent = currentPage + 1;
-  elements.totalPages.textContent = pageCount;
+  elements.totalPages.textContent = docComplete ? pageCount : `${pageCount}+`;
   elements.btnPrevPage.disabled = currentPage <= 0;
-  elements.btnNextPage.disabled = currentPage >= pageCount - 1;
+  // Only disable "next" if on last page AND document is complete (no more pages coming)
+  elements.btnNextPage.disabled = currentPage >= pageCount - 1 && docComplete;
 };
 
 viewer.onZoomChange = (zoom) => {
@@ -103,8 +107,15 @@ client.on('status', (data) => {
 
   if (data.state === 'compiling') {
     updateConnectionStatus('compiling', 'Compiling...');
+    docComplete = false;  // Reset when recompiling
   } else if (data.state === 'ready') {
     updateConnectionStatus('connected', 'Ready');
+    // Track document completion status
+    if (data.complete !== undefined) {
+      docComplete = data.complete;
+      // Update page display to reflect completion status
+      viewer.onPageChange(viewer.currentPage, viewer.pageCount);
+    }
   } else if (data.state === 'error') {
     updateConnectionStatus('disconnected', 'Error');
     log.error('Compilation error');
@@ -203,6 +214,21 @@ elements.btnZoomIn.addEventListener('click', () => {
 
 elements.btnZoomOut.addEventListener('click', () => {
   viewer.zoomOut();
+});
+
+// Page navigation
+elements.btnPrevPage.addEventListener('click', () => {
+  if (viewer.currentPage > 0) {
+    client.prevPage();
+  }
+});
+
+elements.btnNextPage.addEventListener('click', () => {
+  // Allow going to next page if not on last page, OR if document isn't complete yet
+  // (clicking "next" will trigger compilation of more pages)
+  if (viewer.currentPage < viewer.pageCount - 1 || !docComplete) {
+    client.nextPage();
+  }
 });
 
 // ============================================================================
