@@ -322,23 +322,26 @@ bool editor_parse(fz_context *ctx,
       goto arity;
     *out = (struct editor_command){.tag = EDIT_RERUN_ONCE, .rerun_once = {}};
   }
-  else if (strcmp(verb, "preview-render") == 0 || strcmp(verb, "preview-inverse") == 0)
+  else if (strcmp(verb, "preview-render") == 0 || strcmp(verb, "preview-region") == 0 || strcmp(verb, "preview-inverse") == 0)
   {
-    if (len != 6) goto arity;
-    double a[5];
-    for (int i = 0; i < 5; ++i)
+    bool region = strcmp(verb, "preview-region") == 0;
+    bool render = region || strcmp(verb, "preview-render") == 0;
+    if (len != (region ? 10 : 6)) goto arity;
+    double a[9] = {0};
+    for (int i = 0; i < len - 1; ++i)
     {
       val v = val_array_get(ctx, stack, command, i + 1);
       if (!val_is_number(v)) goto arguments;
       a[i] = val_number(ctx, v);
-      if (!isfinite(a[i]) || a[i] < 0 || a[i] > INT_MAX) goto arguments;
-      if ((strcmp(verb, "preview-render") == 0 || i < 3) && floor(a[i]) != a[i]) goto arguments;
+      if (!isfinite(a[i]) || fabs(a[i]) > INT_MAX || (i < 5 && a[i] < 0)) goto arguments;
+      if ((render ? i < 5 : i < 3) && floor(a[i]) != a[i]) goto arguments;
     }
-    if (strcmp(verb, "preview-render") == 0)
+    if (render)
     {
+      if (region && (a[7] <= a[5] || a[8] <= a[6])) goto arguments;
       if (a[2] < 1 || a[2] > 4096 || a[1] > 100000) goto arguments;
       *out = (struct editor_command){.tag = EDIT_PREVIEW_RENDER,
-        .preview_render = {a[0], a[1], a[2], a[3], a[4]}};
+        .preview_render = {a[0], a[1], a[2], a[3], a[4], region, {a[5], a[6], a[7], a[8]}}};
     }
     else
       *out = (struct editor_command){.tag = EDIT_PREVIEW_INVERSE,
@@ -600,11 +603,12 @@ void editor_flush(void)
   }
 }
 
-void editor_synctex(const char *dirname,
+void editor_synctex_word(const char *dirname,
                     const char *basename,
                     int basename_len,
                     int line,
-                    int column)
+                    int column,
+                    const char *word)
 {
   bool need_dir = basename[0] != '/';
   switch (protocol)
@@ -621,8 +625,22 @@ void editor_synctex(const char *dirname,
   switch (protocol)
   {
     case EDITOR_SEXP: fprintf(stdout, "\" %d %d)\n", line, column); break;
-    case EDITOR_JSON: fprintf(stdout, "\", %d, %d]\n", line, column); break;
+    case EDITOR_JSON:
+      fprintf(stdout, "\", %d, %d", line, column);
+      if (word)
+      {
+        fputs(",\"", stdout);
+        output_data_string(stdout, word, strlen(word));
+        fputc('"', stdout);
+      }
+      fputs("]\n", stdout);
+      break;
   }
+}
+
+void editor_synctex(const char *dirname, const char *basename, int basename_len, int line, int column)
+{
+  editor_synctex_word(dirname, basename, basename_len, line, column, NULL);
 }
 
 void editor_reset_sync(void)

@@ -944,6 +944,18 @@ bool txp_renderer_select_char(fz_context *ctx, txp_renderer *self, fz_point pt)
   return set_quads(ctx, self, &q, count);
 }
 
+char *txp_renderer_word_at(fz_context *ctx, txp_renderer *self, fz_point pt)
+{
+  fz_stext_page *page = get_stext(ctx, self);
+  if (!page) return NULL;
+  fz_point a = pt, b = pt;
+  fz_quad quad = fz_snap_selection(ctx, page, &a, &b, FZ_SELECT_WORDS);
+  if (point_to_rect_dist(pt, fz_rect_from_quad(quad)) > 3) return NULL;
+  char *word = fz_copy_selection(ctx, page, a, b, 0);
+  if (strlen(word) > 256) { fz_free(ctx, word); return NULL; }
+  return word;
+}
+
 bool txp_renderer_select_word(fz_context *ctx, txp_renderer *self, fz_point pt)
 {
   fz_stext_page *page = get_stext(ctx, self);

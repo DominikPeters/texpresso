@@ -2,7 +2,7 @@
 
 `texpresso -capabilities` prints a JSON object and exits before initializing SDL
 or opening a document. Current features are `previewProtocol: 1`, `codecs:
-["png"]`, and `synctex: true`. Existing editor clients and the default native
+["png"]`, `synctex: true`, and `regions: true`. Existing editor clients and the default native
 window are unchanged. This protocol is enabled only with `-headless -json`.
 Headless mode initializes SDL events/timers, never video/window/texture APIs.
 
@@ -15,10 +15,18 @@ Headless input additions are positional JSON arrays:
   request the zero-based page at the expected revision/source sequence. The
   newest pending request replaces an older one. Width is 1–4096; actual output
   is reduced to at most 4,000,000 pixels and 8192 pixels on either axis.
+* `["preview-region", requestId, page, pixelWidth, revision, sequence, x0, y0, x1, y1]`:
+  render a page-space rectangle, clipped to the page. Uses the same image response
+  and limits as `preview-render`; `bounds` describes the clipped rectangle.
+  Allocates only its pixel region and clips display-list replay to that area.
+  Clients must check the optional `regions` capability before using this command.
 * `["preview-inverse", revision, sequence, page, x, y]`: run native SyncTeX
   against the current snapshot. Coordinates are MuPDF page-space points.
   Stale snapshots are ignored. The existing `synctex` notification returns
-  the source location; a column of -1 means unavailable.
+  the source location; a column of -1 means unavailable. Headless inverse lookup
+  may append a fifth string field containing the clicked word, recovered from
+  the display list. Clients may use this to refine line-only locations. Unknown
+  glyph mappings or clicks away from text leave the field absent.
 
 Rendering demand uses the existing compiler stepping and convergence loop.
 Page count is provisional until the engine terminates its current pass. These
@@ -61,5 +69,5 @@ while a previous export is being delivered: compare the frame's sequence with
 the latest source sequence sent by the client. On process replacement, discard
 all prior state and identify the new session outside this per-process protocol.
 
-This initial backend exports full pages. Region clipping, SVG, hyperlink
-annotations, and shared glyph resources are separate extensions to the protocol.
+Full-page and clipped-region PNGs share one replaceable request slot. SVG,
+hyperlink annotations, and shared glyph resources remain future extensions.

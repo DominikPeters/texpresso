@@ -82,6 +82,8 @@ void txp_renderer_render(fz_context *ctx, txp_renderer *self);
 void txp_renderer_set_scale_factor(fz_context *ctx, txp_renderer *self, fz_point scale);
 bool txp_renderer_start_selection(fz_context *ctx, txp_renderer *self, fz_point pt);
 bool txp_renderer_drag_selection(fz_context *ctx, txp_renderer *self, fz_point pt);
+/* Caller owns the UTF-8 result. Does not change the current selection. */
+char *txp_renderer_word_at(fz_context *ctx, txp_renderer *self, fz_point pt);
 bool txp_renderer_select_word(fz_context *ctx, txp_renderer *self, fz_point pt);
 bool txp_renderer_select_char(fz_context *ctx, txp_renderer *self, fz_point pt);
 void txp_renderer_screen_size(fz_context *ctx, txp_renderer *self, int *w, int *h);

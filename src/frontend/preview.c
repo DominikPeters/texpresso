@@ -46,11 +46,18 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
 
   fz_pixmap *pix = NULL;
   fz_buffer *png = NULL;
+  fz_device *dev = NULL;
   fz_var(pix);
   fz_var(png);
+  fz_var(dev);
   fz_try(ctx)
   {
     fz_rect b = fz_bound_display_list(ctx, list);
+    if (p->region)
+    {
+      b = fz_intersect_rect(b, p->bounds);
+      if (fz_is_empty_rect(b)) fz_throw(ctx, FZ_ERROR_GENERIC, "Region is outside the page");
+    }
     float w = b.x1 - b.x0, h = b.y1 - b.y0;
     if (!isfinite(w) || !isfinite(h) || w < 0.01f || h < 0.01f || w > 1e7f || h > 1e7f ||
         fabsf(b.x0) >= 1e9f || fabsf(b.y0) >= 1e9f || fabsf(b.x1) >= 1e9f || fabsf(b.y1) >= 1e9f)
@@ -60,7 +67,13 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     /* Leave room for outward rounding of the raster bounds. */
     scale *= 0.999f;
     fz_matrix ctm = fz_concat(fz_translate(-b.x0, -b.y0), fz_scale(scale, scale));
-    pix = fz_new_pixmap_from_display_list(ctx, list, ctm, fz_device_rgb(ctx), 0);
+    /* Allocate only the clipped region, never a full page at loupe resolution. */
+    fz_irect bbox = fz_round_rect(fz_transform_rect(b, ctm));
+    pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), bbox, NULL, 0);
+    fz_clear_pixmap_with_value(ctx, pix, 255);
+    dev = fz_new_draw_device(ctx, fz_identity, pix);
+    fz_run_display_list(ctx, list, dev, ctm, fz_rect_from_irect(bbox), NULL);
+    fz_close_device(ctx, dev);
     txp_renderer_colorize_rgb(ctx, renderer, pix);
     png = fz_new_buffer_from_pixmap_as_png(ctx, pix, fz_default_color_params);
     unsigned char *data;
@@ -79,6 +92,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
   }
   fz_always(ctx)
   {
+    fz_drop_device(ctx, dev);
     fz_drop_buffer(ctx, png);
     fz_drop_pixmap(ctx, pix);
   }

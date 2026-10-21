@@ -676,13 +676,14 @@ static int get_input(fz_buffer *buf,
   return (fend - filename);
 }
 
-void synctex_scan(fz_context *ctx,
+void synctex_scan_word(fz_context *ctx,
                   synctex_t *stx,
                   fz_buffer *buf,
                   const char *doc_dir,
                   unsigned page,
                   int x,
-                  int y)
+                  int y,
+                  const char *word)
 {
   if (synctex_page_count(stx) <= page)
     return;
@@ -706,8 +707,14 @@ void synctex_scan(fz_context *ctx,
             c.rect.x0, c.rect.y0, c.rect.x1, c.rect.y1,
             len, fname,
             c.link.line, c.link.column);
-    editor_synctex(doc_dir, fname, len, c.link.line, c.link.column);
+    editor_synctex_word(doc_dir, fname, len, c.link.line, c.link.column, word);
   }
+}
+
+void synctex_scan(fz_context *ctx, synctex_t *stx, fz_buffer *buf,
+                  const char *doc_dir, unsigned page, int x, int y)
+{
+  synctex_scan_word(ctx, stx, buf, doc_dir, page, x, y, NULL);
 }
 
 void synctex_set_target(synctex_t *stx, int current_page, const char *path, int line)

@@ -8,7 +8,8 @@
 /* One current display-list snapshot and one replaceable render request. */
 typedef struct {
   int revision, sequence;
-  bool valid, pending;
+  bool valid, pending, region;
+  fz_rect bounds;
   int request, page, width, expected_revision, expected_sequence;
   int last_count, last_page, last_revision, last_sequence, last_complete;
 } txp_preview;

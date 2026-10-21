@@ -1162,6 +1162,9 @@ static void interpret_command(struct persistent_state *ps,
         p->request = cmd.preview_render.request;
         p->page = cmd.preview_render.page;
         p->width = cmd.preview_render.width;
+        p->region = cmd.preview_render.region;
+        float *bounds = cmd.preview_render.bounds;
+        p->bounds = (fz_rect){bounds[0], bounds[1], bounds[2], bounds[3]};
         p->expected_revision = cmd.preview_render.revision;
         p->expected_sequence = cmd.preview_render.sequence;
         if (p->page != ui->page)
@@ -1184,8 +1187,19 @@ static void interpret_command(struct persistent_state *ps,
         synctex_t *stx = send(synctex, ui->eng, &buf);
         float factor = send(scale_factor, ui->eng);
         if (stx && buf && factor > 0)
-          synctex_scan(ps->ctx, stx, buf, ps->doc_path, ui->page,
-                       cmd.preview_inverse.x / factor, cmd.preview_inverse.y / factor);
+        {
+          char *word = NULL;
+          fz_var(word);
+          fz_try(ps->ctx)
+          {
+            word = txp_renderer_word_at(ps->ctx, ui->doc_renderer,
+                       fz_make_point(cmd.preview_inverse.x, cmd.preview_inverse.y));
+          }
+          fz_catch(ps->ctx) { fprintf(stderr, "[preview] Could not extract clicked word\n"); }
+          synctex_scan_word(ps->ctx, stx, buf, ps->doc_path, ui->page,
+                       cmd.preview_inverse.x / factor, cmd.preview_inverse.y / factor, word);
+          fz_free(ps->ctx, word);
+        }
       }
       break;
 

@@ -234,7 +234,7 @@ int main(int argc, const char **argv)
 
   if (capabilities)
   {
-    puts("{\"previewProtocol\":1,\"codecs\":[\"png\"],\"synctex\":true}");
+    puts("{\"previewProtocol\":1,\"codecs\":[\"png\"],\"synctex\":true,\"regions\":true}");
     return 0;
   }
   if (headless && protocol != EDITOR_JSON)

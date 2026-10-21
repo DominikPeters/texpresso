@@ -140,7 +140,7 @@ struct editor_command
     struct {
     } rerun_once;
 
-    struct { int request, page, width, revision, sequence; } preview_render;
+    struct { int request, page, width, revision, sequence; bool region; float bounds[4]; } preview_render;
     struct { int revision, sequence, page; float x, y; } preview_inverse;
     struct { int sequence; } preview_barrier;
   };
@@ -162,6 +162,7 @@ enum EDITOR_INFO_BUFFER
 void editor_append(enum EDITOR_INFO_BUFFER name, fz_buffer *buf, int pos);
 void editor_truncate(enum EDITOR_INFO_BUFFER name, fz_buffer *buf);
 void editor_flush(void);
+void editor_synctex_word(const char *dirname, const char *basename, int basename_len, int line, int column, const char *word);
 void editor_synctex(const char *dirname, const char *basename, int basename_len, int line, int column);
 void editor_reset_sync(void);
 void editor_notify_file_opened(int index, const char *path, int len);

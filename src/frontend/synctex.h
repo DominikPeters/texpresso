@@ -38,6 +38,7 @@ int synctex_page_count(synctex_t *stx);
 int synctex_input_count(synctex_t *stx);
 void synctex_page_offset(fz_context *ctx, synctex_t *stx, unsigned index, int *bop, int *eop);
 int synctex_input_offset(fz_context *ctx, synctex_t *stx, unsigned index);
+void synctex_scan_word(fz_context *ctx, synctex_t *stx, fz_buffer *buf, const char *doc_dir, unsigned page, int x, int y, const char *word);
 void synctex_scan(fz_context *ctx, synctex_t *stx, fz_buffer *buf, const char *doc_dir, unsigned page, int x, int y);
 
 int synctex_has_target(synctex_t *stx);

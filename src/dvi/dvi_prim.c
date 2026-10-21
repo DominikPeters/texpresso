@@ -351,7 +351,12 @@ void dvi_exec_xdvglyphs(fz_context *ctx, dvi_context *dc, dvi_state *st, fixed_t
         int32_t v = dy ? sv + dy[i].value : sv;
         fz_matrix ctm =
             fz_pre_scale(fz_pre_translate(st->gs.ctm, h * ds, -v * ds), fs, fs);
-        fz_show_glyph(ctx, text, font, ctm, glyphs[i], 0, 0, 0, FZ_BIDI_LTR,
+        /* XDV supplies glyph IDs, not Unicode. Preserve recoverable text for
+         * selection and inverse SyncTeX instead of marking every glyph NUL. */
+        char name[128] = {0};
+        fz_get_glyph_name(ctx, font, glyphs[i], name, sizeof name);
+        int unicode = fz_unicode_from_glyph_name_strict(name);
+        fz_show_glyph(ctx, text, font, ctm, glyphs[i], unicode > 0 ? unicode : 0, 0, 0, FZ_BIDI_LTR,
                       FZ_LANG_UNSET);
       }
     }
