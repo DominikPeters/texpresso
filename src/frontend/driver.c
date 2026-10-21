@@ -106,7 +106,7 @@ static void usage(void)
 {
   fprintf(stderr,
           "Usage: texpresso [-I path]* [-json] [-lines] [-texlive] [-tectonic] "
-          "[-test-initialize] [-stream] root_file.tex\n");
+          "[-test-initialize] [-stream] [-headless] root_file.tex\n");
   fprintf(stderr,
           " -I path    Add a path to included directories. \n"
           "    Files are looked up relative to document directory and all "
@@ -125,6 +125,9 @@ static void usage(void)
           " -test-initialize  Run a single cycle for test purposes\n");
   fprintf(stderr,
           " -stream   Skip filesystem lookups; files are pushed via editor commands\n");
+  fprintf(stderr,
+          " -headless Export preview images over stdout (requires -json)\n"
+          " -capabilities Print supported preview features as JSON and exit\n");
 }
 
 int main(int argc, const char **argv)
@@ -158,6 +161,8 @@ int main(int argc, const char **argv)
   bool use_texlive = 0;
   bool initialize_only = 0;
   bool stream_mode = 0;
+  bool headless = 0;
+  bool capabilities = 0;
 
   int inclusion_path_size = 1;
   for (int i = 1; i < argc; i++)
@@ -170,6 +175,10 @@ int main(int argc, const char **argv)
       {
         protocol = EDITOR_JSON;
       }
+      else if (strcmp(arg, "-headless") == 0)
+        headless = 1;
+      else if (strcmp(arg, "-capabilities") == 0)
+        capabilities = 1;
       else if (strcmp(arg, "-I") == 0)
       {
         i += 1;
@@ -221,6 +230,17 @@ int main(int argc, const char **argv)
             doc_arg, arg);
     usage();
     exit(1);
+  }
+
+  if (capabilities)
+  {
+    puts("{\"previewProtocol\":1,\"codecs\":[\"png\"],\"synctex\":true}");
+    return 0;
+  }
+  if (headless && protocol != EDITOR_JSON)
+  {
+    fprintf(stderr, "[error] -headless requires -json\n");
+    return 1;
   }
 
   if (doc_arg == NULL)
@@ -289,7 +309,7 @@ int main(int argc, const char **argv)
   bool init = 0;
 
   //Initialize SDL
-  if (init == 0 && SDL_Init(SDL_INIT_VIDEO) < 0)
+  if (init == 0 && SDL_Init(headless ? (SDL_INIT_EVENTS | SDL_INIT_TIMER) : SDL_INIT_VIDEO) < 0)
   {
     fprintf(stderr, "SDL could not initialize! SDL_Error: %s\n", SDL_GetError());
     abort();
@@ -306,32 +326,36 @@ int main(int argc, const char **argv)
   SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
 #endif
 
-  SDL_Window *window;
-  window = SDL_CreateWindow(window_title,
-    SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-    700, 900,
-    SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE
-  );
-
-  if (window == NULL)
+  SDL_Window *window = NULL;
+  SDL_Renderer *renderer = NULL;
+  if (!headless)
   {
-    fprintf(stderr, "Window could not be created! SDL_Error: %s\n", SDL_GetError() );
-    abort();
-  }
+    window = SDL_CreateWindow(window_title,
+      SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
+      700, 900,
+      SDL_WINDOW_SHOWN | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE
+    );
 
-  SDL_Surface *logo = texpresso_logo();
-  fprintf(stderr, "texpresso logo: %dx%d\n", logo->w, logo->h);
+    if (window == NULL)
+    {
+      fprintf(stderr, "Window could not be created! SDL_Error: %s\n", SDL_GetError() );
+      abort();
+    }
+
+    SDL_Surface *logo = texpresso_logo();
+    fprintf(stderr, "texpresso logo: %dx%d\n", logo->w, logo->h);
 #ifndef __APPLE__
-  // SDL_SetWindowIcon on macOS calls [NSApp setApplicationIconImage:]
-  // which scales the image to fill the Dock cell, ignoring transparent
-  // padding. On macOS we rely on the .app bundle's AppIcon.icns instead
-  // (see scripts/build-macos-app.sh).
-  SDL_SetWindowIcon(window, logo);
+    // SDL_SetWindowIcon on macOS calls [NSApp setApplicationIconImage:]
+    // which scales the image to fill the Dock cell, ignoring transparent
+    // padding. On macOS we rely on the .app bundle's AppIcon.icns instead
+    // (see scripts/build-macos-app.sh).
+    SDL_SetWindowIcon(window, logo);
 #endif
-  SDL_FreeSurface(logo);
+    SDL_FreeSurface(logo);
 
-  SDL_Renderer *renderer;
-  renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE);
+    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE);
+    if (!renderer) { fprintf(stderr, "SDL renderer: %s\n", SDL_GetError()); return 1; }
+  }
 
   struct persistent_state pstate = {
       .initial = {0,},
@@ -352,6 +376,7 @@ int main(int argc, const char **argv)
       .use_texlive = use_texlive,
       .initialize_only = initialize_only,
       .stream_mode = stream_mode,
+      .headless = headless,
       // In stream mode, start paused: editor primes the VFS before (resume).
       .paused = stream_mode,
       .rerun_enabled = false,
@@ -371,8 +396,8 @@ int main(int argc, const char **argv)
       ;
   }
 
-  SDL_DestroyRenderer(renderer);
-  SDL_DestroyWindow(window);
+  if (renderer) SDL_DestroyRenderer(renderer);
+  if (window) SDL_DestroyWindow(window);
   SDL_Quit();
   fz_drop_context(ctx);
 

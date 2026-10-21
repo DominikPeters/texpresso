@@ -39,6 +39,7 @@
 #include "prot_parser.h"
 #include "editor.h"
 #include "base64.h"
+#include "preview.h"
 
 struct persistent_state *pstate;
 
@@ -114,6 +115,7 @@ typedef struct {
   uint32_t last_click_ticks;
   enum ui_mouse_status mouse_status;
   bool advancing;
+  txp_preview preview;
 } ui_state;
 
 /* UI rendering */
@@ -125,6 +127,7 @@ static float zoom_factor(int count)
 
 static void render(fz_context *ctx, ui_state *ui)
 {
+  if (!ui->window) return;
   SDL_SetRenderDrawColor(ui->sdl_renderer, 0, 0, 0, 255);
   SDL_RenderClear(ui->sdl_renderer);
   txp_renderer_render(ctx, ui->doc_renderer);
@@ -922,6 +925,7 @@ static void display_page(struct persistent_state *ps, ui_state *ui)
   fz_display_list *dl = send(render_page, ui->eng, ps->ctx, ui->page);
   txp_renderer_set_contents(ps->ctx, ui->doc_renderer, dl);
   fz_drop_display_list(ps->ctx, dl);
+  if (ps->headless) ui->preview.valid = true;
   schedule_event(RENDER_EVENT);
 }
 
@@ -972,6 +976,10 @@ static void interpret_command(struct persistent_state *ps,
   if (!editor_parse(ps->ctx, stack, command, &cmd))
     return;
 
+  if (ps->headless && (cmd.tag == EDIT_OPEN || cmd.tag == EDIT_CLOSE ||
+      cmd.tag == EDIT_CHANGE || cmd.tag == EDIT_RESCAN || cmd.tag == EDIT_RERUN_ONCE))
+    txp_preview_invalidate(&ui->preview);
+
   switch (cmd.tag)
   {
     case EDIT_OPEN:
@@ -1004,6 +1012,11 @@ static void interpret_command(struct persistent_state *ps,
 
     case EDIT_THEME:
     {
+      if (ps->headless)
+      {
+        txp_preview_invalidate(&ui->preview);
+        ui->preview.valid = txp_renderer_get_contents(ps->ctx, ui->doc_renderer) != NULL;
+      }
       txp_renderer_config *config =
           txp_renderer_get_config(ps->ctx, ui->doc_renderer);
       config->background_color = convert_color(ps->ctx, stack, cmd.theme.bg);
@@ -1025,6 +1038,7 @@ static void interpret_command(struct persistent_state *ps,
 
     case EDIT_MOVE_WINDOW:
     {
+      if (ps->headless) break;
       float x = cmd.move_window.x, y = cmd.move_window.y,
             w = cmd.move_window.w, h = cmd.move_window.h;
       int x0 = x, y0 = y;
@@ -1038,6 +1052,7 @@ static void interpret_command(struct persistent_state *ps,
 
     case EDIT_MAP_WINDOW:
     {
+      if (ps->headless) break;
       float x = cmd.move_window.x, y = cmd.move_window.y,
             w = cmd.move_window.w, h = cmd.move_window.h;
       int x0 = x, y0 = y;
@@ -1053,6 +1068,7 @@ static void interpret_command(struct persistent_state *ps,
 
     case EDIT_UNMAP_WINDOW:
     {
+      if (ps->headless) break;
       if (!(SDL_GetWindowFlags(ui->window) & SDL_WINDOW_INPUT_FOCUS))
         SDL_SetWindowBordered(ui->window, SDL_TRUE);
       SDL_SetWindowAlwaysOnTop(ui->window, SDL_FALSE);
@@ -1065,6 +1081,7 @@ static void interpret_command(struct persistent_state *ps,
       break;
 
     case EDIT_STAY_ON_TOP:
+      if (ps->headless) break;
       SDL_SetWindowAlwaysOnTop(ui->window, cmd.stay_on_top.status);
       fprintf(stderr, "[command] stay-on-top %d\n", cmd.stay_on_top.status);
       break;
@@ -1129,6 +1146,49 @@ static void interpret_command(struct persistent_state *ps,
               ps->rerun_enabled ? "enabled" : "disabled");
       break;
 
+    case EDIT_PREVIEW_BARRIER:
+      if (ps->headless)
+      {
+        flush_changes(ps, ui);
+        ui->preview.sequence = cmd.preview_barrier.sequence;
+      }
+      break;
+
+    case EDIT_PREVIEW_RENDER:
+      if (ps->headless)
+      {
+        txp_preview *p = &ui->preview;
+        p->pending = true;
+        p->request = cmd.preview_render.request;
+        p->page = cmd.preview_render.page;
+        p->width = cmd.preview_render.width;
+        p->expected_revision = cmd.preview_render.revision;
+        p->expected_sequence = cmd.preview_render.sequence;
+        if (p->page != ui->page)
+        {
+          ui->page = p->page;
+          p->valid = false;
+          synctex_set_target(send(synctex, ui->eng, NULL), 0, NULL, 0);
+          schedule_event(RELOAD_EVENT);
+        }
+      }
+      break;
+
+    case EDIT_PREVIEW_INVERSE:
+      if (ps->headless && ui->preview.valid &&
+          cmd.preview_inverse.revision == ui->preview.revision &&
+          cmd.preview_inverse.sequence == ui->preview.sequence &&
+          cmd.preview_inverse.page == ui->page)
+      {
+        fz_buffer *buf;
+        synctex_t *stx = send(synctex, ui->eng, &buf);
+        float factor = send(scale_factor, ui->eng);
+        if (stx && buf && factor > 0)
+          synctex_scan(ps->ctx, stx, buf, ps->doc_path, ui->page,
+                       cmd.preview_inverse.x / factor, cmd.preview_inverse.y / factor);
+      }
+      break;
+
     case EDIT_RERUN_ONCE:
       ps->rerun_once_pending = true;
       fprintf(stderr, "[command] rerun-once: pending immediate pass\n");
@@ -1173,10 +1233,11 @@ bool texpresso_main(struct persistent_state *ps)
 
   struct fullscreen_state fs = {
     .has_backup = false,
-    .prev_fs = (SDL_GetWindowFlags(ps->window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0,
+    .prev_fs = ps->window && (SDL_GetWindowFlags(ps->window) & SDL_WINDOW_FULLSCREEN_DESKTOP) != 0,
   };
 
-  ui_state raw_ui, *ui = &raw_ui;
+  ui_state raw_ui = {0}, *ui = &raw_ui;
+  txp_preview_init(&ui->preview);
 
   ui->window = ps->window;
 
@@ -1271,7 +1332,7 @@ bool texpresso_main(struct persistent_state *ps)
   schedule_event(RELOAD_EVENT);
 
   struct repaint_on_resize_env repaint_on_resize_env = {.ctx = ps->ctx, .ui = ui};
-  SDL_AddEventWatch(repaint_on_resize, &repaint_on_resize_env);
+  if (!ps->headless) SDL_AddEventWatch(repaint_on_resize, &repaint_on_resize_env);
 
   vstack *cmd_stack = vstack_new(ps->ctx);
   prot_parser cmd_parser;
@@ -1337,6 +1398,7 @@ bool texpresso_main(struct persistent_state *ps)
 
     if (send(end_changes, ui->eng, ps->ctx))
     {
+      if (ps->headless) txp_preview_invalidate(&ui->preview);
       if (!ps->paused)
         send(step, ui->eng, ps->ctx, true);
       schedule_event(RELOAD_EVENT);
@@ -1349,6 +1411,26 @@ bool texpresso_main(struct persistent_state *ps)
       bool advance = !ps->paused && advance_engine(ps->ctx, ui);
       send(finish_convergence, ui->eng, ps->ctx);
       int after_page_count = send(page_count, ui->eng);
+      if (ps->headless)
+      {
+        bool complete = send(get_status, ui->eng) == DOC_TERMINATED;
+        if (complete && ui->page >= after_page_count && after_page_count > 0)
+        {
+          ui->page = after_page_count - 1;
+          ui->preview.page = ui->page;
+          ui->preview.valid = false;
+          schedule_event(RELOAD_EVENT);
+        }
+        txp_preview_state(&ui->preview, after_page_count, ui->page, complete);
+        if (complete && after_page_count == 0 && ui->preview.pending)
+        {
+          printf("[\"preview-error\",%d,\"The document has not produced a page. Open Output for compiler messages.\"]\n", ui->preview.request);
+          ui->preview.pending = false;
+        }
+        txp_preview_export(ps->ctx, &ui->preview,
+                          txp_renderer_get_contents(ps->ctx, ui->doc_renderer), ui->page, ui->doc_renderer);
+        if (stdin_eof) quit = true;
+      }
       fflush(stdout);
 
       if (ui->page >= before_page_count && ui->page < after_page_count)
@@ -1363,11 +1445,13 @@ bool texpresso_main(struct persistent_state *ps)
       {
         ps->rerun_once_pending = false;
         fprintf(stderr, "[rerun] on-demand: finishing pass\n");
+        if (ps->headless) txp_preview_invalidate(&ui->preview);
         send(start_finishing, ui->eng);
         schedule_event(RELOAD_EVENT);
         continue;
       }
 
+      if (quit) break;
       if (!has_event)
       {
         if (advance)
@@ -1389,6 +1473,7 @@ bool texpresso_main(struct persistent_state *ps)
             rerun_count++;
             fprintf(stderr, "[rerun] idle %dms: finishing pass %d/%d\n",
                     T_IDLE_MS, rerun_count, MAX_RERUNS);
+            if (ps->headless) txp_preview_invalidate(&ui->preview);
             send(start_finishing, ui->eng);
             schedule_event(RELOAD_EVENT);
             continue;
@@ -1416,32 +1501,40 @@ bool texpresso_main(struct persistent_state *ps)
         // FIXME: Scroll to point
         float f = send(scale_factor, ui->eng);
         fz_point p = fz_make_point(f * x, f * y);
-        fz_point pt = txp_renderer_document_to_screen(ps->ctx, ui->doc_renderer, p);
-        fprintf(stderr, "[synctex forward] position on screen: (%.02f, %.02f)\n",
-                pt.x, pt.y);
-        int w, h;
-        txp_renderer_screen_size(ps->ctx, ui->doc_renderer, &w, &h);
-        float margin_lo = h / 4.0;
-        float margin_hi = h / 3.0;
+        if (ps->headless)
+        {
+          printf("[\"preview-forward\",%d,%d,%d,%.9g,%.9g]\n",
+                 ui->preview.revision, ui->preview.sequence, page, p.x, p.y);
+        }
+        else
+        {
+          fz_point pt = txp_renderer_document_to_screen(ps->ctx, ui->doc_renderer, p);
+          fprintf(stderr, "[synctex forward] position on screen: (%.02f, %.02f)\n",
+                  pt.x, pt.y);
+          int w, h;
+          txp_renderer_screen_size(ps->ctx, ui->doc_renderer, &w, &h);
+          float margin_lo = h / 4.0;
+          float margin_hi = h / 3.0;
 
-        txp_renderer_config *config =
-            txp_renderer_get_config(ps->ctx, ui->doc_renderer);
+          txp_renderer_config *config =
+              txp_renderer_get_config(ps->ctx, ui->doc_renderer);
 
-        float delta = 0.0;
-        if (pt.y < margin_lo)
-          delta = - pt.y + margin_hi;
-        else if (pt.y >= h - margin_lo)
-          delta = h - pt.y - margin_hi;
-        fprintf(stderr, "[synctex forward] pan.y = %.02f + %.02f = %.02f\n",
-                config->pan.y, delta, config->pan.y + delta);
-        config->pan.y += delta;
-        if (delta != 0.0)
-          schedule_event(RENDER_EVENT);
+          float delta = 0.0;
+          if (pt.y < margin_lo)
+            delta = - pt.y + margin_hi;
+          else if (pt.y >= h - margin_lo)
+            delta = h - pt.y - margin_hi;
+          fprintf(stderr, "[synctex forward] pan.y = %.02f + %.02f = %.02f\n",
+                  config->pan.y, delta, config->pan.y + delta);
+          config->pan.y += delta;
+          if (delta != 0.0)
+            schedule_event(RENDER_EVENT);
+        }
       }
     }
 
-    txp_renderer_set_scale_factor(ps->ctx, ui->doc_renderer,
-                                  get_scale_factor(ui->window));
+    if (!ps->headless)
+      txp_renderer_set_scale_factor(ps->ctx, ui->doc_renderer, get_scale_factor(ui->window));
     txp_renderer_config *config =
         txp_renderer_get_config(ps->ctx, ui->doc_renderer);
 
@@ -1652,6 +1745,7 @@ bool texpresso_main(struct persistent_state *ps)
           send(detect_changes, ui->eng, ps->ctx);
           if (send(end_changes, ui->eng, ps->ctx))
           {
+            if (ps->headless) txp_preview_invalidate(&ui->preview);
             if (!ps->paused)
               send(step, ui->eng, ps->ctx, true);
             schedule_event(RELOAD_EVENT);
@@ -1664,6 +1758,7 @@ bool texpresso_main(struct persistent_state *ps)
           flush_changes(ps, ui);
           if (send(end_changes, ui->eng, ps->ctx))
           {
+            if (ps->headless) txp_preview_invalidate(&ui->preview);
             if (!ps->paused)
               send(step, ui->eng, ps->ctx, true);
             schedule_event(RELOAD_EVENT);
@@ -1703,7 +1798,7 @@ bool texpresso_main(struct persistent_state *ps)
     close(poll_stdin_pipe[1]);
   }
 
-  SDL_DelEventWatch(repaint_on_resize, &repaint_on_resize_env);
+  if (!ps->headless) SDL_DelEventWatch(repaint_on_resize, &repaint_on_resize_env);
 
   if (ps->initial.initialized && ps->initial.display_list)
     fz_drop_display_list(ps->ctx, ps->initial.display_list);

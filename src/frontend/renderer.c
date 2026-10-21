@@ -317,7 +317,7 @@ static int fz_irect_area(fz_irect r)
 
 #define remap(v, bp, wp) (bp) + ((v) * (wp - bp)) / 255
 
-static void invert_pixmap(fz_context *ctx, fz_pixmap *pix, uint32_t black, uint32_t white)
+static void invert_pixmap(fz_context *ctx, fz_pixmap *pix, uint32_t black, uint32_t white, bool bgr)
 {
   uint8_t *data0 = fz_pixmap_samples(ctx, pix);
   int stride = fz_pixmap_stride(ctx, pix);
@@ -325,16 +325,13 @@ static void invert_pixmap(fz_context *ctx, fz_pixmap *pix, uint32_t black, uint3
   int height = fz_pixmap_height(ctx, pix);
 
   // 0x282c34
-  uint8_t dark[3] = {
-      (black >> 0) & 0xFF,
-      (black >> 8) & 0xFF,
-      (black >> 16) & 0xFF,
-  };
-  uint8_t light[3] = {
-      (white >> 0) & 0xFF,
-      (white >> 8) & 0xFF,
-      (white >> 16) & 0xFF,
-  };
+  uint8_t dark[3], light[3];
+  for (int i = 0; i < 3; ++i)
+  {
+    int shift = (bgr ? i : 2 - i) * 8;
+    dark[i] = (black >> shift) & 0xFF;
+    light[i] = (white >> shift) & 0xFF;
+  }
 
   for (int y = 0; y < height; ++y)
   {
@@ -346,6 +343,14 @@ static void invert_pixmap(fz_context *ctx, fz_pixmap *pix, uint32_t black, uint3
       data[2] = remap(data[2], dark[2], light[2]);
     }
   }
+}
+
+void txp_renderer_colorize_rgb(fz_context *ctx, txp_renderer *self, fz_pixmap *pix)
+{
+  uint32_t bg, fg;
+  txp_get_colors(&self->config, &bg, &fg);
+  if (bg != 0xFFFFFF || fg != 0)
+    invert_pixmap(ctx, pix, fg, bg, false);
 }
 
 static void render_rect(fz_context *ctx, txp_renderer *self, fz_rect bounds, void *pixels, int pitch,
@@ -378,7 +383,7 @@ static void render_rect(fz_context *ctx, txp_renderer *self, fz_rect bounds, voi
   uint32_t bg, fg;
   txp_get_colors(&self->config, &bg, &fg);
   //if (bg != 0x00FFFFFF || fg != 0x00000000)
-    invert_pixmap(ctx, pm, fg, bg);
+    invert_pixmap(ctx, pm, fg, bg, true);
   fz_drop_pixmap(ctx, pm);
 }
 

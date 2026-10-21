@@ -1,6 +1,8 @@
 #include "editor.h"
 #include "driver.h"
 #include "vstack.h"
+#include <math.h>
+#include <limits.h>
 
 static enum editor_protocol protocol = EDITOR_SEXP;
 static bool line_output = 0;
@@ -319,6 +321,37 @@ bool editor_parse(fz_context *ctx,
     if (len != 1)
       goto arity;
     *out = (struct editor_command){.tag = EDIT_RERUN_ONCE, .rerun_once = {}};
+  }
+  else if (strcmp(verb, "preview-render") == 0 || strcmp(verb, "preview-inverse") == 0)
+  {
+    if (len != 6) goto arity;
+    double a[5];
+    for (int i = 0; i < 5; ++i)
+    {
+      val v = val_array_get(ctx, stack, command, i + 1);
+      if (!val_is_number(v)) goto arguments;
+      a[i] = val_number(ctx, v);
+      if (!isfinite(a[i]) || a[i] < 0 || a[i] > INT_MAX) goto arguments;
+      if ((strcmp(verb, "preview-render") == 0 || i < 3) && floor(a[i]) != a[i]) goto arguments;
+    }
+    if (strcmp(verb, "preview-render") == 0)
+    {
+      if (a[2] < 1 || a[2] > 4096 || a[1] > 100000) goto arguments;
+      *out = (struct editor_command){.tag = EDIT_PREVIEW_RENDER,
+        .preview_render = {a[0], a[1], a[2], a[3], a[4]}};
+    }
+    else
+      *out = (struct editor_command){.tag = EDIT_PREVIEW_INVERSE,
+        .preview_inverse = {a[0], a[1], a[2], a[3], a[4]}};
+  }
+  else if (strcmp(verb, "preview-barrier") == 0)
+  {
+    if (len != 2) goto arity;
+    val v = val_array_get(ctx, stack, command, 1);
+    if (!val_is_number(v)) goto arguments;
+    double seq = val_number(ctx, v);
+    if (!isfinite(seq) || seq < 0 || seq > INT_MAX || floor(seq) != seq) goto arguments;
+    *out = (struct editor_command){.tag = EDIT_PREVIEW_BARRIER, .preview_barrier = {seq}};
   }
   else
   {

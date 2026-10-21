@@ -37,6 +37,9 @@ enum EDITOR_COMMAND
   EDIT_RESUME,
   EDIT_RERUN,
   EDIT_RERUN_ONCE,
+  EDIT_PREVIEW_RENDER,
+  EDIT_PREVIEW_INVERSE,
+  EDIT_PREVIEW_BARRIER,
 };
 
 struct editor_change
@@ -136,6 +139,10 @@ struct editor_command
 
     struct {
     } rerun_once;
+
+    struct { int request, page, width, revision, sequence; } preview_render;
+    struct { int revision, sequence, page; float x, y; } preview_inverse;
+    struct { int sequence; } preview_barrier;
   };
 };
 

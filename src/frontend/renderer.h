@@ -88,4 +88,6 @@ void txp_renderer_screen_size(fz_context *ctx, txp_renderer *self, int *w, int *
 fz_point txp_renderer_screen_to_document(fz_context *ctx, txp_renderer *self, fz_point pt);
 fz_point txp_renderer_document_to_screen(fz_context *ctx, txp_renderer *self, fz_point pt);
 
+void txp_renderer_colorize_rgb(fz_context *ctx, txp_renderer *self, fz_pixmap *pix);
+
 #endif /*!_RENDERER_H_*/

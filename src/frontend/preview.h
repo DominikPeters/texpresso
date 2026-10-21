@@ -1,0 +1,21 @@
+#ifndef TXP_PREVIEW_H
+#define TXP_PREVIEW_H
+
+#include <mupdf/fitz.h>
+#include <stdbool.h>
+#include "renderer.h"
+
+/* One current display-list snapshot and one replaceable render request. */
+typedef struct {
+  int revision, sequence;
+  bool valid, pending;
+  int request, page, width, expected_revision, expected_sequence;
+  int last_count, last_page, last_revision, last_sequence, last_complete;
+} txp_preview;
+
+void txp_preview_init(txp_preview *p);
+void txp_preview_invalidate(txp_preview *p);
+void txp_preview_state(txp_preview *p, int count, int page, bool complete);
+void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, int page, txp_renderer *renderer);
+
+#endif
