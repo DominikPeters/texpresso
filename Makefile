@@ -118,3 +118,14 @@ macos-app: texpresso
 	bash scripts/build-macos-app.sh
 
 .PHONY: all dev clean config texpresso common texpresso-xetex re2c compile_commands.json fill-tectonic-cache test-texlive test-tectonic test-texpresso test-stream test-open-base64 test-register test-lookup-file test-rerun macos-app
+
+.PHONY: test-synctex
+test-synctex: | Makefile.config
+	$(MAKE) -f Makefile.config -f Makefile build/test-synctex
+	./build/test-synctex
+
+build/test-synctex: test/test_synctex.c src/frontend/synctex.c src/frontend/synctex.h
+	mkdir -p build
+	$(CC) -Isrc/include -Isrc/dvi -c -o build/test-synctex.o test/test_synctex.c
+	$(CC) -Isrc/include -Isrc/dvi -c -o build/test-synctex-scanner.o src/frontend/synctex.c
+	$(LDCC) -o $@ build/test-synctex.o build/test-synctex-scanner.o $(LIBS)

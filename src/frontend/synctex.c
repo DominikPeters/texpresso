@@ -42,6 +42,7 @@ enum kind {
   STEX_KERN,
   STEX_GLUE,
   STEX_MATH,
+  STEX_BOX,
   STEX_OTHER,
 };
 
@@ -394,37 +395,6 @@ static const uint8_t *nextline(const uint8_t *ptr)
   return ptr + 1;
 }
 
-static const uint8_t *
-skip_tree(const uint8_t *ptr, uint8_t open, uint8_t close)
-{
-  int nest = 1;
-  while (nest > 0)
-  {
-    if (*ptr == open)
-      nest += 1;
-    else if (*ptr == close)
-      nest -= 1;
-    else if (*ptr == '}')
-      break;
-    ptr = nextline(ptr);
-  }
-  return ptr;
-}
-
-static const uint8_t *
-skip_record(const uint8_t *ptr, struct record *r)
-{
-  switch (r->kind)
-  {
-    case STEX_ENTER_H:
-      return skip_tree(ptr, '(', ')');
-    case STEX_ENTER_V:
-      return skip_tree(ptr, '[', ']');
-    default:
-      return ptr;
-  }
-}
-
 static _Bool
 parse_link(const uint8_t **ptr, struct link *link)
 {
@@ -445,8 +415,8 @@ parse_point(const uint8_t **ptr, struct point *point)
   *ptr = string_parse_int(*ptr, &point->x);
   if (**ptr != ',')
     return 0;
-  if (**ptr == '=')
-    *ptr += 1;
+  if ((*ptr)[1] == '=')
+    *ptr += 2;
   else
     *ptr = string_parse_int(*ptr + 1, &point->y);
   return 1;
@@ -473,7 +443,8 @@ parse_line(const uint8_t *ptr, struct record *r)
 
   int has_link = 0, has_point = 0, has_size = 0, has_width = 0;
 
-  *r = (struct record){0, };
+  /* An equals sign in a point reuses the previous vertical coordinate. */
+  *r = (struct record){.point.y = r->point.y};
 
   switch (*ptr)
   {
@@ -495,6 +466,13 @@ parse_line(const uint8_t *ptr, struct record *r)
     case '$':
       r->kind = STEX_MATH;
       has_link = has_point = 1;
+      break;
+
+    case 'h':
+    case 'v':
+    case 'r':
+      r->kind = STEX_BOX;
+      has_link = has_point = has_size = 1;
       break;
 
     case '(':
@@ -545,21 +523,21 @@ parse_line(const uint8_t *ptr, struct record *r)
 }
 
 struct candidate {
-  float area;
+  double vertical, horizontal, area;
   fz_irect rect;
   struct link link;
   int len;
   const char *filename;
 };
 
-static float rect_area(fz_irect r)
+static double rect_area(fz_irect r)
 {
-  return (float)(r.y1 - r.y0) * (float)(r.x1 - r.x0);
+  return (double)(r.y1 - r.y0) * (double)(r.x1 - r.x0);
 }
 
 static int get_filename(synctex_t *stx, fz_buffer *buf, struct candidate *c, int tag)
 {
-  if (tag <= 0)
+  if (tag <= 0 || tag > stx->input_off.len)
     return 0;
 
   const uint8_t *filename = &buf->data[int_abs(stx->input_off.ptr[tag - 1])];
@@ -585,75 +563,93 @@ static int get_filename(synctex_t *stx, fz_buffer *buf, struct candidate *c, int
   return len;
 }
 
+static fz_irect record_rect(struct record r)
+{
+  int x1 = r.point.x + r.size.width;
+  int y0 = r.point.y - r.size.height, y1 = r.point.y + r.size.depth;
+  return (fz_irect){fz_mini(r.point.x, x1), fz_mini(y0, y1),
+                    fz_maxi(r.point.x, x1), fz_maxi(y0, y1)};
+}
+
+static void consider(synctex_t *stx, fz_buffer *buf, int x, int y,
+                     fz_irect rect, struct link link, struct candidate *c)
+{
+  double dy = fmax(fmax((double)rect.y0 - y, (double)y - rect.y1), 0);
+  double dx = fmax(fmax((double)rect.x0 - x, (double)x - rect.x1), 0);
+  double area = rect_area(rect);
+  /* Choose the nearest rendered line first, then the nearest source record
+   * on that line. Page/paragraph containers are only a last resort. */
+  if (c->link.tag && (dy > c->vertical || (dy == c->vertical &&
+      (dx > c->horizontal || (dx == c->horizontal && area >= c->area))))) return;
+  if (!get_filename(stx, buf, c, link.tag)) return;
+  c->vertical = dy; c->horizontal = dx; c->area = area;
+  c->rect = rect; c->link = link;
+}
+
 static void
 parse_tree(synctex_t *stx, fz_buffer *buf, const uint8_t *ptr, int x, int y, struct candidate *c)
 {
+  struct frame { struct record box; unsigned children; } saved[256];
   int nest = 0;
-  struct size saved[256];
-
-  struct record r = {0,};
+  unsigned children = 0;
+  struct candidate fallback = {0};
+  struct record r = {0};
   while ((ptr = parse_line(ptr, &r)))
   {
-    fz_irect rect;
-    rect.x0 = r.point.x;
-    rect.x1 = r.point.x + r.size.width;
-    rect.y0 = r.point.y - r.size.height;
-    rect.y1 = r.point.y + r.size.depth;
     switch (r.kind)
     {
+      case STEX_ENTER_H:
+      case STEX_ENTER_V:
+        consider(stx, buf, x, y, record_rect(r), r.link, &fallback);
+        if (nest == sizeof saved / sizeof *saved) return;
+        saved[nest++] = (struct frame){r, children};
+        break;
+      case STEX_LEAVE_H:
+      case STEX_LEAVE_V:
+        if (nest == 0) return;
+        nest--;
+        if (saved[nest].box.kind == STEX_ENTER_H && saved[nest].children == children)
+        {
+          /* A glyph-only hbox may have no individual source records. */
+          struct record box = saved[nest].box;
+          if (rect_area(record_rect(box)) > 0)
+          {
+            consider(stx, buf, x, y, record_rect(box), box.link, c);
+            children++;
+          }
+        }
+        break;
       case STEX_CURRENT:
       case STEX_KERN:
       case STEX_GLUE:
       case STEX_MATH:
-        if (rect.y0 <= y && y <= rect.y1)
+        /* Point/kern records omit height/depth. Inherit them from their
+         * containing horizontal box, restoring that box after nested lists. */
+        for (int i = nest - 1; i >= 0; i--)
+          if (saved[i].box.kind == STEX_ENTER_H)
+          {
+            r.size.height = saved[i].box.size.height;
+            r.size.depth = saved[i].box.size.depth;
+            break;
+          }
+        /* A kern ends at its recorded position; its width can be negative. */
+        if (r.kind == STEX_KERN) r.point.x -= r.size.width;
+        consider(stx, buf, x, y, record_rect(r), r.link, c);
+        children++;
+        break;
+      case STEX_BOX:
+        /* Zero-width struts and empty layout boxes do not paint anything. */
+        if (rect_area(record_rect(r)) > 0)
         {
-          if (rect.x0 < x)
-            rect.x1 = x;
-          else
-          {
-            rect.x1 = rect.x0;
-            rect.x0 = x;
-          }
-          float area = rect_area(rect);
-          // fprintf(stderr, "synctex pre-candidate area:%.2f (current:%.2f)\n", area, c->area);
-          if (area < c->area && get_filename(stx, buf, c, r.link.tag))
-          {
-            // fprintf(stderr, "synctex candidate\n");
-            c->area = area;
-            c->rect = rect;
-            c->link = r.link;
-          }
+          consider(stx, buf, x, y, record_rect(r), r.link, c);
+          children++;
         }
         break;
-      case STEX_ENTER_H:
-      case STEX_ENTER_V:
-        if (fz_is_point_inside_irect(x, y, rect))
-        {
-          // fprintf(stderr, "synctex pre-candidate\n");
-          float area = rect_area(rect);
-          if (area < c->area && get_filename(stx, buf, c, r.link.tag))
-          {
-            // fprintf(stderr, "synctex candidate\n");
-            c->area = area;
-            c->rect = rect;
-            c->link = r.link;
-          }
-          saved[nest] = r.size;
-          nest += 1;
-        }
-        else
-          ptr = skip_record(ptr, &r);
-        break;
-      case STEX_LEAVE_H:
-      case STEX_LEAVE_V:
-        nest -= 1;
-        if (nest < 0)
-          return;
-        r.size = saved[nest];
       case STEX_OTHER:
-        continue;
+        break;
     }
   }
+  if (!c->link.tag) *c = fallback;
 }
 
 static int get_input(fz_buffer *buf,
