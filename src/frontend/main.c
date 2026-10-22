@@ -1215,8 +1215,11 @@ static void interpret_command(struct persistent_state *ps,
       cmd.tag == EDIT_CHANGE || cmd.tag == EDIT_RESCAN || cmd.tag == EDIT_RERUN_ONCE)) {
     preempt_background(ps, ui, ui->preview.foreground_page);
     cancel_source(ui);
-    txp_preview_invalidate(&ui->preview);
   }
+
+  if (ps->headless && (cmd.tag == EDIT_OPEN || cmd.tag == EDIT_CLOSE ||
+      cmd.tag == EDIT_CHANGE || cmd.tag == EDIT_RESCAN))
+    txp_preview_invalidate(&ui->preview);
 
   switch (cmd.tag)
   {
@@ -1792,6 +1795,15 @@ bool texpresso_main(struct persistent_state *ps)
         send(start_finishing, ui->eng);
         schedule_event(RELOAD_EVENT);
         continue;
+      }
+      // A settled document can have no auxiliary work left. In that case the
+      // request is a no-op: keep its display list valid and consume the request
+      // rather than accidentally applying it to the next source edit. While a
+      // pass is advancing/finishing, leave it pending until that pass settles.
+      if (ps->rerun_once_pending && !advance && !send(is_finishing, ui->eng))
+      {
+        ps->rerun_once_pending = false;
+        fprintf(stderr, "[rerun] on-demand: auxiliary files are already stable\n");
       }
 
       if (quit) break;
