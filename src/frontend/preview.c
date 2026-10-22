@@ -245,6 +245,11 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
   if (!p->valid || !list || page != p->page) return;
   p->pending = false;
 
+  /* Measure export only: compilation and display-list construction have already
+   * finished. Two monotonic reads let the extension compare rendering costs
+   * without enabling verbose profiling or confusing compiler rollback latency. */
+  struct timespec export_start;
+  clock_gettime(CLOCK_MONOTONIC, &export_start);
   fz_pixmap *pix = NULL, *crop = NULL;
   fz_buffer *png = NULL;
   fz_device *dev = NULL;
@@ -357,6 +362,10 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     size_t len = fz_buffer_storage(ctx, png, &data);
     if (len > 16 * 1024 * 1024)
       fz_throw(ctx, FZ_ERROR_GENERIC, "Preview image exceeds the transfer budget");
+    struct timespec export_end;
+    clock_gettime(CLOCK_MONOTONIC, &export_end);
+    double export_ms = (export_end.tv_sec - export_start.tv_sec) * 1000.0 +
+      (export_end.tv_nsec - export_start.tv_nsec) / 1000000.0;
     double transfer_start = txp_profile_now();
     printf("[\"preview-image\",{\"requestId\":%d,\"revision\":%d,\"sequence\":%d,"
            "\"page\":%d,\"bounds\":[%.9g,%.9g,%.9g,%.9g],\"width\":%d,"
@@ -364,6 +373,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
            p->request, p->revision, p->sequence, page,
            b.x0, b.y0, b.x1, b.y1,
            image_width, image_height, svg ? "image/svg+xml" : "image/png", len);
+    printf(",\"exportMs\":%.4f", export_ms);
     if ((p->automatic || p->svg) && !p->region)
       printf(",\"svgEligible\":%s,\"vectorCost\":%zu", svg_eligible ? "true" : "false", vector_cost);
     if (!svg && !p->region && p->patches) printf(",\"rasterId\":%d", p->request);

@@ -1465,13 +1465,15 @@ bool texpresso_main(struct persistent_state *ps)
           schedule_event(RELOAD_EVENT);
         }
         txp_preview_state(&ui->preview, after_page_count, ui->page, complete);
+        // Reject obsolete revision/sequence requests before reporting a real
+        // no-page failure. Rapid edits can invalidate a request during rollback.
+        txp_preview_export(ps->ctx, &ui->preview,
+                          txp_renderer_get_contents(ps->ctx, ui->doc_renderer), ui->page, ui->doc_renderer);
         if (complete && after_page_count == 0 && ui->preview.pending)
         {
           printf("[\"preview-error\",%d,\"The document has not produced a page. Open Output for compiler messages.\"]\n", ui->preview.request);
           ui->preview.pending = false;
         }
-        txp_preview_export(ps->ctx, &ui->preview,
-                          txp_renderer_get_contents(ps->ctx, ui->doc_renderer), ui->page, ui->doc_renderer);
         if (stdin_eof) quit = true;
       }
       fflush(stdout);

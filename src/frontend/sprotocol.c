@@ -383,7 +383,7 @@ static void write_f32(channel_t *t, int fd, float f)
 
 void log_query(FILE *f, query_t *r)
 {
-  fprintf(f, "%04dms: ", r->time);
+  fprintf(f, "%04d tokens: ", r->time);
   switch (r->tag)
   {
     case Q_OPRD:

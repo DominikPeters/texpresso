@@ -38,6 +38,7 @@
 #include "state.h"
 #include "synctex.h"
 #include "editor.h"
+#include "profile.h"
 
 typedef struct
 {
@@ -55,6 +56,7 @@ typedef struct
 {
   int pid, fd;
   int trace_len;
+  int tokens;
   mark_t snap;
 } process_t;
 
@@ -102,6 +104,7 @@ struct tex_engine
 
   bool aux_dirty;
   bool finishing;
+  int last_tokens;
 };
 
 // Backtrackable process state & VFS representation
@@ -211,6 +214,7 @@ static void prepare_process(fz_context *ctx, struct tex_engine *self)
     process_t *p = get_process(self);
     p->pid = exec_xelatex(self->engine_path, self->use_texlive, self->name, &p->fd);
     p->trace_len = 0;
+    p->tokens = 0;
     if (!channel_handshake(self->c, p->fd))
       mabort();
   }
@@ -276,7 +280,7 @@ static void decimate_processes(struct tex_engine *self)
   for  (int i = 0; i < self->process_count; ++i)
   {
     process_t *p = &self->processes[i];
-    fprintf(stderr, "- position %d, time %dms [pid %d]\n",
+    fprintf(stderr, "- position %d, time %d tokens [pid %d]\n",
             p->trace_len,
             p->trace_len == 0 ? 0 : self->trace[p->trace_len - 1].time,
             p->pid);
@@ -323,7 +327,7 @@ static void decimate_processes(struct tex_engine *self)
   for  (int i = 0; i < self->process_count; ++i)
   {
     process_t *p = &self->processes[i];
-    fprintf(stderr, "- position %d, time %dms [pid %d]\n",
+    fprintf(stderr, "- position %d, time %d tokens [pid %d]\n",
             p->trace_len,
             p->trace_len == 0 ? 0 : self->trace[p->trace_len - 1].time,
             p->pid);
@@ -516,6 +520,7 @@ static bool need_snapshot(fz_context *ctx, struct tex_engine *self, int time)
     last_time = 0;
   }
 
+  // q->time is XeTeX token progress, not wall-clock milliseconds.
   return time > 500 + last_time;
 }
 
@@ -523,6 +528,7 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
 {
   process_t *p = get_process(self);
   answer_t a;
+  self->last_tokens = q->time;
   switch (q->tag)
   {
     case Q_OPRD:
@@ -739,12 +745,16 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
         if (n < 0)
           mabort("n:%d fence_pos:%d read_pos:%d\n", (int)n, self->fences[self->fence_pos].position, q->read.pos);
       }
+      bool periodic = !fork && need_snapshot(ctx, self, q->time);
+      if ((fork || periodic) && txp_profile_now())
+        fprintf(stderr, "[profile] {\"stage\":\"compiler-checkpoint\",\"ms\":0,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"trace\":%d,\"offset\":%d,\"checkpoints\":%d,\"fence\":%s}\n",
+                q->time, p->trace_len, q->read.pos, self->process_count - 1, fork ? "true" : "false");
       if (fork)
       {
         a.tag = A_FORK;
         self->fence_pos -= 1;
       }
-      else if (need_snapshot(ctx, self, q->time))
+      else if (periodic)
       {
         a.tag = A_FORK;
       }
@@ -960,9 +970,11 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
       self->process_count += 1;
       process_t *p2 = get_process(self);
       p->snap = log_snapshot(ctx, self->log);
+      p->tokens = q->time;
       p2->fd = q->chld.fd;
       p2->pid = q->chld.pid;
       p2->trace_len = p->trace_len;
+      p2->tokens = q->time;
       a.tag = A_DONE;
       channel_write_answer(self->c, p->fd, &a);
       break;
@@ -985,6 +997,8 @@ static void revert_trace(trace_entry_t *te)
 
 static void rollback_processes(fz_context *ctx, struct tex_engine *self, int reverted, int trace)
 {
+  double profile_start = txp_profile_now();
+  int tokens_before = self->last_tokens;
   self->deferred.active = false;
   clear_convergence_stash(ctx, self);
 
@@ -1004,7 +1018,7 @@ static void rollback_processes(fz_context *ctx, struct tex_engine *self, int rev
   fprintf(stderr, "Last trace entries:\n");
   for (int i = get_process(self)->trace_len - 1, j = fz_maxi(i - 10, 0); i > j; i--)
   {
-    fprintf(stderr, "- %s@%d, %dms\n",
+    fprintf(stderr, "- %s@%d, %d tokens\n",
             self->trace[i].entry->path,
             self->trace[i].seen,
             self->trace[i].time);
@@ -1014,14 +1028,23 @@ static void rollback_processes(fz_context *ctx, struct tex_engine *self, int rev
   for  (int i = 0; i < self->process_count; ++i)
   {
     process_t *p = &self->processes[i];
-    fprintf(stderr, "- position %d, time %dms\n", p->trace_len,
+    fprintf(stderr, "- position %d, time %d tokens\n", p->trace_len,
             p->trace_len == 0 ? 0 : self->trace[p->trace_len - 1].time);
   }
 
-  while (self->process_count > 0 && get_process(self)->trace_len > trace)
+  // A worker interrupted before its first observed input can have trace_len
+  // zero, equal to the rollback target. It is still unusable once closed:
+  // retaining it prevents prepare_process from ever spawning a replacement.
+  while (self->process_count > 0 &&
+         (get_process(self)->trace_len > trace || get_process(self)->fd < 0))
     pop_process(ctx, self);
 
   int trace_len = self->process_count == 0 ? 0 : get_process(self)->trace_len;
+  if (profile_start)
+    fprintf(stderr, "[profile] {\"stage\":\"compiler-rollback\",\"ms\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"resumeTokens\":%d,\"changedTrace\":%d,\"resumeTrace\":%d,\"checkpoints\":%d}\n",
+            txp_profile_now() - profile_start, tokens_before,
+            self->process_count ? get_process(self)->tokens : 0,
+            reverted, trace_len, self->process_count ? self->process_count - 1 : 0);
   while (reverted > trace_len)
   {
     reverted--;
@@ -1075,7 +1098,9 @@ static int compute_fences(fz_context *ctx, struct tex_engine *self, int trace, i
 
   self->fence_pos = 0;
 
-  offset = (offset - 64) & ~(64 - 1);
+  // READ fences stop before the first changed byte. Align for nearby edits,
+  // but do not rewind another block: that can cross a costly macro loop.
+  offset &= ~(64 - 1);
   if (offset < self->trace[trace].seen)
     offset = self->trace[trace].seen;
   if (offset == -1)
@@ -1396,7 +1421,7 @@ static void rollback_add_change(fz_context *ctx, struct tex_engine *self, fileen
     fprintf(stderr, "Rollback position: %d. Entries: %d. Seen: %d. Changed: %d. Last trace entries:\n", trace_len, get_process(self)->trace_len, e->seen, changed);
     for (int i = get_process(self)->trace_len - 1, j = fz_maxi(i - 10, 0); i > j; i--)
     {
-      fprintf(stderr, "- %s@%d, %dms\n",
+      fprintf(stderr, "- %s@%d, %d tokens\n",
               self->trace[i].entry->path,
               self->trace[i].seen,
               self->trace[i].time);
