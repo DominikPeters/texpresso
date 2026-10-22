@@ -150,7 +150,10 @@ void incdvi_update(fz_context *ctx, incdvi_t *d, fz_buffer *buf)
           d->destination_bytes += strlen(name) + 1;
           if (d->destination_count == d->destination_capacity) {
             d->destination_capacity = d->destination_capacity ? d->destination_capacity * 2 : 32;
-            d->destinations = fz_realloc_array_imp(ctx, d->destinations, d->destination_capacity, sizeof *d->destinations);
+            // Capacity is bounded above by 131072 entries. Use the public allocator
+            // available in both distribution MuPDF 1.23 and our bundled 1.28.
+            d->destinations = fz_realloc(ctx, d->destinations,
+              (size_t)d->destination_capacity * sizeof *d->destinations);
           }
           int i = d->destination_count++;
           d->destinations[i].name = name; d->destinations[i].offset = d->offset;

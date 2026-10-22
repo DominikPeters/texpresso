@@ -29,6 +29,20 @@ int main(void)
   fz_append_data(ctx,partial,next->data+15,next->len-15);incdvi_update(ctx,d,partial);
   assert(incdvi_destination_page(ctx,d,partial,"new")==0);
   assert(incdvi_destination_page(ctx,d,partial,"old")==-1);
+  /* Exercise the initial allocation and two capacity increases. */
+  incdvi_free(ctx,d); d=incdvi_new(ctx,(dvi_reshooks){0});
+  full->len--; /* insert destinations before EOP */
+  for (int i=0;i<80;i++) {
+    char special[128]; snprintf(special,sizeof special,"pdf:dest (target-%d) [@thispage /XYZ @xpos @ypos null]",i);
+    fz_append_byte(ctx,full,239);fz_append_byte(ctx,full,strlen(special));fz_append_string(ctx,full,special);
+  }
+  fz_append_byte(ctx,full,140);incdvi_update(ctx,d,full);
+  for (int i=0;i<80;i++) {
+    char name[32];snprintf(name,sizeof name,"target-%d",i);
+    assert(incdvi_destination_page(ctx,d,full,name)==0);
+  }
+  full->len=15;incdvi_update(ctx,d,full);
+  assert(incdvi_destination_page(ctx,d,full,"target-79")==-1);
   incdvi_free(ctx,d);fz_drop_buffer(ctx,full);fz_drop_buffer(ctx,partial);fz_drop_buffer(ctx,next);fz_drop_context(ctx);
   puts("PASS: partial DVI special bodies and rollback keep destination metadata valid");
 }
