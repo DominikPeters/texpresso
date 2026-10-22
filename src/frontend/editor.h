@@ -141,7 +141,7 @@ struct editor_command
     struct {
     } rerun_once;
 
-    struct { int request, page, width, revision, sequence; bool region; float bounds[4]; bool svg, automatic; int vector_limit; } preview_render;
+    struct { int request, page, width, revision, sequence; bool region; float bounds[4]; bool svg, automatic; int vector_limit; bool patches; int patch_base; } preview_render;
     struct { int revision, sequence, page; float x, y; } preview_inverse;
     struct { int sequence; } preview_barrier;
     struct { int revision, sequence; const char *name; } preview_destination;

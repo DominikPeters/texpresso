@@ -71,6 +71,24 @@ int main(void)
   fz_buffer *reference = fz_new_buffer_from_pixmap_as_png(ctx, gray, fz_default_color_params);
   assert(png->len == reference->len && !memcmp(png->data, reference->data, png->len));
   fz_drop_buffer(ctx, png); fz_drop_buffer(ctx, reference); fz_drop_pixmap(ctx, gray);
+  /* Sparse edits, erasure, color changes and row padding use exact RGB bytes. */
+  unsigned char old_data[23*128], new_data[23*97];
+  memset(old_data, 55, sizeof old_data); memset(new_data, 77, sizeof new_data);
+  for (int y=0;y<23;y++) { memset(old_data+y*128,255,17*3); memset(new_data+y*97,255,17*3); }
+  fz_pixmap *before=fz_new_pixmap_with_data(ctx,fz_device_rgb(ctx),17,23,NULL,0,128,old_data);
+  fz_pixmap *after=fz_new_pixmap_with_data(ctx,fz_device_rgb(ctx),17,23,NULL,0,97,new_data);
+  fz_irect rect;
+  assert(txp_preview_dirty_rect(ctx,before,after,&rect) && rect.x1==0 && rect.y1==0);
+  new_data[22*97+16*3]=0;
+  assert(txp_preview_dirty_rect(ctx,before,after,&rect));
+  assert(rect.x0==16 && rect.x1==17 && rect.y0==22 && rect.y1==23);
+  new_data[0]=0;
+  assert(txp_preview_dirty_rect(ctx,before,after,&rect));
+  assert(rect.x0==0 && rect.x1==17 && rect.y0==0 && rect.y1==23);
+  assert(txp_preview_dirty_rect(ctx,after,before,&rect)); /* white erases color */
+  assert(rect.x0==0 && rect.x1==17 && rect.y0==0 && rect.y1==23);
+  assert(!txp_preview_dirty_rect(ctx,NULL,after,&rect));
+  fz_drop_pixmap(ctx,before);fz_drop_pixmap(ctx,after);
   fz_drop_context(ctx);
   puts("preview PNG: lossless pixels, bounded multi-chunk streams, CRCs, resolution and grayscale fallback passed");
   return 0;

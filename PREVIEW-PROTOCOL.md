@@ -2,7 +2,7 @@
 
 `texpresso -capabilities` prints a JSON object and exits before initializing SDL
 or opening a document. Current features are `previewProtocol: 1`, `codecs:
-["png", "svg"]`, `synctex: true`, `regions: true`, `links: true`, and `adaptiveRendering: true`. Existing editor clients and the default native
+["png", "svg"]`, `synctex: true`, `regions: true`, `links: true`, and `adaptiveRendering: true`, and `pngPatches: true`. Existing editor clients and the default native
 window are unchanged. This protocol is enabled only with `-headless -json`.
 Headless mode initializes SDL events/timers, never video/window/texture APIs.
 
@@ -15,6 +15,11 @@ Headless input additions are positional JSON arrays:
   request the zero-based page at the expected revision/source sequence. The
   newest pending request replaces an older one. Width is 1–4096; actual output
   is reduced to at most 4,000,000 pixels and 8192 pixels on either axis.
+* `["preview-png", requestId, page, pixelWidth, revision, sequence, baseRasterId]`:
+  opt into PNG deltas after checking `pngPatches`. Request IDs must be positive.
+  Pass the last successfully displayed `rasterId`, or 0 to force a full frame.
+  `preview-auto` also accepts an optional final `baseRasterId` argument when
+  this capability is available. Legacy commands keep their full-frame behavior.
 * `["preview-svg", requestId, page, pixelWidth, revision, sequence]`:
   export an outlined SVG, with the same request slot and source guards. Width
   is used only if export falls back to PNG; SVG geometry is independent of it.
@@ -114,6 +119,29 @@ keys or non-device RGB/Gray image color spaces, Type 3 text, overprint, shadings
 for preview color remapping, excessive vector complexity or embedded image size,
 failed export, or more than 16 MiB of SVG. Regions always use bounded PNGs.
 A client-side SVG decode failure can retry the same snapshot with PNG.
+
+## PNG patches
+
+Opted-in full-page PNGs include `rasterId`. When the named base matches the
+engine's retained raster, page, bounds and dimensions, headers may also include
+`patch: {base, rect: [x, y, width, height]}`. The body is a PNG of that pixel
+rectangle; header `width`, `height` and `bounds` still describe the complete page.
+The rectangle replaces old pixels, including white pixels that erase old ink.
+A zero rectangle `[0,0,0,0]` with `byteLength: 0` means unchanged pixels with
+fresh revision/source/annotation metadata. Emit/consume this frame immediately;
+it has no binary body. Other frames must have nonzero body length.
+
+Differences are computed in RGB before compression. A rectangle covering more
+than 40% of the raster sends a full PNG. A mismatched or unknown base also sends
+a full PNG. Only one previous RGB raster is retained (at most 12,000,000 sample
+bytes under the four-megapixel budget). Source invalidation deliberately keeps
+it for the next comparison. Region renders do not replace it. A successful SVG
+or legacy full-page render releases it, and session teardown frees it.
+
+The client must acknowledge successful application before requesting dependent
+patches. A skipped frame, canvas eviction or webview reload can use base 0 to
+recover. The server never requires a client to retain a chain of patch PNGs.
+Existing compiler/display-list rendering and region exports are unchanged.
 
 ## Local profiling
 

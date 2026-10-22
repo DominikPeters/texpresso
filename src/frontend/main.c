@@ -1190,6 +1190,8 @@ static void interpret_command(struct persistent_state *ps,
         p->svg = cmd.preview_render.svg;
         p->automatic = cmd.preview_render.automatic;
         p->vector_limit = cmd.preview_render.vector_limit;
+        p->patches = cmd.preview_render.patches;
+        p->patch_base = cmd.preview_render.patch_base;
         float *bounds = cmd.preview_render.bounds;
         p->bounds = (fz_rect){bounds[0], bounds[1], bounds[2], bounds[3]};
         p->expected_revision = cmd.preview_render.revision;
@@ -1853,6 +1855,7 @@ bool texpresso_main(struct persistent_state *ps)
     fz_keep_display_list(ps->ctx, ps->initial.display_list);
 
   fz_drop_buffer(ps->ctx, ui->preview.annotations);
+  fz_drop_pixmap(ps->ctx, ui->preview.previous_png);
   txp_renderer_free(ps->ctx, ui->doc_renderer);
   send(destroy, ui->eng, ps->ctx);
 

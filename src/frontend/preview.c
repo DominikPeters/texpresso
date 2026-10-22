@@ -178,6 +178,32 @@ fz_buffer *txp_preview_png(fz_context *ctx, fz_pixmap *pix)
   return buffer;
 }
 
+/* Exact RGB comparison, including white pixels that erase old text. One
+ * retained raster is bounded by the existing four-megapixel page budget. */
+bool txp_preview_dirty_rect(fz_context *ctx, fz_pixmap *before, fz_pixmap *after, fz_irect *rect)
+{
+  if (!before || !after || before->w != after->w || before->h != after->h ||
+      before->x != after->x || before->y != after->y || before->n != 3 || after->n != 3 ||
+      before->alpha || after->alpha || before->colorspace != fz_device_rgb(ctx) ||
+      after->colorspace != fz_device_rgb(ctx)) return false;
+  int w = after->w, h = after->h;
+  fz_irect b = {w, h, 0, 0};
+  for (int y = 0; y < h; y++) {
+    const unsigned char *a = before->samples + (size_t)y * before->stride;
+    const unsigned char *c = after->samples + (size_t)y * after->stride;
+    if (!memcmp(a, c, (size_t)w * 3)) continue;
+    int left = 0, right = w;
+    while (left < right && !memcmp(a + left * 3, c + left * 3, 3)) left++;
+    while (right > left && !memcmp(a + (right-1) * 3, c + (right-1) * 3, 3)) right--;
+    if (left < b.x0) b.x0 = left;
+    if (right > b.x1) b.x1 = right;
+    if (y < b.y0) b.y0 = y;
+    b.y1 = y + 1;
+  }
+  *rect = b.x1 ? b : (fz_irect){0,0,0,0};
+  return true;
+}
+
 void txp_preview_init(txp_preview *p)
 {
   memset(p, 0, sizeof *p);
@@ -219,15 +245,17 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
   if (!p->valid || !list || page != p->page) return;
   p->pending = false;
 
-  fz_pixmap *pix = NULL;
+  fz_pixmap *pix = NULL, *crop = NULL;
   fz_buffer *png = NULL;
   fz_device *dev = NULL;
   fz_output *out = NULL;
   const char *fallback = NULL;
   bool svg = false, svg_eligible = false, images = false;
   size_t vector_cost = 0;
+  bool patch = false;
+  fz_irect dirty = {0};
   int image_width = 0, image_height = 0;
-  fz_var(pix);
+  fz_var(pix); fz_var(crop); fz_var(patch); fz_var(dirty);
   fz_var(png);
   fz_var(dev); fz_var(out); fz_var(fallback); fz_var(svg); fz_var(svg_eligible); fz_var(vector_cost);
   fz_try(ctx)
@@ -303,10 +331,27 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
       double color_start = txp_profile_now();
       txp_renderer_colorize_rgb(ctx, renderer, pix);
       txp_profile_record("png-color", color_start, p->request, page, 0);
-      double encode_start = txp_profile_now();
-      png = txp_preview_png(ctx, pix);
-      txp_profile_record("png-encode", encode_start, p->request, page, png->len);
       image_width = fz_pixmap_width(ctx, pix); image_height = fz_pixmap_height(ctx, pix);
+      double compare_start = txp_profile_now();
+      patch = p->patches && !p->region && p->patch_base > 0 && p->patch_base == p->previous_id &&
+        page == p->previous_page && b.x0 == p->previous_bounds.x0 && b.y0 == p->previous_bounds.y0 &&
+        b.x1 == p->previous_bounds.x1 && b.y1 == p->previous_bounds.y1 &&
+        txp_preview_dirty_rect(ctx, p->previous_png, pix, &dirty) &&
+        (double)(dirty.x1 - dirty.x0) * (dirty.y1 - dirty.y0) <= (double)image_width * image_height * 0.4;
+      txp_profile_record("png-compare", compare_start, p->request, page, patch ? (dirty.x1-dirty.x0)*(dirty.y1-dirty.y0) : 0);
+      double encode_start = txp_profile_now();
+      if (patch && !dirty.x1) png = fz_new_buffer(ctx, 0); /* same pixels, fresh metadata */
+      else {
+        fz_pixmap *source = pix;
+        if (patch) {
+          crop = fz_new_pixmap_with_data(ctx, fz_device_rgb(ctx), dirty.x1-dirty.x0, dirty.y1-dirty.y0,
+            NULL, 0, pix->stride, pix->samples + (size_t)dirty.y0 * pix->stride + dirty.x0 * 3);
+          crop->xres = pix->xres; crop->yres = pix->yres;
+          source = crop;
+        }
+        png = txp_preview_png(ctx, source);
+      }
+      txp_profile_record("png-encode", encode_start, p->request, page, png->len);
     }
     unsigned char *data;
     size_t len = fz_buffer_storage(ctx, png, &data);
@@ -321,22 +366,32 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
            image_width, image_height, svg ? "image/svg+xml" : "image/png", len);
     if ((p->automatic || p->svg) && !p->region)
       printf(",\"svgEligible\":%s,\"vectorCost\":%zu", svg_eligible ? "true" : "false", vector_cost);
+    if (!svg && !p->region && p->patches) printf(",\"rasterId\":%d", p->request);
+    if (patch) printf(",\"patch\":{\"base\":%d,\"rect\":[%d,%d,%d,%d]}",
+      p->patch_base, dirty.x0, dirty.y0, dirty.x1-dirty.x0, dirty.y1-dirty.y0);
     if (fallback) printf(",\"fallback\":\"%s\"", fallback);
     if (!p->region && p->annotations && p->annotations->len) {
       printf(",\"annotations\":%.*s", (int)p->annotations->len, p->annotations->data);
     }
     printf("}]\n");
-    if (fwrite(data, 1, len, stdout) != len)
+    if (len && fwrite(data, 1, len, stdout) != len)
       _Exit(1); /* A partial binary frame cannot be recovered. */
     if (fflush(stdout) != 0) _Exit(1);
     txp_profile_record("pipe-write", transfer_start, p->request, page, len);
+    if (!p->region) {
+      fz_drop_pixmap(ctx, p->previous_png); p->previous_png = NULL; p->previous_id = 0;
+      if (!svg && p->patches) {
+        p->previous_png = fz_keep_pixmap(ctx, pix); p->previous_bounds = b;
+        p->previous_page = page; p->previous_id = p->request;
+      }
+    }
   }
   fz_always(ctx)
   {
     fz_drop_device(ctx, dev);
     fz_drop_output(ctx, out);
     fz_drop_buffer(ctx, png);
-    fz_drop_pixmap(ctx, pix);
+    fz_drop_pixmap(ctx, crop); fz_drop_pixmap(ctx, pix);
   }
   fz_catch(ctx)
   {
