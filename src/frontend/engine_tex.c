@@ -997,6 +997,34 @@ static void revert_trace(trace_entry_t *te)
   te->entry->seen = te->seen;
 }
 
+static void restore_rollback_outputs(fz_context *ctx, struct tex_engine *self)
+{
+  fprintf(stderr, "after rollback: %d bytes of output\n",
+    self->st.document.entry
+    ? (int)self->st.document.entry->saved.data->len
+    : 0
+  );
+
+  if (self->st.document.entry)
+  {
+    fprintf(stderr, "[info] before rollback: %d pages\n", incdvi_page_count(self->dvi));
+    incdvi_update(ctx, self->dvi, self->st.document.entry->saved.data);
+    fprintf(stderr, "[info] after  rollback: %d pages\n", incdvi_page_count(self->dvi));
+  }
+  else
+    incdvi_reset(self->dvi);
+  if (self->st.synctex.entry)
+  {
+    fprintf(stderr, "[info] before rollback: %d pages in synctex\n", synctex_page_count(self->stex));
+    synctex_update(ctx, self->stex, self->st.synctex.entry->saved.data);
+    fprintf(stderr, "[info] after  rollback: %d pages in synctex\n", synctex_page_count(self->stex));
+  }
+  else
+    synctex_rollback(ctx, self->stex, 0);
+  editor_truncate(BUF_OUT, output_data(self->st.stdout.entry));
+  editor_truncate(BUF_LOG, output_data(self->st.log.entry));
+}
+
 static void rollback_processes(fz_context *ctx, struct tex_engine *self, int reverted, int trace)
 {
   double profile_start = txp_profile_now();
@@ -1053,30 +1081,7 @@ static void rollback_processes(fz_context *ctx, struct tex_engine *self, int rev
     revert_trace(&self->trace[reverted]);
   }
 
-  fprintf(stderr, "after rollback: %d bytes of output\n",
-    self->st.document.entry
-    ? (int)self->st.document.entry->saved.data->len
-    : 0
-  );
-
-  if (self->st.document.entry)
-  {
-    fprintf(stderr, "[info] before rollback: %d pages\n", incdvi_page_count(self->dvi));
-    incdvi_update(ctx, self->dvi, self->st.document.entry->saved.data);
-    fprintf(stderr, "[info] after  rollback: %d pages\n", incdvi_page_count(self->dvi));
-  }
-  else
-    incdvi_reset(self->dvi);
-  if (self->st.synctex.entry)
-  {
-    fprintf(stderr, "[info] before rollback: %d pages in synctex\n", synctex_page_count(self->stex));
-    synctex_update(ctx, self->stex, self->st.synctex.entry->saved.data);
-    fprintf(stderr, "[info] after  rollback: %d pages in synctex\n", synctex_page_count(self->stex));
-  }
-  else
-    synctex_rollback(ctx, self->stex, 0);
-  editor_truncate(BUF_OUT, output_data(self->st.stdout.entry));
-  editor_truncate(BUF_LOG, output_data(self->st.log.entry));
+  restore_rollback_outputs(ctx, self);
 }
 
 static bool possible_fence(trace_entry_t *te)
@@ -1542,8 +1547,19 @@ static void engine_finish_convergence(txp_engine *_self, fz_context *ctx)
     // Finishing left the latest process dead (fd=-1) at the top of the
     // snapshot stack. Strip dead processes so get_process() returns a
     // live snapshot the next user edit can roll back into.
+    int reverted = self->process_count ? get_process(self)->trace_len : 0;
     while (self->process_count > 0 && get_process(self)->fd == -1)
       pop_process(ctx, self);
+    if (self->process_count > 0)
+    {
+      // The log restores file handles/output buffers, but seen counters are
+      // tracked separately. A late input may not exist in the retained trace;
+      // leaving its finished-pass counter would walk rollback before trace[0].
+      int retained = get_process(self)->trace_len;
+      while (reverted > retained)
+        revert_trace(&self->trace[--reverted]);
+      restore_rollback_outputs(ctx, self);
+    }
     if (self->process_count == 0)
     {
       reset_seen_for_respawn(self);
