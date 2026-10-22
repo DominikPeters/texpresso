@@ -158,7 +158,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     if (p->svg && !p->region)
     {
       txp_renderer_config *config = txp_renderer_get_config(ctx, renderer);
-      fallback = w > 8192 || h > 8192 || w * h > 4000000 ? "Oversized SVG page" : config->invert_color || (config->themed_color &&
+      fallback = ceilf(w) > 8192 || ceilf(h) > 8192 || ceilf(w) * ceilf(h) > 4000000 ? "Oversized SVG page" : config->invert_color || (config->themed_color &&
         ((config->foreground_color & 0xFFFFFF) != 0 || (config->background_color & 0xFFFFFF) != 0xFFFFFF))
         ? "Preview color theme" : txp_preview_svg_fallback(ctx, list);
       if (!fallback)
