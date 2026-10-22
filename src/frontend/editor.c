@@ -322,12 +322,13 @@ bool editor_parse(fz_context *ctx,
       goto arity;
     *out = (struct editor_command){.tag = EDIT_RERUN_ONCE, .rerun_once = {}};
   }
-  else if (strcmp(verb, "preview-svg") == 0 || strcmp(verb, "preview-render") == 0 || strcmp(verb, "preview-region") == 0 || strcmp(verb, "preview-inverse") == 0)
+  else if (strcmp(verb, "preview-auto") == 0 || strcmp(verb, "preview-svg") == 0 || strcmp(verb, "preview-render") == 0 || strcmp(verb, "preview-region") == 0 || strcmp(verb, "preview-inverse") == 0)
   {
     bool region = strcmp(verb, "preview-region") == 0;
+    bool automatic = strcmp(verb, "preview-auto") == 0;
     bool svg = strcmp(verb, "preview-svg") == 0;
-    bool render = svg || region || strcmp(verb, "preview-render") == 0;
-    if (len != (region ? 10 : 6)) goto arity;
+    bool render = automatic || svg || region || strcmp(verb, "preview-render") == 0;
+    if (len != (region ? 10 : automatic ? 7 : 6)) goto arity;
     double a[9] = {0};
     for (int i = 0; i < len - 1; ++i)
     {
@@ -339,10 +340,11 @@ bool editor_parse(fz_context *ctx,
     }
     if (render)
     {
+      if (automatic && (a[5] < 0 || a[5] > 200000 || floor(a[5]) != a[5])) goto arguments;
       if (region && (a[7] <= a[5] || a[8] <= a[6])) goto arguments;
       if (a[2] < 1 || a[2] > 4096 || a[1] > 100000) goto arguments;
       *out = (struct editor_command){.tag = EDIT_PREVIEW_RENDER,
-        .preview_render = {a[0], a[1], a[2], a[3], a[4], region, {a[5], a[6], a[7], a[8]}, svg}};
+        .preview_render = {a[0], a[1], a[2], a[3], a[4], region, {a[5], a[6], a[7], a[8]}, svg, automatic, automatic ? a[5] : 0}};
     }
     else
       *out = (struct editor_command){.tag = EDIT_PREVIEW_INVERSE,

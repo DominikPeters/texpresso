@@ -1188,6 +1188,8 @@ static void interpret_command(struct persistent_state *ps,
         p->width = cmd.preview_render.width;
         p->region = cmd.preview_render.region;
         p->svg = cmd.preview_render.svg;
+        p->automatic = cmd.preview_render.automatic;
+        p->vector_limit = cmd.preview_render.vector_limit;
         float *bounds = cmd.preview_render.bounds;
         p->bounds = (fz_rect){bounds[0], bounds[1], bounds[2], bounds[3]};
         p->expected_revision = cmd.preview_render.revision;

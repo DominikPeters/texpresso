@@ -2,7 +2,7 @@
 
 `texpresso -capabilities` prints a JSON object and exits before initializing SDL
 or opening a document. Current features are `previewProtocol: 1`, `codecs:
-["png", "svg"]`, `synctex: true`, `regions: true`, and `links: true`. Existing editor clients and the default native
+["png", "svg"]`, `synctex: true`, `regions: true`, `links: true`, and `adaptiveRendering: true`. Existing editor clients and the default native
 window are unchanged. This protocol is enabled only with `-headless -json`.
 Headless mode initializes SDL events/timers, never video/window/texture APIs.
 
@@ -19,6 +19,16 @@ Headless input additions are positional JSON arrays:
   export an outlined SVG, with the same request slot and source guards. Width
   is used only if export falls back to PNG; SVG geometry is independent of it.
   Check the `svg` codec capability before using this command.
+* `["preview-auto", requestId, page, pixelWidth, revision, sequence, vectorLimit]`:
+  choose one codec after the cheap display-list preflight. Check
+  `adaptiveRendering` before using this command. `vectorLimit` is an integer
+  from 0 to 200000; the client initially uses 16000, then adjusts it from measured
+  SVG costs. Glyph count (weighted by 20) and packed path bytes form the score.
+  Eligible pages within that limit use SVG; other pages use bounded PNG. Pages
+  containing raster images, unsupported SVG graphics, or a score above 200000
+  stay PNG. The response includes `vectorCost` and `svgEligible` so the client
+  can request `preview-svg` later without recompiling the same snapshot.
+  Ordinary PNG choices in Auto do not carry a `fallback` warning.
 * `["preview-destination", revision, sequence, name]`: resolve a DVI named
   destination. Check `links` first. Compiles only until the destination's page
   is complete, without exporting intermediate pages. Stale requests are ignored.

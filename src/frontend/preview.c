@@ -8,7 +8,7 @@
 /* Audit against MuPDF 1.28.5 source/fitz/svg-device.c. Keep this cheap pass
  * independent of export: no glyph outlining, image decoding, or rasterization.
  * Conservative fallbacks preserve the draw device as the fidelity reference. */
-typedef struct { fz_device super; const char *reason; size_t cost; } svg_check;
+typedef struct { fz_device super; const char *reason; size_t cost; bool images; } svg_check;
 static void check_group(fz_context *ctx, fz_device *dev, fz_rect b, fz_colorspace *cs,
                         int isolated, int knockout, int blend, float alpha)
 {
@@ -48,6 +48,7 @@ static void check_image(fz_context *ctx, fz_device *dev, fz_image *image, fz_mat
 {
   if (cp.op || cp.opm) ((svg_check *)dev)->reason = "PDF overprint";
   ((svg_check *)dev)->cost += 100;
+  ((svg_check *)dev)->images = true;
   if (image->colorspace && image->colorspace != fz_device_rgb(ctx) && image->colorspace != fz_device_gray(ctx))
     ((svg_check *)dev)->reason = "PDF image color spaces";
   if (image->mask || image->use_decode || image->use_colorkey)
@@ -72,7 +73,7 @@ static void bounded_svg_write(fz_context *ctx, void *state, const void *data, si
   if (size > 16 * 1024 * 1024 - buffer->len) fz_throw(ctx, FZ_ERROR_GENERIC, "SVG transfer budget");
   fz_append_data(ctx, buffer, data, size);
 }
-const char *txp_preview_svg_fallback(fz_context *ctx, fz_display_list *list)
+static const char *svg_analysis(fz_context *ctx, fz_display_list *list, size_t *cost, bool *images)
 {
   svg_check *check = fz_new_derived_device(ctx, svg_check);
   check->super.begin_group = check_group; check->super.begin_mask = check_mask;
@@ -86,6 +87,8 @@ const char *txp_preview_svg_fallback(fz_context *ctx, fz_display_list *list)
   fz_var(reason);
   fz_try(ctx) {
     fz_run_display_list(ctx, list, &check->super, fz_identity, fz_infinite_rect, NULL);
+    if (cost) *cost = check->cost;
+    if (images) *images = check->images;
     reason = check->cost > 2000000 ? "Vector complexity budget" : check->reason;
     fz_close_device(ctx, &check->super);
   }
@@ -93,6 +96,9 @@ const char *txp_preview_svg_fallback(fz_context *ctx, fz_display_list *list)
   fz_catch(ctx) { fz_rethrow(ctx); }
   return reason;
 }
+
+const char *txp_preview_svg_fallback(fz_context *ctx, fz_display_list *list)
+{ return svg_analysis(ctx, list, NULL, NULL); }
 
 /* Interactive RGB PNGs: one scanline and a bounded deflate buffer instead of
  * MuPDF's whole-image filtered/compressed scratch allocations. Unfiltered
@@ -218,11 +224,12 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
   fz_device *dev = NULL;
   fz_output *out = NULL;
   const char *fallback = NULL;
-  bool svg = false;
+  bool svg = false, svg_eligible = false, images = false;
+  size_t vector_cost = 0;
   int image_width = 0, image_height = 0;
   fz_var(pix);
   fz_var(png);
-  fz_var(dev); fz_var(out); fz_var(fallback); fz_var(svg);
+  fz_var(dev); fz_var(out); fz_var(fallback); fz_var(svg); fz_var(svg_eligible); fz_var(vector_cost);
   fz_try(ctx)
   {
     fz_rect b = fz_bound_display_list(ctx, list);
@@ -235,15 +242,19 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     if (!isfinite(w) || !isfinite(h) || w < 0.01f || h < 0.01f || w > 1e7f || h > 1e7f ||
         fabsf(b.x0) >= 1e9f || fabsf(b.y0) >= 1e9f || fabsf(b.x1) >= 1e9f || fabsf(b.y1) >= 1e9f)
       fz_throw(ctx, FZ_ERROR_GENERIC, "Invalid page bounds");
-    if (p->svg && !p->region)
+    if ((p->svg || p->automatic) && !p->region)
     {
       txp_renderer_config *config = txp_renderer_get_config(ctx, renderer);
       double preflight_start = txp_profile_now();
       fallback = ceilf(w) > 8192 || ceilf(h) > 8192 || ceilf(w) * ceilf(h) > 4000000 ? "Oversized SVG page" : config->invert_color || (config->themed_color &&
         ((config->foreground_color & 0xFFFFFF) != 0 || (config->background_color & 0xFFFFFF) != 0xFFFFFF))
-        ? "Preview color theme" : txp_preview_svg_fallback(ctx, list);
+        ? "Preview color theme" : svg_analysis(ctx, list, &vector_cost, &images);
       txp_profile_record("svg-preflight", preflight_start, p->request, page, 0);
-      if (!fallback)
+      /* Count existing display-list operations; do not export both codecs on
+       * the interactive path. Raster images already have a good PNG representation.
+       * Small pages start as SVG, larger eligible pages can be upgraded on idle. */
+      svg_eligible = !fallback && !images && vector_cost <= 200000;
+      if (!fallback && (!p->automatic || (svg_eligible && vector_cost <= (size_t)p->vector_limit)))
       {
         /* Paths preserve exact fonts; the SVG stays isolated in a blob <img>. */
         fz_try(ctx) {
@@ -268,9 +279,11 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
           fz_drop_device(ctx, dev); dev = NULL; fz_drop_output(ctx, out); out = NULL;
           fz_drop_buffer(ctx, png); png = NULL;
           fallback = "SVG export failed or exceeded the transfer budget";
+          svg_eligible = false;
         }
       }
     }
+    if (p->automatic) fallback = NULL; /* PNG is an ordinary Auto choice. */
     if (!svg)
     {
       double draw_start = txp_profile_now();
@@ -306,6 +319,8 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
            p->request, p->revision, p->sequence, page,
            b.x0, b.y0, b.x1, b.y1,
            image_width, image_height, svg ? "image/svg+xml" : "image/png", len);
+    if ((p->automatic || p->svg) && !p->region)
+      printf(",\"svgEligible\":%s,\"vectorCost\":%zu", svg_eligible ? "true" : "false", vector_cost);
     if (fallback) printf(",\"fallback\":\"%s\"", fallback);
     if (!p->region && p->annotations && p->annotations->len) {
       printf(",\"annotations\":%.*s", (int)p->annotations->len, p->annotations->data);

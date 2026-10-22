@@ -234,7 +234,7 @@ int main(int argc, const char **argv)
 
   if (capabilities)
   {
-    puts("{\"previewProtocol\":1,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true}");
+    puts("{\"previewProtocol\":1,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"adaptiveRendering\":true}");
     return 0;
   }
   if (headless && protocol != EDITOR_JSON)
