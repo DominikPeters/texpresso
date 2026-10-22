@@ -30,6 +30,40 @@ static void hit(fz_context *ctx, synctex_t *stx, fz_buffer *buf, int x, int y, i
     abort();
   }
 }
+static void forward_stream(fz_context *ctx)
+{
+  const char *prefix = "Input:1:main.tex\nInput:2:chapter.tex\n{1\n[1,99:0,1000:1000,1000,0\n"
+    "(1,99:0,1000:1000,1000,0\n(2,10:100,300:800,10,3\nk2,10:200,300:10\n)\n)\n]\n}1\n";
+  const char *closed = "/2\n";
+  const char *last = "{2\n[1,99:0,1000:1000,1000,0\n"
+    "(1,99:0,1000:1000,1000,0\n(2,30:100,300:800,10,3\nk2,30:200,300:10\n)\n)\n]\n}2\n";
+  synctex_t *stx = synctex_new(ctx);
+  fz_buffer *buf = fz_new_buffer_from_copied_data(ctx, (const unsigned char *)prefix, strlen(prefix));
+  synctex_update(ctx, stx, buf);
+  synctex_set_target(stx, 0, "chapter.tex", 30);
+  int page = -1, x, y;
+  assert(!synctex_find_resolved_target(ctx, stx, buf, false, &page, &x, &y));
+  assert(synctex_has_target(stx)); /* Page one is only a provisional candidate. */
+  fz_append_string(ctx, buf, closed); synctex_update(ctx, stx, buf);
+  assert(!synctex_find_resolved_target(ctx, stx, buf, false, &page, &x, &y));
+  assert(synctex_has_target(stx)); /* Closing an input does not ship its last page. */
+  fz_append_string(ctx, buf, last); synctex_update(ctx, stx, buf);
+  assert(synctex_find_resolved_target(ctx, stx, buf, false, &page, &x, &y));
+  assert(page == 1 && !synctex_has_target(stx));
+
+  synctex_set_target(stx, 0, "chapter.tex", 99); /* A non-rendering source line. */
+  assert(!synctex_find_resolved_target(ctx, stx, buf, false, &page, &x, &y));
+  assert(synctex_find_resolved_target(ctx, stx, buf, true, &page, &x, &y));
+  assert(page == 1); /* Final fallback is returned even without new records. */
+
+  synctex_set_target(stx, 0, "chapter.tex", 99);
+  assert(!synctex_find_resolved_target(ctx, stx, buf, false, &page, &x, &y));
+  buf->len = strlen(prefix) + strlen(closed); synctex_update(ctx, stx, buf);
+  assert(synctex_find_resolved_target(ctx, stx, buf, true, &page, &x, &y));
+  assert(page == 0); /* candidate_page == retained page count was removed. */
+  fz_drop_buffer(ctx, buf); synctex_free(ctx, stx);
+}
+
 int main(void)
 {
   const char *contents =
@@ -54,6 +88,7 @@ int main(void)
   hit(ctx, stx, buf, 150, 498, 63); /* Glyph-only hbox fallback. */
   fz_drop_buffer(ctx, buf);
   synctex_free(ctx, stx);
+  forward_stream(ctx);
   fz_drop_context(ctx);
   puts("PASS: inverse SyncTeX line geometry");
   return 0;
