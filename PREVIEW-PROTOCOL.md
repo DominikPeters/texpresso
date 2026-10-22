@@ -100,7 +100,7 @@ Clients must reject stale hits and apply their own policy to external URIs.
 When SVG cannot preserve the page, the response is PNG with a short `fallback`
 reason. The current policy rejects non-isolated/knockout/non-normal blend groups,
 non-RGB/Gray group blending spaces, soft masks, image masks/decode arrays/color
-keys, Type 3 text, overprint, shadings, and tiling patterns. It also falls back
+keys or non-device RGB/Gray image color spaces, Type 3 text, overprint, shadings, and tiling patterns. It also falls back
 for preview color remapping, excessive vector complexity or embedded image size,
 failed export, or more than 16 MiB of SVG. Regions always use bounded PNGs.
 A client-side SVG decode failure can retry the same snapshot with PNG.

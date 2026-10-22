@@ -45,6 +45,9 @@ static void check_stroke(fz_context *ctx, fz_device *dev, const fz_path *path, c
 static void check_image(fz_context *ctx, fz_device *dev, fz_image *image, fz_matrix m, float alpha, fz_color_params cp)
 {
   if (cp.op || cp.opm) ((svg_check *)dev)->reason = "PDF overprint";
+  ((svg_check *)dev)->cost += 100;
+  if (image->colorspace && image->colorspace != fz_device_rgb(ctx) && image->colorspace != fz_device_gray(ctx))
+    ((svg_check *)dev)->reason = "PDF image color spaces";
   if (image->mask || image->use_decode || image->use_colorkey)
     ((svg_check *)dev)->reason = "PDF image masks or decode arrays";
   if ((double)image->w * image->h > 16000000) ((svg_check *)dev)->reason = "Large embedded image";

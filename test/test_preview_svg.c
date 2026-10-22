@@ -25,8 +25,8 @@ int main(void)
     assert((reason != NULL) == (i >= 2));
     fz_drop_display_list(ctx, list);
   }
-  for (int flag = 0; flag < 3; flag++) {
-    fz_pixmap *pix = fz_new_pixmap(ctx, fz_device_rgb(ctx), 2, 2, NULL, 0);
+  for (int flag = 0; flag < 4; flag++) {
+    fz_pixmap *pix = fz_new_pixmap(ctx, flag == 3 ? fz_device_cmyk(ctx) : fz_device_rgb(ctx), 2, 2, NULL, 0);
     fz_clear_pixmap_with_value(ctx, pix, 255);
     fz_image *image = fz_new_image_from_pixmap(ctx, pix, NULL);
     if (flag == 1) image->use_decode = 1;
