@@ -8,7 +8,11 @@
 /* One current display-list snapshot and one replaceable render request. */
 typedef struct {
   int revision, sequence;
-  bool valid, pending, region, svg, automatic, patches;
+  bool valid, pending, region, svg, automatic, patches, background;
+  bool foreground_valid;
+  int foreground_page, saved_foreground_page, foreground_revision, foreground_sequence;
+  fz_display_list *background_list;
+  fz_buffer *foreground_annotations;
   fz_buffer *annotations;
   char destination[4097];
   fz_rect bounds;

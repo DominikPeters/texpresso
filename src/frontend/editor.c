@@ -322,14 +322,15 @@ bool editor_parse(fz_context *ctx,
       goto arity;
     *out = (struct editor_command){.tag = EDIT_RERUN_ONCE, .rerun_once = {}};
   }
-  else if (strcmp(verb, "preview-png") == 0 || strcmp(verb, "preview-auto") == 0 || strcmp(verb, "preview-svg") == 0 || strcmp(verb, "preview-render") == 0 || strcmp(verb, "preview-region") == 0 || strcmp(verb, "preview-inverse") == 0)
+  else if (strcmp(verb, "preview-background") == 0 || strcmp(verb, "preview-png") == 0 || strcmp(verb, "preview-auto") == 0 || strcmp(verb, "preview-svg") == 0 || strcmp(verb, "preview-render") == 0 || strcmp(verb, "preview-region") == 0 || strcmp(verb, "preview-inverse") == 0)
   {
+    bool background = strcmp(verb, "preview-background") == 0;
     bool region = strcmp(verb, "preview-region") == 0;
     bool png = strcmp(verb, "preview-png") == 0;
     bool automatic = strcmp(verb, "preview-auto") == 0;
     bool svg = strcmp(verb, "preview-svg") == 0;
-    bool render = png || automatic || svg || region || strcmp(verb, "preview-render") == 0;
-    if (automatic ? (len != 7 && len != 8) : len != (region ? 10 : png ? 7 : 6)) goto arity;
+    bool render = background || png || automatic || svg || region || strcmp(verb, "preview-render") == 0;
+    if (background ? len != 8 : automatic ? (len != 7 && len != 8) : len != (region ? 10 : png ? 7 : 6)) goto arity;
     double a[9] = {0};
     for (int i = 0; i < len - 1; ++i)
     {
@@ -341,17 +342,35 @@ bool editor_parse(fz_context *ctx,
     }
     if (render)
     {
-      int base = png ? a[5] : automatic && len == 8 ? a[6] : 0;
-      if (base < 0 || (png && floor(a[5]) != a[5]) || (automatic && len == 8 && (a[6] < 0 || floor(a[6]) != a[6]))) goto arguments;
-      if (automatic && (a[5] < 0 || a[5] > 200000 || floor(a[5]) != a[5])) goto arguments;
+      if (background) {
+        if (a[5] < 0 || a[5] > 2 || floor(a[5]) != a[5] ||
+            a[6] < 0 || a[6] > 200000 || floor(a[6]) != a[6]) goto arguments;
+        automatic = a[5] == 2; svg = a[5] == 1;
+      }
+      int base = png ? a[5] : automatic && !background && len == 8 ? a[6] : 0;
+      if (base < 0 || (png && floor(a[5]) != a[5]) || (automatic && !background && len == 8 && (a[6] < 0 || floor(a[6]) != a[6]))) goto arguments;
+      if (automatic && !background && (a[5] < 0 || a[5] > 200000 || floor(a[5]) != a[5])) goto arguments;
       if (region && (a[7] <= a[5] || a[8] <= a[6])) goto arguments;
       if (a[2] < 1 || a[2] > 4096 || a[1] > 100000) goto arguments;
       *out = (struct editor_command){.tag = EDIT_PREVIEW_RENDER,
-        .preview_render = {a[0], a[1], a[2], a[3], a[4], region, {a[5], a[6], a[7], a[8]}, svg, automatic, automatic ? a[5] : 0, png || (automatic && len == 8), base}};
+        .preview_render = {a[0], a[1], a[2], a[3], a[4], region, {a[5], a[6], a[7], a[8]}, svg, automatic, automatic ? a[background ? 6 : 5] : 0, !background && (png || (automatic && len == 8)), base, background}};
     }
     else
       *out = (struct editor_command){.tag = EDIT_PREVIEW_INVERSE,
         .preview_inverse = {a[0], a[1], a[2], a[3], a[4]}};
+  }
+  else if (strcmp(verb, "preview-cancel") == 0)
+  {
+    if (len != 3) goto arity;
+    int a[2];
+    for (int i = 0; i < 2; i++) {
+      val v = val_array_get(ctx, stack, command, i + 1);
+      if (!val_is_number(v)) goto arguments;
+      double n = val_number(ctx, v);
+      if (!isfinite(n) || n < 0 || n > (i ? 100000 : INT_MAX) || floor(n) != n) goto arguments;
+      a[i] = n;
+    }
+    *out = (struct editor_command){.tag = EDIT_PREVIEW_CANCEL, .preview_cancel = {a[0], a[1]}};
   }
   else if (strcmp(verb, "preview-destination") == 0)
   {

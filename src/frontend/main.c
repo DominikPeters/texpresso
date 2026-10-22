@@ -931,6 +931,30 @@ static uint32_t convert_color(fz_context *ctx, vstack *stack, float frgb[3])
   return (rgb[0] << 16) | (rgb[1] << 8) | (rgb[2]);
 }
 
+/* A speculative render owns a temporary display list, never a second raster.
+ * Keep the foreground renderer available for immediate inverse search. */
+static void finish_background(struct persistent_state *ps, ui_state *ui, int page)
+{
+  txp_preview *p = &ui->preview;
+  if (p->background) {
+    fz_drop_display_list(ps->ctx, p->background_list); p->background_list = NULL;
+    fz_drop_buffer(ps->ctx, p->annotations);
+    p->annotations = p->foreground_annotations; p->foreground_annotations = NULL;
+    p->valid = p->foreground_valid && page == p->saved_foreground_page &&
+      p->foreground_revision == p->revision && p->foreground_sequence == p->sequence;
+    p->background = false;
+  } else if (page != ui->page) p->valid = false;
+  p->pending = false; p->foreground_page = page; ui->page = page;
+  if (!p->valid) schedule_event(RELOAD_EVENT);
+}
+
+static void preempt_background(struct persistent_state *ps, ui_state *ui, int page)
+{
+  if (!ui->preview.background) return;
+  if (ui->preview.pending) printf("[\"preview-retry\",%d]\n", ui->preview.request);
+  finish_background(ps, ui, page);
+}
+
 static void display_page(struct persistent_state *ps, ui_state *ui)
 {
   double list_start = txp_profile_now();
@@ -940,7 +964,10 @@ static void display_page(struct persistent_state *ps, ui_state *ui)
   fz_drop_buffer(ps->ctx, ui->preview.annotations);
   ui->preview.annotations = send(page_annotations, ui->eng, ps->ctx);
   txp_profile_record("annotations", annotation_start, ui->preview.request, ui->page, 0);
-  txp_renderer_set_contents(ps->ctx, ui->doc_renderer, dl);
+  if (ui->preview.background) {
+    fz_drop_display_list(ps->ctx, ui->preview.background_list);
+    ui->preview.background_list = fz_keep_display_list(ps->ctx, dl);
+  } else txp_renderer_set_contents(ps->ctx, ui->doc_renderer, dl);
   fz_drop_display_list(ps->ctx, dl);
   if (ps->headless) ui->preview.valid = true;
   schedule_event(RENDER_EVENT);
@@ -994,8 +1021,10 @@ static void interpret_command(struct persistent_state *ps,
     return;
 
   if (ps->headless && (cmd.tag == EDIT_OPEN || cmd.tag == EDIT_CLOSE ||
-      cmd.tag == EDIT_CHANGE || cmd.tag == EDIT_RESCAN || cmd.tag == EDIT_RERUN_ONCE))
+      cmd.tag == EDIT_CHANGE || cmd.tag == EDIT_RESCAN || cmd.tag == EDIT_RERUN_ONCE)) {
+    preempt_background(ps, ui, ui->preview.foreground_page);
     txp_preview_invalidate(&ui->preview);
+  }
 
   switch (cmd.tag)
   {
@@ -1105,6 +1134,7 @@ static void interpret_command(struct persistent_state *ps,
 
     case EDIT_SYNCTEX_FORWARD:
     {
+      if (ps->headless) preempt_background(ps, ui, ui->preview.foreground_page);
       fz_buffer *buf;
       synctex_t *stx = send(synctex, ui->eng, &buf);
       int go_up = 0;
@@ -1174,14 +1204,39 @@ static void interpret_command(struct persistent_state *ps,
 
     case EDIT_PREVIEW_DESTINATION:
       if (ps->headless && cmd.preview_destination.revision == ui->preview.revision &&
-          cmd.preview_destination.sequence == ui->preview.sequence)
+          cmd.preview_destination.sequence == ui->preview.sequence) {
+        preempt_background(ps, ui, ui->preview.foreground_page);
         snprintf(ui->preview.destination, sizeof ui->preview.destination, "%s", cmd.preview_destination.name);
+      }
+      break;
+
+    case EDIT_PREVIEW_CANCEL:
+      if (ps->headless && (cmd.preview_cancel.request == 0 ||
+          (ui->preview.background && ui->preview.request == cmd.preview_cancel.request)))
+        finish_background(ps, ui, cmd.preview_cancel.page);
       break;
 
     case EDIT_PREVIEW_RENDER:
       if (ps->headless)
       {
         txp_preview *p = &ui->preview;
+        if (cmd.preview_render.background && (cmd.preview_render.revision != p->revision ||
+            cmd.preview_render.sequence != p->sequence)) {
+          printf("[\"preview-retry\",%d]\n", cmd.preview_render.request);
+          break;
+        }
+        if (!cmd.preview_render.background && p->background)
+          finish_background(ps, ui, cmd.preview_render.page);
+        if (cmd.preview_render.background) {
+          if (!p->background) {
+            p->foreground_page = p->saved_foreground_page = ui->page;
+            p->foreground_valid = p->valid;
+            p->foreground_revision = p->revision; p->foreground_sequence = p->sequence;
+            p->foreground_annotations = fz_keep_buffer(ps->ctx, p->annotations);
+          }
+          p->background = true; p->valid = false;
+          fz_drop_display_list(ps->ctx, p->background_list); p->background_list = NULL;
+        } else p->foreground_page = cmd.preview_render.page;
         p->pending = true;
         p->request = cmd.preview_render.request;
         p->page = cmd.preview_render.page;
@@ -1196,7 +1251,7 @@ static void interpret_command(struct persistent_state *ps,
         p->bounds = (fz_rect){bounds[0], bounds[1], bounds[2], bounds[3]};
         p->expected_revision = cmd.preview_render.revision;
         p->expected_sequence = cmd.preview_render.sequence;
-        if (p->page != ui->page)
+        if (p->page != ui->page || !p->valid)
         {
           ui->page = p->page;
           p->valid = false;
@@ -1207,6 +1262,14 @@ static void interpret_command(struct persistent_state *ps,
       break;
 
     case EDIT_PREVIEW_INVERSE:
+      if (ps->headless && cmd.preview_inverse.revision == ui->preview.revision &&
+          cmd.preview_inverse.sequence == ui->preview.sequence)
+        preempt_background(ps, ui, cmd.preview_inverse.page);
+      if (ps->headless && !ui->preview.valid &&
+          cmd.preview_inverse.revision == ui->preview.revision &&
+          cmd.preview_inverse.sequence == ui->preview.sequence &&
+          cmd.preview_inverse.page == ui->page && ui->page < send(page_count, ui->eng))
+        display_page(ps, ui);
       if (ps->headless && ui->preview.valid &&
           cmd.preview_inverse.revision == ui->preview.revision &&
           cmd.preview_inverse.sequence == ui->preview.sequence &&
@@ -1464,16 +1527,20 @@ bool texpresso_main(struct persistent_state *ps)
           ui->preview.valid = false;
           schedule_event(RELOAD_EVENT);
         }
-        txp_preview_state(&ui->preview, after_page_count, ui->page, complete);
+        txp_preview_state(&ui->preview, after_page_count,
+                          ui->preview.background ? ui->preview.foreground_page : ui->page, complete);
         // Reject obsolete revision/sequence requests before reporting a real
         // no-page failure. Rapid edits can invalidate a request during rollback.
         txp_preview_export(ps->ctx, &ui->preview,
+                          ui->preview.background ? ui->preview.background_list :
                           txp_renderer_get_contents(ps->ctx, ui->doc_renderer), ui->page, ui->doc_renderer);
         if (complete && after_page_count == 0 && ui->preview.pending)
         {
           printf("[\"preview-error\",%d,\"The document has not produced a page. Open Output for compiler messages.\"]\n", ui->preview.request);
           ui->preview.pending = false;
         }
+        if (ui->preview.background && !ui->preview.pending)
+          finish_background(ps, ui, ui->preview.foreground_page);
         if (stdin_eof) quit = true;
       }
       fflush(stdout);
@@ -1540,6 +1607,7 @@ bool texpresso_main(struct persistent_state *ps)
             page >= 0 && page < send(page_count, ui->eng))
         {
           ui->page = page;
+          if (ps->headless && !ui->preview.background) ui->preview.foreground_page = page;
           display_page(ps, ui);
         }
 
@@ -1857,6 +1925,8 @@ bool texpresso_main(struct persistent_state *ps)
     fz_keep_display_list(ps->ctx, ps->initial.display_list);
 
   fz_drop_buffer(ps->ctx, ui->preview.annotations);
+  fz_drop_buffer(ps->ctx, ui->preview.foreground_annotations);
+  fz_drop_display_list(ps->ctx, ui->preview.background_list);
   fz_drop_pixmap(ps->ctx, ui->preview.previous_png);
   txp_renderer_free(ps->ctx, ui->doc_renderer);
   send(destroy, ui->eng, ps->ctx);

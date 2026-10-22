@@ -338,7 +338,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
       txp_profile_record("png-color", color_start, p->request, page, 0);
       image_width = fz_pixmap_width(ctx, pix); image_height = fz_pixmap_height(ctx, pix);
       double compare_start = txp_profile_now();
-      patch = p->patches && !p->region && p->patch_base > 0 && p->patch_base == p->previous_id &&
+      patch = p->patches && !p->background && !p->region && p->patch_base > 0 && p->patch_base == p->previous_id &&
         page == p->previous_page && b.x0 == p->previous_bounds.x0 && b.y0 == p->previous_bounds.y0 &&
         b.x1 == p->previous_bounds.x1 && b.y1 == p->previous_bounds.y1 &&
         txp_preview_dirty_rect(ctx, p->previous_png, pix, &dirty) &&
@@ -376,7 +376,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     printf(",\"exportMs\":%.4f", export_ms);
     if ((p->automatic || p->svg) && !p->region)
       printf(",\"svgEligible\":%s,\"vectorCost\":%zu", svg_eligible ? "true" : "false", vector_cost);
-    if (!svg && !p->region && p->patches) printf(",\"rasterId\":%d", p->request);
+    if (!svg && !p->region && !p->background && p->patches) printf(",\"rasterId\":%d", p->request);
     if (patch) printf(",\"patch\":{\"base\":%d,\"rect\":[%d,%d,%d,%d]}",
       p->patch_base, dirty.x0, dirty.y0, dirty.x1-dirty.x0, dirty.y1-dirty.y0);
     if (fallback) printf(",\"fallback\":\"%s\"", fallback);
@@ -388,7 +388,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
       _Exit(1); /* A partial binary frame cannot be recovered. */
     if (fflush(stdout) != 0) _Exit(1);
     txp_profile_record("pipe-write", transfer_start, p->request, page, len);
-    if (!p->region) {
+    if (!p->region && !p->background) {
       fz_drop_pixmap(ctx, p->previous_png); p->previous_png = NULL; p->previous_id = 0;
       if (!svg && p->patches) {
         p->previous_png = fz_keep_pixmap(ctx, pix); p->previous_bounds = b;

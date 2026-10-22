@@ -2,7 +2,7 @@
 
 `texpresso -capabilities` prints a JSON object and exits before initializing SDL
 or opening a document. Current features are `previewProtocol: 1`, `codecs:
-["png", "svg"]`, `synctex: true`, `regions: true`, `links: true`, and `adaptiveRendering: true`, and `pngPatches: true`. Existing editor clients and the default native
+["png", "svg"]`, `synctex: true`, `regions: true`, `links: true`, `adaptiveRendering: true`, `pngPatches: true`, and `backgroundRendering: true`. Existing editor clients and the default native
 window are unchanged. This protocol is enabled only with `-headless -json`.
 Headless mode initializes SDL events/timers, never video/window/texture APIs.
 
@@ -34,6 +34,21 @@ Headless input additions are positional JSON arrays:
   stay PNG. The response includes `vectorCost` and `svgEligible` so the client
   can request `preview-svg` later without recompiling the same snapshot.
   Ordinary PNG choices in Auto do not carry a `fallback` warning.
+* `["preview-background", requestId, page, pixelWidth, revision, sequence, codec, vectorLimit]`:
+  speculative full-page export after checking `backgroundRendering`. `codec` is
+  0 for PNG, 1 for SVG, or 2 for Auto; `vectorLimit` has the same bounds as Auto.
+  The frame never carries `patch` or `rasterId` and does not replace or release
+  the native foreground PNG comparison raster, including when SVG is selected.
+  It uses one temporary display list, without another retained raster. Foreground
+  renderer contents remain available and `preview-state.currentPage` remains the
+  foreground page. Completion restores foreground compiler demand automatically.
+* `["preview-cancel", requestId, foregroundPage]`: cancel the matching background
+  request and retarget compiler demand without exporting another image. Request
+  ID 0 explicitly clears any pending export and retargets a cached foreground
+  navigation. A nonzero ID cannot cancel an unrelated request. Source changes,
+  normal render requests, forward/inverse SyncTeX, and destination lookups preempt
+  speculation. Direct source/SyncTeX preemption emits `preview-retry` for the
+  abandoned background request; explicit cancellation needs no response.
 * `["preview-destination", revision, sequence, name]`: resolve a DVI named
   destination. Check `links` first. Compiles only until the destination's page
   is complete, without exporting intermediate pages. Stale requests are ignored.
@@ -66,7 +81,9 @@ notifications describe availability and navigation:
 The revision is deliberately conservative: edits, rescans, reruns, and detected
 dependency changes invalidate the current display-list snapshot. Keep any old
 image visible if desired, but do not use it for hit testing after invalidation.
-One display list is retained and reused for repeated zoom exports. Theme
+One foreground display list is retained and reused for repeated zoom exports;
+speculation may temporarily retain one additional display list until completion
+or cancellation. Theme
 commands recolor the PNG with the same mapping as the native renderer.
 
 ## Binary image framing
