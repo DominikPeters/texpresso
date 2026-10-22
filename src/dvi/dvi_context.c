@@ -59,6 +59,9 @@ dvi_context_set_device(fz_context *ctx, dvi_context *dc, fz_device *dev)
 void dvi_context_free(fz_context *ctx, dvi_context *dc)
 {
   dvi_context_set_device(ctx, dc, NULL);
+  fz_drop_buffer(ctx, dc->annotation_links);
+  fz_drop_buffer(ctx, dc->annotation_destinations);
+  pdf_drop_document(ctx, dc->annotation_pdf);
   dvi_resmanager_free(ctx, dc->resmanager);
   dvi_scratch_release(ctx, &dc->scratch);
   fz_free(ctx, dc);
@@ -66,6 +69,9 @@ void dvi_context_free(fz_context *ctx, dvi_context *dc)
 
 void dvi_context_begin_frame(fz_context *ctx, dvi_context *dc, fz_device *dev)
 {
+  fz_drop_buffer(ctx, dc->annotation_links); fz_drop_buffer(ctx, dc->annotation_destinations);
+  dc->annotation_links = fz_new_buffer(ctx, 256); dc->annotation_destinations = fz_new_buffer(ctx, 256);
+  dc->annotation_link_count = dc->annotation_destination_count = 0; dc->annotation_uri = NULL;
   dvi_context_set_device(ctx, dc, dev);
   dvi_state *st = &dc->root;
   st->registers_stack.depth = 0;
@@ -83,6 +89,7 @@ void dvi_context_begin_frame(fz_context *ctx, dvi_context *dc, fz_device *dev)
 
 void dvi_context_end_frame(fz_context *ctx, dvi_context *dc)
 {
+  dvi_context_flush_text(ctx, dc, &dc->root); dc->annotation_uri = NULL;
   dvi_scratch_clear(ctx, &dc->scratch);
   dvi_context_set_device(ctx, dc, NULL);
 

@@ -67,6 +67,8 @@ struct txp_engine_class
   void (*begin_changes)(txp_engine *self, fz_context *ctx);
   void (*detect_changes)(txp_engine *self, fz_context *ctx);
   bool (*end_changes)(txp_engine *self, fz_context *ctx);
+  fz_buffer *(*page_annotations)(txp_engine *self, fz_context *ctx);
+  int (*destination_page)(txp_engine *self, fz_context *ctx, const char *name);
   int (*page_count)(txp_engine *self);
   fz_display_list *(*render_page)(txp_engine *self, fz_context *ctx, int page);
   txp_engine_status (*get_status)(txp_engine *self);
@@ -89,6 +91,8 @@ struct txp_engine_class
   static void engine_begin_changes(txp_engine *_self, fz_context *ctx);     \
   static void engine_detect_changes(txp_engine *_self, fz_context *ctx);    \
   static bool engine_end_changes(txp_engine *_self, fz_context *ctx);       \
+  static fz_buffer *engine_page_annotations(txp_engine *self, fz_context *ctx); \
+  static int engine_destination_page(txp_engine *self, fz_context *ctx, const char *name); \
   static int engine_page_count(txp_engine *_self);                          \
   static txp_engine_status engine_get_status(txp_engine *_self);            \
   static float engine_scale_factor(txp_engine *_self);                      \
@@ -106,6 +110,8 @@ struct txp_engine_class
   static struct txp_engine_class _class = {                                 \
       .destroy = engine_destroy,                                            \
       .step = engine_step,                                                  \
+      .page_annotations = engine_page_annotations, \
+      .destination_page = engine_destination_page, \
       .page_count = engine_page_count,                                      \
       .render_page = engine_render_page,                                    \
       .get_status = engine_get_status,                                      \

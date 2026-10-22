@@ -262,6 +262,10 @@ static void add(struct table *table,
                 const char *dir,
                 const char *name)
 {
+  // TeX Live's filename database also lists documentation and package sources.
+  // These are not runtime search trees: e.g. an example hyperref.cfg can force
+  // the ps2pdf driver on XeTeX even when kpsewhich reports no configuration.
+  if (has_component(dir, "doc") || has_component(dir, "source")) return;
   bool has_dot = 0;
   for (const char *p = name; *p; p++)
   {

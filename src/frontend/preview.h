@@ -8,7 +8,9 @@
 /* One current display-list snapshot and one replaceable render request. */
 typedef struct {
   int revision, sequence;
-  bool valid, pending, region;
+  bool valid, pending, region, svg;
+  fz_buffer *annotations;
+  char destination[4097];
   fz_rect bounds;
   int request, page, width, expected_revision, expected_sequence;
   int last_count, last_page, last_revision, last_sequence, last_complete;
@@ -17,6 +19,7 @@ typedef struct {
 void txp_preview_init(txp_preview *p);
 void txp_preview_invalidate(txp_preview *p);
 void txp_preview_state(txp_preview *p, int count, int page, bool complete);
+const char *txp_preview_svg_fallback(fz_context *ctx, fz_display_list *list);
 void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, int page, txp_renderer *renderer);
 
 #endif

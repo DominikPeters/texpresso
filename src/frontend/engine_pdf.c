@@ -161,3 +161,15 @@ txp_engine *txp_create_pdf_engine(fz_context *ctx, const char *pdf_path)
 
   return (txp_engine*)self;
 }
+
+static fz_buffer *engine_page_annotations(txp_engine *_self, fz_context *ctx)
+{
+  SELF;
+  return NULL;
+}
+
+static int engine_destination_page(txp_engine *_self, fz_context *ctx, const char *name)
+{
+  SELF;
+  return -1;
+}

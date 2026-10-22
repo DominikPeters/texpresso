@@ -36,6 +36,9 @@ struct incdvi_s
   int page_len, page_cap;
   int *pages;
   dvi_context *dc;
+  struct { char *name; int offset, page; } *destinations;
+  int destination_count, destination_capacity;
+  size_t destination_bytes;
 };
 
 static int add_page(fz_context *ctx, incdvi_t *d)
@@ -72,6 +75,8 @@ void incdvi_free(fz_context *ctx, incdvi_t *d)
 {
   if (d->pages)
     fz_free(ctx, d->pages);
+  for (int i = 0; i < d->destination_count; i++) fz_free(ctx, d->destinations[i].name);
+  fz_free(ctx, d->destinations);
   dvi_context_free(ctx, d->dc);
   fz_free(ctx, d);
 }
@@ -117,6 +122,10 @@ void incdvi_update(fz_context *ctx, incdvi_t *d, fz_buffer *buf)
     }
   }
 
+  while (d->destination_count && d->destinations[d->destination_count - 1].offset >= d->offset) {
+    char *name = d->destinations[--d->destination_count].name;
+    d->destination_bytes -= strlen(name) + 1; fz_free(ctx, name);
+  }
   if (d->offset > 0)
   {
     enum dvi_version version = dvi_context_state(d->dc)->version;
@@ -131,6 +140,22 @@ void incdvi_update(fz_context *ctx, incdvi_t *d, fz_buffer *buf)
         if (!(page & 1) != (buf->data[d->offset] == BOP))
           abort();
         d->pages[page] = d->offset;
+      }
+      int op = buf->data[d->offset];
+      if (op >= XXX1 && op <= XXX4 && d->destination_count < 100000) {
+        int prefix = 2 + op - XXX1;
+        char *name = dvi_annotation_destination(ctx, (char *)buf->data + d->offset + prefix, ilen - prefix);
+        if (name && d->destination_bytes + strlen(name) + 1 > 4 * 1024 * 1024) { fz_free(ctx, name); name = NULL; }
+        if (name) {
+          d->destination_bytes += strlen(name) + 1;
+          if (d->destination_count == d->destination_capacity) {
+            d->destination_capacity = d->destination_capacity ? d->destination_capacity * 2 : 32;
+            d->destinations = fz_realloc_array_imp(ctx, d->destinations, d->destination_capacity, sizeof *d->destinations);
+          }
+          int i = d->destination_count++;
+          d->destinations[i].name = name; d->destinations[i].offset = d->offset;
+          d->destinations[i].page = (d->page_len - 1) / 2;
+        }
       }
       d->offset += ilen;
     }
@@ -215,4 +240,13 @@ float incdvi_tex_scale_factor(incdvi_t *d)
   if (d->page_len == 0)
     return 1;
   return d->dc->scale;
+}
+
+fz_buffer *incdvi_annotations(fz_context *ctx, incdvi_t *d) { return dvi_annotations(ctx, d->dc); }
+int incdvi_destination_page(fz_context *ctx, incdvi_t *d, fz_buffer *buf, const char *name)
+{
+  for (int i = 0; i < d->destination_count; i++)
+    if (!strcmp(name, d->destinations[i].name) && d->destinations[i].page < incdvi_page_count(d))
+      return d->destinations[i].page;
+  return -1;
 }

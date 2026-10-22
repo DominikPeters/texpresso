@@ -2,7 +2,7 @@
 
 `texpresso -capabilities` prints a JSON object and exits before initializing SDL
 or opening a document. Current features are `previewProtocol: 1`, `codecs:
-["png"]`, `synctex: true`, and `regions: true`. Existing editor clients and the default native
+["png", "svg"]`, `synctex: true`, `regions: true`, and `links: true`. Existing editor clients and the default native
 window are unchanged. This protocol is enabled only with `-headless -json`.
 Headless mode initializes SDL events/timers, never video/window/texture APIs.
 
@@ -15,6 +15,13 @@ Headless input additions are positional JSON arrays:
   request the zero-based page at the expected revision/source sequence. The
   newest pending request replaces an older one. Width is 1–4096; actual output
   is reduced to at most 4,000,000 pixels and 8192 pixels on either axis.
+* `["preview-svg", requestId, page, pixelWidth, revision, sequence]`:
+  export an outlined SVG, with the same request slot and source guards. Width
+  is used only if export falls back to PNG; SVG geometry is independent of it.
+  Check the `svg` codec capability before using this command.
+* `["preview-destination", revision, sequence, name]`: resolve a DVI named
+  destination. Check `links` first. Compiles only until the destination's page
+  is complete, without exporting intermediate pages. Stale requests are ignored.
 * `["preview-region", requestId, page, pixelWidth, revision, sequence, x0, y0, x1, y1]`:
   render a page-space rectangle, clipped to the page. Uses the same image response
   and limits as `preview-render`; `bounds` describes the clipped rectangle.
@@ -36,6 +43,8 @@ notifications describe availability and navigation:
 * `["preview-invalidated", revision, sequence]`
 * `["preview-forward", revision, sequence, page, x, y]`, responding to the
   existing `synctex-forward` command without moving a native window.
+* `["preview-destination", revision, sequence, name, page]`, where `page` is
+  zero-based or -1 when the current pass completed without that destination.
 * `["preview-retry", requestId]` if the requested snapshot became obsolete.
 * `["preview-error", requestId, message]` if a page cannot be exported.
 
@@ -48,14 +57,16 @@ commands recolor the PNG with the same mapping as the native renderer.
 ## Binary image framing
 
 Every notification is a UTF-8 JSON line except an image response, which has a
-JSON header line followed immediately by exactly `byteLength` PNG bytes:
+JSON header line followed immediately by exactly `byteLength` image bytes:
 
 ```json
 ["preview-image",{"requestId":1,"revision":2,"sequence":1,"page":0,"bounds":[0,0,612,792],"width":1200,"height":1553,"mime":"image/png","byteLength":12345}]
 ```
 
-The next JSON line starts immediately after the PNG body; there is no extra
-delimiter. The header's integer pixel width/height describe the actual raster.
+The next JSON line starts immediately after the image body; there is no extra
+delimiter. For PNG the integer width/height describe the actual raster; for SVG they
+describe intrinsic page-point dimensions (not a render resolution). The MIME
+is `image/png` or `image/svg+xml`.
 The image covers `bounds` in page space, top-left origin, with an opaque page
 background. The native frontend serializes header/body writes on its main
 thread; stderr remains independent text. A receiver must parse arbitrary byte
@@ -69,5 +80,27 @@ while a previous export is being delivered: compare the frame's sequence with
 the latest source sequence sent by the client. On process replacement, discard
 all prior state and identify the new session outside this per-process protocol.
 
-Full-page and clipped-region PNGs share one replaceable request slot. SVG,
-hyperlink annotations, and shared glyph resources remain future extensions.
+Full-page PNG/SVG and clipped-region PNGs share one replaceable request slot.
+SVG uses outlined glyphs with within-page definition reuse, embedded image data,
+and an explicit white page background. Clients should load it as an isolated
+blob-backed image rather than injecting markup. Shared cross-page glyph stores
+remain a future optimization.
+
+Full-page headers may include `annotations: {links, destinations}`. A link is
+`{bounds: [x0,y0,x1,y1], uri}`; `#name` denotes a DVI named destination. A
+page-local destination is `{name, x, y}`. Coordinates use the same page space
+as SyncTeX and do not depend on the image codec. Wrapped links have separate
+text-run rectangles. Link actions come from Dvipdfmx `bann`/`eann` and `dest`
+specials; image and rule bounds are collected too. There are at most 4096
+entries of each kind per page, names/URIs are at most 4096 bytes, and metadata
+has a 512 KiB budget. The incremental destination index retains at most
+100,000 entries and 4 MiB of names; rollback removes superseded entries.
+Clients must reject stale hits and apply their own policy to external URIs.
+
+When SVG cannot preserve the page, the response is PNG with a short `fallback`
+reason. The current policy rejects non-isolated/knockout/non-normal blend groups,
+non-RGB/Gray group blending spaces, soft masks, image masks/decode arrays/color
+keys, Type 3 text, overprint, shadings, and tiling patterns. It also falls back
+for preview color remapping, excessive vector complexity or embedded image size,
+failed export, or more than 16 MiB of SVG. Regions always use bounded PNGs.
+A client-side SVG decode failure can retry the same snapshot with PNG.

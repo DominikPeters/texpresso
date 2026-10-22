@@ -322,10 +322,11 @@ bool editor_parse(fz_context *ctx,
       goto arity;
     *out = (struct editor_command){.tag = EDIT_RERUN_ONCE, .rerun_once = {}};
   }
-  else if (strcmp(verb, "preview-render") == 0 || strcmp(verb, "preview-region") == 0 || strcmp(verb, "preview-inverse") == 0)
+  else if (strcmp(verb, "preview-svg") == 0 || strcmp(verb, "preview-render") == 0 || strcmp(verb, "preview-region") == 0 || strcmp(verb, "preview-inverse") == 0)
   {
     bool region = strcmp(verb, "preview-region") == 0;
-    bool render = region || strcmp(verb, "preview-render") == 0;
+    bool svg = strcmp(verb, "preview-svg") == 0;
+    bool render = svg || region || strcmp(verb, "preview-render") == 0;
     if (len != (region ? 10 : 6)) goto arity;
     double a[9] = {0};
     for (int i = 0; i < len - 1; ++i)
@@ -341,11 +342,23 @@ bool editor_parse(fz_context *ctx,
       if (region && (a[7] <= a[5] || a[8] <= a[6])) goto arguments;
       if (a[2] < 1 || a[2] > 4096 || a[1] > 100000) goto arguments;
       *out = (struct editor_command){.tag = EDIT_PREVIEW_RENDER,
-        .preview_render = {a[0], a[1], a[2], a[3], a[4], region, {a[5], a[6], a[7], a[8]}}};
+        .preview_render = {a[0], a[1], a[2], a[3], a[4], region, {a[5], a[6], a[7], a[8]}, svg}};
     }
     else
       *out = (struct editor_command){.tag = EDIT_PREVIEW_INVERSE,
         .preview_inverse = {a[0], a[1], a[2], a[3], a[4]}};
+  }
+  else if (strcmp(verb, "preview-destination") == 0)
+  {
+    if (len != 4) goto arity;
+    val rev = val_array_get(ctx, stack, command, 1), seq = val_array_get(ctx, stack, command, 2);
+    val name = val_array_get(ctx, stack, command, 3);
+    if (!val_is_number(rev) || !val_is_number(seq) || !val_is_string(name) ||
+        val_string_length(ctx, stack, name) > 4096 || val_string_length(ctx, stack, name) == 0) goto arguments;
+    double a = val_number(ctx, rev), b = val_number(ctx, seq);
+    if (!isfinite(a) || !isfinite(b) || a < 0 || b < 0 || a > INT_MAX || b > INT_MAX || floor(a) != a || floor(b) != b) goto arguments;
+    *out = (struct editor_command){.tag = EDIT_PREVIEW_DESTINATION,
+      .preview_destination = {a, b, val_string(ctx, stack, name)}};
   }
   else if (strcmp(verb, "preview-barrier") == 0)
   {

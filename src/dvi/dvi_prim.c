@@ -36,6 +36,7 @@ static void output_fill_rect(fz_context *ctx, dvi_context *dc, dvi_state *st, in
     float s = dc->scale;
     fz_path *path = fz_new_path(ctx);
     fz_rectto(ctx, path, x0 * s, - y0 * s, x1 * s, - y1 * s);
+    dvi_annotation_bounds(ctx, dc, fz_bound_path(ctx, path, NULL, st->gs.ctm));
     fz_fill_path(ctx, dc->dev, path, 0, st->gs.ctm, fz_device_rgb(ctx),
                  st->gs.colors.fill, 1.0, color_params);
     fz_drop_path(ctx, path);
@@ -60,6 +61,7 @@ void dvi_context_flush_text(fz_context *ctx, dvi_context *dc, dvi_state *st)
   {
     if (!dc->dev)
       abort();
+    dvi_annotation_bounds(ctx, dc, fz_bound_text(ctx, dc->text, NULL, fz_identity));
     fz_fill_text(ctx, dc->dev, dc->text, fz_identity, fz_device_rgb(ctx),
         st->gs.colors.fill, 1.0, color_params);
     fz_drop_text(ctx, dc->text);

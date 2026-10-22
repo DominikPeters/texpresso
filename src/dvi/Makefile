@@ -1,5 +1,5 @@
 OBJECTS= \
-	dvi_context.o dvi_interp.o dvi_prim.o dvi_special.o \
+	dvi_annotations.o dvi_context.o dvi_interp.o dvi_prim.o dvi_special.o \
 	dvi_scratch.o dvi_fonttable.o dvi_resmanager.o \
 	tex_tfm.o tex_fontmap.o tex_vf.o tex_enc.o \
   vstack.o pdf_lexer.o

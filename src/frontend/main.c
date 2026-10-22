@@ -156,6 +156,16 @@ static int repaint_on_resize(void *data, SDL_Event *event)
 
 static bool need_advance(fz_context *ctx, ui_state *ui)
 {
+  if (ui->preview.destination[0]) {
+    int page = send(destination_page, ui->eng, ctx, ui->preview.destination);
+    if (page >= 0 || send(get_status, ui->eng) == DOC_TERMINATED) {
+      fz_buffer *reply = fz_new_buffer(ctx, 128);
+      fz_append_printf(ctx, reply, "[\"preview-destination\",%d,%d,%q,%d]\n",
+        ui->preview.revision, ui->preview.sequence, ui->preview.destination, page);
+      fwrite(reply->data, 1, reply->len, stdout); fflush(stdout); fz_drop_buffer(ctx, reply);
+      ui->preview.destination[0] = 0;
+    } else return true; /* Demand compilation only as far as this destination. */
+  }
   if (send(get_status, ui->eng) != DOC_RUNNING)
     return false;
 
@@ -923,6 +933,8 @@ static uint32_t convert_color(fz_context *ctx, vstack *stack, float frgb[3])
 static void display_page(struct persistent_state *ps, ui_state *ui)
 {
   fz_display_list *dl = send(render_page, ui->eng, ps->ctx, ui->page);
+  fz_drop_buffer(ps->ctx, ui->preview.annotations);
+  ui->preview.annotations = send(page_annotations, ui->eng, ps->ctx);
   txp_renderer_set_contents(ps->ctx, ui->doc_renderer, dl);
   fz_drop_display_list(ps->ctx, dl);
   if (ps->headless) ui->preview.valid = true;
@@ -1151,7 +1163,14 @@ static void interpret_command(struct persistent_state *ps,
       {
         flush_changes(ps, ui);
         ui->preview.sequence = cmd.preview_barrier.sequence;
+        ui->preview.destination[0] = 0;
       }
+      break;
+
+    case EDIT_PREVIEW_DESTINATION:
+      if (ps->headless && cmd.preview_destination.revision == ui->preview.revision &&
+          cmd.preview_destination.sequence == ui->preview.sequence)
+        snprintf(ui->preview.destination, sizeof ui->preview.destination, "%s", cmd.preview_destination.name);
       break;
 
     case EDIT_PREVIEW_RENDER:
@@ -1163,6 +1182,7 @@ static void interpret_command(struct persistent_state *ps,
         p->page = cmd.preview_render.page;
         p->width = cmd.preview_render.width;
         p->region = cmd.preview_render.region;
+        p->svg = cmd.preview_render.svg;
         float *bounds = cmd.preview_render.bounds;
         p->bounds = (fz_rect){bounds[0], bounds[1], bounds[2], bounds[3]};
         p->expected_revision = cmd.preview_render.revision;
@@ -1825,6 +1845,7 @@ bool texpresso_main(struct persistent_state *ps)
   if (ps->initial.display_list)
     fz_keep_display_list(ps->ctx, ps->initial.display_list);
 
+  fz_drop_buffer(ps->ctx, ui->preview.annotations);
   txp_renderer_free(ps->ctx, ui->doc_renderer);
   send(destroy, ui->eng, ps->ctx);
 

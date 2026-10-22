@@ -377,7 +377,7 @@ bool dvi_interp_sub(fz_context *ctx, dvi_context *dc, dvi_state *st, const uint8
     {
       uint32_t k = read_uB(&buf, n);
       const char *ptr = (const char *)buf;
-      if (!dvi_exec_special(ctx, dc, st, ptr, ptr + k))
+      if (!dvi_annotation_special(ctx, dc, st, ptr, k) && !dvi_exec_special(ctx, dc, st, ptr, ptr + k))
       {
         // fprintf(stderr, "interp: special failed: %.*s\n", k, ptr);
         return 0;

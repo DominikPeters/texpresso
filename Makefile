@@ -129,3 +129,18 @@ build/test-synctex: test/test_synctex.c src/frontend/synctex.c src/frontend/sync
 	$(CC) -Isrc/include -Isrc/dvi -c -o build/test-synctex.o test/test_synctex.c
 	$(CC) -Isrc/include -Isrc/dvi -c -o build/test-synctex-scanner.o src/frontend/synctex.c
 	$(LDCC) -o $@ build/test-synctex.o build/test-synctex-scanner.o $(LIBS)
+
+.PHONY: test-preview-svg
+test-preview-svg: texpresso
+	$(MAKE) -f Makefile.config -f Makefile build/test-preview-svg
+	build/test-preview-svg
+build/test-preview-svg: test/test_preview_svg.c build/frontend/preview.o build/frontend/renderer.o
+	$(CC) -Isrc/frontend -Isrc/dvi -c -o build/test-preview-svg.o test/test_preview_svg.c
+	$(LDCC) -o $@ build/test-preview-svg.o build/frontend/preview.o build/frontend/renderer.o $(LIBS)
+
+.PHONY: test-texlive-provider
+test-texlive-provider:
+	$(MAKE) -f Makefile.config -f Makefile build/test-texlive-provider
+	build/test-texlive-provider
+build/test-texlive-provider: test/test_texlive_provider.c src/common/texlive_provider.c
+	$(CC) -Isrc/include -o $@ test/test_texlive_provider.c

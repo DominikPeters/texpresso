@@ -146,3 +146,15 @@ txp_engine *txp_create_dvi_engine(fz_context *ctx, const char *dvi_path, dvi_res
   incdvi_update(ctx, self->dvi, buffer);
   return (txp_engine*)self;
 }
+
+static fz_buffer *engine_page_annotations(txp_engine *_self, fz_context *ctx)
+{
+  SELF;
+  return incdvi_annotations(ctx, self->dvi);
+}
+
+static int engine_destination_page(txp_engine *_self, fz_context *ctx, const char *name)
+{
+  SELF;
+  return incdvi_destination_page(ctx, self->dvi, self->buffer, name);
+}
