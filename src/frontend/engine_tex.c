@@ -109,7 +109,7 @@ struct tex_engine
   int last_tokens;
   fileentry_t *fork_entry;
   int fork_offset;
-  struct { fileentry_t *entry; int offset, status; } prepare;
+  struct { fileentry_t *entry; int offset, status; bool retained_fence; } prepare;
 };
 
 // Backtrackable process state & VFS representation
@@ -272,6 +272,10 @@ static bool read_query(struct tex_engine *self, channel_t *t, query_t *q)
   if (!result)
   {
     fprintf(stderr, "[process] terminating process\n");
+    if (self->prepare.retained_fence) {
+      self->fence_pos = -1;
+      self->prepare.retained_fence = false;
+    }
     close_process(p);
   }
   return result;
@@ -740,6 +744,17 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
       if (n > data->len - q->read.pos)
         n = data->len - q->read.pos;
 
+      // A cancelled replay keeps its one fence for the next real demand.
+      // A later unread edit may shorten/replace that input before the worker
+      // reaches it. Discard only that speculative fence if it cannot fire.
+      if (self->prepare.retained_fence && self->fence_pos == 0 &&
+          self->fences[0].entry == e &&
+          (self->fences[0].position < q->read.pos || self->fences[0].position >= data->len))
+      {
+        fprintf(stderr, "[prepare-edit] dropping cancelled fence outside current input\n");
+        self->fence_pos = -1;
+        self->prepare.retained_fence = false;
+      }
       int fork = 0;
       if (self->fence_pos >= 0 &&
           self->fences[self->fence_pos].entry == e &&
@@ -766,6 +781,7 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
       {
         a.tag = A_FORK;
         self->fence_pos -= 1;
+        self->prepare.retained_fence = false;
       }
       else if (periodic)
       {
@@ -1114,6 +1130,7 @@ static bool possible_fence(trace_entry_t *te)
 static int compute_fences(fz_context *ctx, struct tex_engine *self, int trace, int offset)
 {
   self->fence_pos = -1;
+  self->prepare.retained_fence = false;
 
   if (trace <= 0)
     return trace;
@@ -1180,7 +1197,11 @@ void txp_engine_cancel_prepare(txp_engine *_self)
 {
   if (_self->_class != &_class) return;
   SELF;
-  if (self->prepare.status == TXP_PREPARE_PENDING) self->fence_pos = -1;
+  if (self->prepare.status == TXP_PREPARE_PENDING)
+    self->prepare.retained_fence = self->fence_pos == 0 &&
+      self->fences[0].entry == self->prepare.entry && self->fences[0].position == self->prepare.offset;
+  // Cancellation stops speculative stepping, not a useful checkpoint in the
+  // prefix that foreground work must replay anyway. No READY can follow this.
   self->prepare.status = TXP_PREPARE_SKIPPED;
 }
 
@@ -1189,6 +1210,8 @@ int txp_engine_prepare_edit(txp_engine *_self, fz_context *ctx, const char *path
   if (_self->_class != &_class) return TXP_PREPARE_SKIPPED;
   SELF;
   txp_engine_cancel_prepare(_self);
+  if (self->prepare.retained_fence) self->fence_pos = -1;
+  self->prepare.retained_fence = false;
   fileentry_t *entry = filesystem_lookup(self->fs, path);
   if (!entry || entry->saved.level != FILE_READ || self->finishing ||
       self->process_count == 0 || offset < 0)

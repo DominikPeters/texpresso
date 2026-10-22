@@ -1041,7 +1041,7 @@ static bool advance_prepare(struct persistent_state *ps, ui_state *ui)
 {
   if (ui->prepare.queued) {
     ui->prepare.queued = false;
-    if (ps->paused || !ui->preview.valid || ui->preview.pending || ui->preview.background || ui->preview.destination[0] ||
+    if (ps->paused || !ui->preview.valid || ui->preview.pending || ui->preview.background || ui->preview.destination[0] || ui->prepared_inverse.pending ||
         synctex_has_target(send(synctex, ui->eng, NULL)) || send(is_finishing, ui->eng) || ui->prepare.revision != ui->preview.revision ||
         ui->prepare.sequence != ui->preview.sequence || delayed_changes.count) {
       prepare_reply(ui, "skipped");
@@ -1618,7 +1618,7 @@ bool texpresso_main(struct persistent_state *ps)
     // Process document
     {
       int before_page_count = send(page_count, ui->eng);
-      bool warming = ps->headless && !ps->paused && advance_prepare(ps, ui);
+      bool warming = ps->headless && advance_prepare(ps, ui);
       bool advance = warming || (!ui->prepare.held && !ps->paused && advance_engine(ps->ctx, ui));
       if (!ui->prepare.held) send(finish_convergence, ui->eng, ps->ctx);
       int after_page_count = send(page_count, ui->eng);
