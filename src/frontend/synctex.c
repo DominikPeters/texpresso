@@ -215,8 +215,10 @@ void synctex_rollback(fz_context *ctx, synctex_t *stx, size_t offset)
       int pages = stx->page_off.len / 2;
       if (stx->scanned_pages > pages)
         stx->scanned_pages = pages;
-      if (stx->candidate_page > pages)
+      if (stx->candidate_page >= pages) {
         stx->candidate_page = -1;
+        stx->scanned_pages = 0;
+      }
     }
   }
 }
@@ -889,13 +891,16 @@ synctex_backscan_page(fz_context *ctx, synctex_t *stx, fz_buffer *buf, int page,
   }
 }
 
-int synctex_find_target(fz_context *ctx, synctex_t *stx, fz_buffer *buf, int *page, int *x, int *y)
+static int synctex_find_target_impl(fz_context *ctx, synctex_t *stx, fz_buffer *buf,
+                                  bool resolved_only, bool complete, int *page, int *x, int *y)
 {
   if (!stx || !stx->target_path[0])
     return 0;
 
-  if (!synctex_find_input(ctx, stx, buf))
+  if (!synctex_find_input(ctx, stx, buf)) {
+    if (resolved_only && complete) synctex_clear_search(stx);
     return 0;
+  }
 
   int pages = synctex_page_count(stx);
   int updated_candidate = 0;
@@ -912,8 +917,31 @@ int synctex_find_target(fz_context *ctx, synctex_t *stx, fz_buffer *buf, int *pa
     if (y) *y = stx->candidate_y;
   }
 
-  if (synctex_input_closed(ctx, stx, stx->input_tag))
+  // Closing a source input does not ship the last page built from it. In a
+  // headless client, keep searching until an exact/crossing record resolves the
+  // target or the completed document makes the best fallback authoritative.
+  if ((!resolved_only && synctex_input_closed(ctx, stx, stx->input_tag)) ||
+      (resolved_only && complete))
     synctex_clear_search(stx);
 
+  if (resolved_only)
+  {
+    if (synctex_has_target(stx) || stx->candidate_page < 0) return 0;
+    if (page) *page = stx->candidate_page;
+    if (x) *x = stx->candidate_x;
+    if (y) *y = stx->candidate_y;
+    return 1;
+  }
   return updated_candidate;
+}
+
+int synctex_find_target(fz_context *ctx, synctex_t *stx, fz_buffer *buf, int *page, int *x, int *y)
+{
+  return synctex_find_target_impl(ctx, stx, buf, false, false, page, x, y);
+}
+
+int synctex_find_resolved_target(fz_context *ctx, synctex_t *stx, fz_buffer *buf,
+                               bool complete, int *page, int *x, int *y)
+{
+  return synctex_find_target_impl(ctx, stx, buf, true, complete, page, x, y);
 }

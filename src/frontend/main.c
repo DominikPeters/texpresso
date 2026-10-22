@@ -992,6 +992,67 @@ SDL_SetWindowAlwaysOnTop(SDL_Window *window, SDL_bool state)
 #endif
 
 
+static void resolve_forward(struct persistent_state *ps, ui_state *ui)
+{
+  if (ui->prepare.held) return;
+  fz_buffer *buf;
+  synctex_t *stx = send(synctex, ui->eng, &buf);
+  int page = -1, x = -1, y = -1;
+  int found = ps->headless
+    ? synctex_find_resolved_target(ps->ctx, stx, buf, send(get_status, ui->eng) == DOC_TERMINATED, &page, &x, &y)
+    : synctex_find_target(ps->ctx, stx, buf, &page, &x, &y);
+  if (found)
+  {
+    int superseded = ps->headless && ui->preview.pending && ui->preview.page != page
+      ? ui->preview.request : -1;
+    if (superseded >= 0) ui->preview.pending = false;
+    fprintf(stderr, "[synctex forward] sync: hit page %d, coordinates (%d, %d)\n",
+            page, x, y);
+
+    if (page != ui->page &&
+        page >= 0 && page < send(page_count, ui->eng))
+    {
+      ui->page = page;
+      if (ps->headless && !ui->preview.background) ui->preview.foreground_page = page;
+      display_page(ps, ui);
+    }
+
+    // FIXME: Scroll to point
+    float f = send(scale_factor, ui->eng);
+    fz_point p = fz_make_point(f * x, f * y);
+    if (ps->headless)
+    {
+      printf("[\"preview-forward\",%d,%d,%d,%.9g,%.9g]\n",
+             ui->preview.revision, ui->preview.sequence, page, p.x, p.y);
+      if (superseded >= 0) printf("[\"preview-retry\",%d]\n", superseded);
+    }
+    else
+    {
+      fz_point pt = txp_renderer_document_to_screen(ps->ctx, ui->doc_renderer, p);
+      fprintf(stderr, "[synctex forward] position on screen: (%.02f, %.02f)\n",
+              pt.x, pt.y);
+      int w, h;
+      txp_renderer_screen_size(ps->ctx, ui->doc_renderer, &w, &h);
+      float margin_lo = h / 4.0;
+      float margin_hi = h / 3.0;
+
+      txp_renderer_config *config =
+          txp_renderer_get_config(ps->ctx, ui->doc_renderer);
+
+      float delta = 0.0;
+      if (pt.y < margin_lo)
+        delta = - pt.y + margin_hi;
+      else if (pt.y >= h - margin_lo)
+        delta = h - pt.y - margin_hi;
+      fprintf(stderr, "[synctex forward] pan.y = %.02f + %.02f = %.02f\n",
+              config->pan.y, delta, config->pan.y + delta);
+      config->pan.y += delta;
+      if (delta != 0.0)
+        schedule_event(RENDER_EVENT);
+    }
+  }
+}
+
 static void interpret_register(struct persistent_state *ps,
                                ui_state *ui,
                                const char *path)
@@ -1300,6 +1361,8 @@ static void interpret_command(struct persistent_state *ps,
     case EDIT_PREVIEW_BARRIER:
       if (ps->headless)
       {
+        if (cmd.preview_barrier.sequence != ui->preview.sequence)
+          synctex_set_target(send(synctex, ui->eng, NULL), 0, NULL, 0);
         flush_changes(ps, ui);
         ui->preview.sequence = cmd.preview_barrier.sequence;
         ui->preview.destination[0] = 0;
@@ -1332,6 +1395,8 @@ static void interpret_command(struct persistent_state *ps,
       break;
 
     case EDIT_PREVIEW_CANCEL:
+      if (ps->headless && cmd.preview_cancel.request == 0)
+        synctex_set_target(send(synctex, ui->eng, NULL), 0, NULL, 0);
       if (ps->headless && (cmd.preview_cancel.request == 0 ||
           (ui->preview.background && ui->preview.request == cmd.preview_cancel.request)))
         finish_background(ps, ui, cmd.preview_cancel.page);
@@ -1342,7 +1407,8 @@ static void interpret_command(struct persistent_state *ps,
       {
         txp_preview *p = &ui->preview;
         if (cmd.preview_render.revision != p->revision ||
-            cmd.preview_render.sequence != p->sequence) {
+            cmd.preview_render.sequence != p->sequence ||
+            (cmd.preview_render.background && synctex_has_target(send(synctex, ui->eng, NULL)))) {
           printf("[\"preview-retry\",%d]\n", cmd.preview_render.request);
           break;
         }
@@ -1619,10 +1685,14 @@ bool texpresso_main(struct persistent_state *ps)
 
     // Process document
     {
+      // Consult already available records before demanding another compiler
+      // burst, and inspect each new prefix before the loop can wait or advance.
+      resolve_forward(ps, ui);
       int before_page_count = send(page_count, ui->eng);
       bool warming = ps->headless && advance_prepare(ps, ui);
       bool advance = warming || (!ui->prepare.held && !ps->paused && advance_engine(ps->ctx, ui));
       if (!ui->prepare.held) send(finish_convergence, ui->eng, ps->ctx);
+      resolve_forward(ps, ui);
       int after_page_count = send(page_count, ui->eng);
       if (ps->headless && !ui->prepare.held)
       {
@@ -1717,55 +1787,6 @@ bool texpresso_main(struct persistent_state *ps)
         }
       }
 
-      fz_buffer *buf;
-      synctex_t *stx = send(synctex, ui->eng, &buf);
-      int page = -1, x = -1, y = -1;
-      if (synctex_find_target(ps->ctx, stx, buf, &page, &x, &y))
-      {
-        fprintf(stderr, "[synctex forward] sync: hit page %d, coordinates (%d, %d)\n",
-                page, x, y);
-
-        if (page != ui->page &&
-            page >= 0 && page < send(page_count, ui->eng))
-        {
-          ui->page = page;
-          if (ps->headless && !ui->preview.background) ui->preview.foreground_page = page;
-          display_page(ps, ui);
-        }
-
-        // FIXME: Scroll to point
-        float f = send(scale_factor, ui->eng);
-        fz_point p = fz_make_point(f * x, f * y);
-        if (ps->headless)
-        {
-          printf("[\"preview-forward\",%d,%d,%d,%.9g,%.9g]\n",
-                 ui->preview.revision, ui->preview.sequence, page, p.x, p.y);
-        }
-        else
-        {
-          fz_point pt = txp_renderer_document_to_screen(ps->ctx, ui->doc_renderer, p);
-          fprintf(stderr, "[synctex forward] position on screen: (%.02f, %.02f)\n",
-                  pt.x, pt.y);
-          int w, h;
-          txp_renderer_screen_size(ps->ctx, ui->doc_renderer, &w, &h);
-          float margin_lo = h / 4.0;
-          float margin_hi = h / 3.0;
-
-          txp_renderer_config *config =
-              txp_renderer_get_config(ps->ctx, ui->doc_renderer);
-
-          float delta = 0.0;
-          if (pt.y < margin_lo)
-            delta = - pt.y + margin_hi;
-          else if (pt.y >= h - margin_lo)
-            delta = h - pt.y - margin_hi;
-          fprintf(stderr, "[synctex forward] pan.y = %.02f + %.02f = %.02f\n",
-                  config->pan.y, delta, config->pan.y + delta);
-          config->pan.y += delta;
-          if (delta != 0.0)
-            schedule_event(RENDER_EVENT);
-        }
-      }
     }
 
     if (!ps->headless)

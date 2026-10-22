@@ -25,6 +25,7 @@
 #ifndef SYNCTEX_H_
 #define SYNCTEX_H_
 
+#include <stdbool.h>
 #include <mupdf/fitz/context.h>
 #include <mupdf/fitz/buffer.h>
 
@@ -43,6 +44,9 @@ void synctex_scan(fz_context *ctx, synctex_t *stx, fz_buffer *buf, const char *d
 
 int synctex_has_target(synctex_t *stx);
 void synctex_set_target(synctex_t *stx, int current_page, const char *path, int line);
+// Headless clients must never treat a provisional prefix candidate as a jump.
+// Fallbacks for comments/blank lines become final only after document completion.
+int synctex_find_resolved_target(fz_context *ctx, synctex_t *stx, fz_buffer *buf, bool complete, int *page, int *x, int *y);
 int synctex_find_target(fz_context *ctx, synctex_t *stx, fz_buffer *buf, int *page, int *x, int *y);
 
 #endif // SYNCTEX_H_
