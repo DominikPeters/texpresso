@@ -4,6 +4,7 @@
  * swallow the whitespace or unrelated text between lines. */
 #include "mydvi.h"
 #include <ctype.h>
+#include <math.h>
 #include <string.h>
 
 static const char *special(const char *data, size_t len, const char *name)
@@ -49,7 +50,10 @@ char *dvi_annotation_destination(fz_context *ctx, const char *data, size_t len)
 void dvi_annotation_bounds(fz_context *ctx, dvi_context *dc, fz_rect b)
 {
   if (!dc->annotation_uri || !dc->annotation_links || dc->annotation_link_count >= 4096 ||
-      dc->annotation_links->len > 384 * 1024 || fz_is_empty_rect(b) || fz_is_infinite_rect(b)) return;
+      dc->annotation_links->len + 6 * strlen(dc->annotation_uri) + 100 > 384 * 1024 - 128 ||
+      !isfinite(b.x0) || !isfinite(b.y0) || !isfinite(b.x1) || !isfinite(b.y1) ||
+      fabsf(b.x0) >= 1e9f || fabsf(b.y0) >= 1e9f || fabsf(b.x1) >= 1e9f || fabsf(b.y1) >= 1e9f ||
+      fz_is_empty_rect(b) || fz_is_infinite_rect(b)) return;
   fz_append_printf(ctx, dc->annotation_links, "%s{\"bounds\":[%g,%g,%g,%g],\"uri\":%q}",
     dc->annotation_link_count++ ? "," : "", b.x0, b.y0, b.x1, b.y1, dc->annotation_uri);
 }
@@ -70,7 +74,7 @@ bool dvi_annotation_special(fz_context *ctx, dvi_context *dc, dvi_state *st, con
     if (!strcmp(kind, "URI")) target = string(ctx, pdf_dict_gets(ctx, action, "URI"));
     else if (!strcmp(kind, "GoTo")) { target = string(ctx, pdf_dict_gets(ctx, action, "D")); internal = true; }
     else if (pdf_dict_gets(ctx, obj, "Dest")) { target = string(ctx, pdf_dict_gets(ctx, obj, "Dest")); internal = true; }
-    if (target && *target && strlen(target) <= 4096) {
+    if (target && *target && strlen(target) + internal <= 4096) {
       size_t n = strlen(target);
       char *uri = DC_ALLOC(ctx, dc, char, n + 2);
       uri[0] = '#'; memcpy(uri + internal, target, n + 1); dc->annotation_uri = uri;
@@ -80,7 +84,7 @@ bool dvi_annotation_special(fz_context *ctx, dvi_context *dc, dvi_state *st, con
   }
   char *name = dvi_annotation_destination(ctx, data, len);
   if (name) {
-    if (dc->annotation_destinations && dc->annotation_destination_count < 4096 && dc->annotation_destinations->len < 128 * 1024) {
+    if (dc->annotation_destinations && dc->annotation_destination_count < 4096 && dc->annotation_destinations->len + 6 * strlen(name) + 100 < 128 * 1024 - 128) {
       fz_point p = fz_transform_point(fz_make_point(0, 0), dvi_get_ctm(dc, st));
       fz_append_printf(ctx, dc->annotation_destinations, "%s{\"name\":%q,\"x\":%g,\"y\":%g}",
         dc->annotation_destination_count++ ? "," : "", name, p.x, p.y);

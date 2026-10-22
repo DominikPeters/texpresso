@@ -463,7 +463,7 @@ embed_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, struct xform_spec *xf
     fz_matrix ctm = fz_flip_vertically(dvi_get_ctm(dc, st));
     ctm = fz_concat(xf->ctm, ctm);
     ctm = fz_pre_translate(ctm, 0, mediabox.y0 - mediabox.y1);
-    dvi_annotation_bounds(ctx, dc, fz_transform_rect(fz_bound_page(ctx, (fz_page *)page), ctm));
+    if (dc->annotation_uri) dvi_annotation_bounds(ctx, dc, fz_transform_rect(fz_bound_page(ctx, (fz_page *)page), ctm));
     pdf_run_page(ctx, page, dc->dev, ctm, NULL);
   }
   fz_catch(ctx)
@@ -501,7 +501,7 @@ embed_image(fz_context *ctx, dvi_context *dc, dvi_state *st, struct xform_spec *
     else if (h != h)
       h = w / ar;
     ctm = fz_pre_scale(fz_pre_translate(ctm, 0, h), w, -h);
-    dvi_annotation_bounds(ctx, dc, fz_transform_rect(fz_unit_rect, ctm));
+    if (dc->annotation_uri) dvi_annotation_bounds(ctx, dc, fz_transform_rect(fz_unit_rect, ctm));
     fz_fill_image(ctx, dc->dev, img, ctm, 1.0, color_params);
   }
   fz_always(ctx)
