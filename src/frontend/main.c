@@ -1669,6 +1669,10 @@ bool texpresso_main(struct persistent_state *ps)
         if (ps->headless) txp_preview_invalidate(&ui->preview);
         send(start_finishing, ui->eng);
         schedule_event(RELOAD_EVENT);
+        // We polled this event before advancing the compiler. Keep it queued
+        // across the immediate rerun: dropping a custom event also leaves its
+        // scheduling flag set, preventing every later reload of this page.
+        if (has_event && SDL_PushEvent(&e) < 0) abort();
         continue;
       }
       // A settled document can have no auxiliary work left. In that case the
