@@ -58,6 +58,7 @@ typedef struct fileentry_s {
   struct {
     fz_buffer *data;
     enum accesslevel level;
+    bool read_from_filesystem; /* Initial input was read before any output. */
     mark_t snap;
   } saved;
 

@@ -620,6 +620,7 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
               mabort("path: %s\nmode:%c\n", q->open.path, (q->tag == Q_OPRD) ? 'r' : 'w');
             }
             e->saved.level = FILE_READ;
+            e->saved.read_from_filesystem = false;
             memset(&e->fs_stat, 0, sizeof(e->fs_stat));
           }
           else
@@ -628,6 +629,7 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
               fs_path = e->path;
             e->fs_data = fz_read_file(ctx, fs_path);
             e->saved.level = FILE_READ;
+            e->saved.read_from_filesystem = e->edit_data == NULL;
             stat(fs_path, &e->fs_stat);
           }
         }
@@ -1514,8 +1516,21 @@ static void engine_finish_convergence(txp_engine *_self, fz_context *ctx)
                          && e->saved.data->len == e->edit_data->len
                          && memcmp(e->saved.data->data, e->edit_data->data,
                                    e->saved.data->len) == 0;
-    if (!stashed_match)
+    // A prebuilt .aux/.out can already contain exactly the output of this
+    // pass. Requiring a convergence-created stash needlessly discarded all
+    // compiler checkpoints after every editing pause, even for stable labels.
+    bool filesystem_match = !e->edit_data && e->saved.read_from_filesystem && e->fs_data &&
+                            e->saved.data->len == e->fs_data->len &&
+                            (!e->saved.data->len || memcmp(e->saved.data->data, e->fs_data->data,
+                                   e->saved.data->len) == 0);
+    if (filesystem_match)
+      fprintf(stderr, "[rerun] %s unchanged from filesystem input\n", e->path);
+    if (!stashed_match && !filesystem_match)
     {
+      if (txp_profile_now())
+        fprintf(stderr, "[rerun] changed %s (output %zu bytes, filesystem %zu bytes, observed %s)\n",
+                e->path, e->saved.data->len, e->fs_data ? e->fs_data->len : 0,
+                e->saved.read_from_filesystem ? "true" : "false");
       converged = false;
       break;
     }
