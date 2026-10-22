@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "incdvi.h"
+#include "mydvi.h"
 static void u32(fz_context *ctx, fz_buffer *b, unsigned n)
 { fz_append_byte(ctx,b,n>>24); fz_append_byte(ctx,b,n>>16); fz_append_byte(ctx,b,n>>8); fz_append_byte(ctx,b,n); }
 static fz_buffer *page(fz_context *ctx, const char *name)
@@ -17,6 +18,15 @@ int main(void)
 {
   fz_context *ctx=fz_new_context(NULL,NULL,FZ_STORE_DEFAULT);assert(ctx);
   incdvi_t *d=incdvi_new(ctx,(dvi_reshooks){0});
+  fz_buffer *empty=incdvi_annotations(ctx,d);
+  const char *empty_json="{\"links\":[],\"destinations\":[]}";
+  assert(empty->len==strlen(empty_json) && !memcmp(empty->data,empty_json,empty->len));
+  fz_drop_buffer(ctx,empty);
+  dvi_context *dc=dvi_context_new(ctx,(dvi_reshooks){0});
+  dvi_context_begin_frame(ctx,dc,NULL); /* allocated, zero-length buffers */
+  empty=dvi_annotations(ctx,dc);
+  assert(empty->len==strlen(empty_json) && !memcmp(empty->data,empty_json,empty->len));
+  fz_drop_buffer(ctx,empty);dvi_context_free(ctx,dc);
   fz_buffer *full=page(ctx,"old"),*partial=fz_new_buffer(ctx,1);
   for(size_t i=0;i<full->len;i++) {
     fz_append_byte(ctx,partial,full->data[i]);incdvi_update(ctx,d,partial);

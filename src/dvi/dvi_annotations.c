@@ -96,10 +96,12 @@ bool dvi_annotation_special(fz_context *ctx, dvi_context *dc, dvi_state *st, con
 fz_buffer *dvi_annotations(fz_context *ctx, dvi_context *dc)
 {
   fz_buffer *buf = fz_new_buffer(ctx, 256);
-  fz_append_printf(ctx, buf, "{\"links\":[%.*s],\"destinations\":[%.*s]}",
-    dc->annotation_links ? (int)dc->annotation_links->len : 0,
-    dc->annotation_links ? dc->annotation_links->data : (unsigned char *)"",
-    dc->annotation_destinations ? (int)dc->annotation_destinations->len : 0,
-    dc->annotation_destinations ? dc->annotation_destinations->data : (unsigned char *)"");
+  /* MuPDF 1.23's formatter treats zero string precision as unbounded. Empty
+   * annotation buffers need length-aware copies, not %.*s over uninitialized data. */
+  fz_append_string(ctx, buf, "{\"links\":[");
+  if (dc->annotation_links) fz_append_buffer(ctx, buf, dc->annotation_links);
+  fz_append_string(ctx, buf, "],\"destinations\":[");
+  if (dc->annotation_destinations) fz_append_buffer(ctx, buf, dc->annotation_destinations);
+  fz_append_string(ctx, buf, "]}");
   return buf;
 }
