@@ -40,6 +40,7 @@
 #include "editor.h"
 #include "base64.h"
 #include "preview.h"
+#include "profile.h"
 
 struct persistent_state *pstate;
 
@@ -932,9 +933,13 @@ static uint32_t convert_color(fz_context *ctx, vstack *stack, float frgb[3])
 
 static void display_page(struct persistent_state *ps, ui_state *ui)
 {
+  double list_start = txp_profile_now();
   fz_display_list *dl = send(render_page, ui->eng, ps->ctx, ui->page);
+  txp_profile_record("dvi-display-list", list_start, ui->preview.request, ui->page, 0);
+  double annotation_start = txp_profile_now();
   fz_drop_buffer(ps->ctx, ui->preview.annotations);
   ui->preview.annotations = send(page_annotations, ui->eng, ps->ctx);
+  txp_profile_record("annotations", annotation_start, ui->preview.request, ui->page, 0);
   txp_renderer_set_contents(ps->ctx, ui->doc_renderer, dl);
   fz_drop_display_list(ps->ctx, dl);
   if (ps->headless) ui->preview.valid = true;

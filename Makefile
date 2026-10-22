@@ -152,3 +152,11 @@ test-dvi-annotations: texpresso
 build/test-dvi-annotations: test/test_dvi_annotations.c build/frontend/incdvi.o build/frontend/libmydvi.a build/common/libcommon.a
 	$(CC) -Isrc/frontend -Isrc/dvi -c -o build/test-dvi-annotations.o test/test_dvi_annotations.c
 	$(LDCC) -o $@ build/test-dvi-annotations.o build/frontend/incdvi.o build/frontend/libmydvi.a build/common/libcommon.a $(LIBS)
+
+.PHONY: test-preview-png
+test-preview-png: texpresso
+	$(MAKE) -f Makefile.config -f Makefile build/test-preview-png
+	build/test-preview-png
+build/test-preview-png: test/test_preview_png.c build/frontend/preview.o build/frontend/renderer.o
+	$(CC) -Isrc/frontend -Isrc/dvi -c -o build/test-preview-png.o test/test_preview_png.c
+	$(LDCC) -o $@ build/test-preview-png.o build/frontend/preview.o build/frontend/renderer.o $(LIBS)

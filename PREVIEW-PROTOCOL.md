@@ -104,3 +104,17 @@ keys or non-device RGB/Gray image color spaces, Type 3 text, overprint, shadings
 for preview color remapping, excessive vector complexity or embedded image size,
 failed export, or more than 16 MiB of SVG. Regions always use bounded PNGs.
 A client-side SVG decode failure can retry the same snapshot with PNG.
+
+## Local profiling
+
+Set `TEXPRESSO_PROFILE=1` to emit `[profile] { ... }` JSON records on stderr.
+Records report DVI display-list creation, annotations, SVG preflight/export,
+PNG drawing/color/encoding, and pipe-write wall time in milliseconds. Export
+records include the request ID, page and encoded bytes. These diagnostics are
+disabled by default and do not add messages to stdout or change framing.
+
+Opaque device-RGB preview pixmaps use a streaming, lossless PNG writer with
+unfiltered scanlines and fast deflate. Scratch storage is one scanline, a 64 KiB
+output block and zlib state, rather than whole-image compression buffers.
+After checking every RGB pixel, neutral pages use 8-bit grayscale PNG; one colored pixel keeps RGB. Other pixmap formats retain MuPDF's general PNG writer. Rasterization, color
+conversion, pixel limits and SVG fallback decisions are independent of encoding.

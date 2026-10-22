@@ -16,6 +16,7 @@ typedef struct {
   int last_count, last_page, last_revision, last_sequence, last_complete;
 } txp_preview;
 
+fz_buffer *txp_preview_png(fz_context *ctx, fz_pixmap *pix);
 void txp_preview_init(txp_preview *p);
 void txp_preview_invalidate(txp_preview *p);
 void txp_preview_state(txp_preview *p, int count, int page, bool complete);

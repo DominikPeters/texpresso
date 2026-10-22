@@ -1,7 +1,9 @@
 #include "preview.h"
+#include "profile.h"
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <zlib.h>
 
 /* Audit against MuPDF 1.28.5 source/fitz/svg-device.c. Keep this cheap pass
  * independent of export: no glyph outlining, image decoding, or rasterization.
@@ -92,6 +94,84 @@ const char *txp_preview_svg_fallback(fz_context *ctx, fz_display_list *list)
   return reason;
 }
 
+/* Interactive RGB PNGs: one scanline and a bounded deflate buffer instead of
+ * MuPDF's whole-image filtered/compressed scratch allocations. Unfiltered
+ * scanlines and level 1 won the local speed/size comparison with Sub/Up/RLE.
+ * Exact grayscale pages use one PNG channel after checking every RGB pixel.
+ * Rendering/color conversion is unchanged, and the format remains lossless. */
+static void png_chunk(fz_context *ctx, fz_buffer *buffer, const char *tag,
+                      const unsigned char *data, size_t size)
+{
+  fz_append_int32_be(ctx, buffer, (int32_t)size);
+  fz_append_data(ctx, buffer, tag, 4);
+  if (size) fz_append_data(ctx, buffer, data, size);
+  uLong checksum = crc32(0, (const Bytef *)tag, 4);
+  if (size) checksum = crc32(checksum, data, (uInt)size);
+  fz_append_int32_be(ctx, buffer, (int32_t)checksum);
+}
+
+fz_buffer *txp_preview_png(fz_context *ctx, fz_pixmap *pix)
+{
+  if (fz_pixmap_colorspace(ctx, pix) != fz_device_rgb(ctx) || fz_pixmap_components(ctx, pix) != 3 || fz_pixmap_alpha(ctx, pix))
+    return fz_new_buffer_from_pixmap_as_png(ctx, pix, fz_default_color_params);
+  int w = fz_pixmap_width(ctx, pix), h = fz_pixmap_height(ctx, pix);
+  int stride = fz_pixmap_stride(ctx, pix);
+  size_t source_row_size = (size_t)w * 3;
+  fz_buffer *buffer = NULL;
+  unsigned char *row = NULL;
+  unsigned char compressed[65536];
+  z_stream stream = {0};
+  int started = 0;
+  fz_var(buffer); fz_var(row); fz_var(started); fz_var(stream);
+  fz_try(ctx) {
+    if (w < 1 || h < 1 || w > 8192 || h > 8192 || (double)w * h > 4000000 || stride < 0 || (size_t)stride < source_row_size)
+      fz_throw(ctx, FZ_ERROR_GENERIC, "Invalid preview PNG dimensions");
+    const unsigned char *samples = fz_pixmap_samples(ctx, pix);
+    int grayscale = 1;
+    for (int y = 0; y < h && grayscale; y++) {
+      const unsigned char *line = samples + (size_t)y * stride;
+      for (int x = 0; x < w; x++) {
+        if (line[3*x] != line[3*x+1] || line[3*x] != line[3*x+2]) { grayscale = 0; break; }
+      }
+    }
+    size_t row_size = (size_t)w * (grayscale ? 1 : 3);
+    buffer = fz_new_buffer(ctx, 65536);
+    row = fz_malloc(ctx, row_size + 1);
+    fz_append_data(ctx, buffer, "\x89PNG\r\n\x1a\n", 8);
+    unsigned char header[13] = {w >> 24, w >> 16, w >> 8, w, h >> 24, h >> 16, h >> 8, h, 8, grayscale ? 0 : 2, 0, 0, 0};
+    png_chunk(ctx, buffer, "IHDR", header, 13);
+    int xres = pix->xres, yres = pix->yres;
+    xres = (int)(xres * 100 / 2.54f + 0.5f); yres = (int)(yres * 100 / 2.54f + 0.5f);
+    unsigned char resolution[9] = {xres >> 24, xres >> 16, xres >> 8, xres, yres >> 24, yres >> 16, yres >> 8, yres, 1};
+    png_chunk(ctx, buffer, "pHYs", resolution, 9);
+    if (deflateInit(&stream, Z_BEST_SPEED) != Z_OK)
+      fz_throw(ctx, FZ_ERROR_GENERIC, "Could not initialize preview PNG compression");
+    started = 1; stream.next_out = compressed; stream.avail_out = sizeof compressed;
+    for (int y = 0; y < h; y++) {
+      const unsigned char *current = samples + (size_t)y * stride;
+      row[0] = 0; /* Same unfiltered RGB scanlines as MuPDF's writer. */
+      if (grayscale) { for (int x = 0; x < w; x++) row[x+1] = current[3*x]; }
+      else memcpy(row + 1, current, row_size);
+      stream.next_in = row; stream.avail_in = (uInt)(row_size + 1);
+      int final = y == h - 1;
+      int result;
+      do {
+        result = deflate(&stream, final ? Z_FINISH : Z_NO_FLUSH);
+        if (result != Z_OK && result != Z_STREAM_END)
+          fz_throw(ctx, FZ_ERROR_GENERIC, "Could not compress preview PNG");
+        if (!stream.avail_out || result == Z_STREAM_END) {
+          png_chunk(ctx, buffer, "IDAT", compressed, sizeof compressed - stream.avail_out);
+          stream.next_out = compressed; stream.avail_out = sizeof compressed;
+        }
+      } while (stream.avail_in || (final && result != Z_STREAM_END));
+    }
+    png_chunk(ctx, buffer, "IEND", NULL, 0);
+  }
+  fz_always(ctx) { if (started) deflateEnd(&stream); fz_free(ctx, row); }
+  fz_catch(ctx) { fz_drop_buffer(ctx, buffer); fz_rethrow(ctx); }
+  return buffer;
+}
+
 void txp_preview_init(txp_preview *p)
 {
   memset(p, 0, sizeof *p);
@@ -158,13 +238,16 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     if (p->svg && !p->region)
     {
       txp_renderer_config *config = txp_renderer_get_config(ctx, renderer);
+      double preflight_start = txp_profile_now();
       fallback = ceilf(w) > 8192 || ceilf(h) > 8192 || ceilf(w) * ceilf(h) > 4000000 ? "Oversized SVG page" : config->invert_color || (config->themed_color &&
         ((config->foreground_color & 0xFFFFFF) != 0 || (config->background_color & 0xFFFFFF) != 0xFFFFFF))
         ? "Preview color theme" : txp_preview_svg_fallback(ctx, list);
+      txp_profile_record("svg-preflight", preflight_start, p->request, page, 0);
       if (!fallback)
       {
         /* Paths preserve exact fonts; the SVG stays isolated in a blob <img>. */
         fz_try(ctx) {
+          double svg_start = txp_profile_now();
           png = fz_new_buffer(ctx, 4096);
           out = fz_new_output(ctx, 0, png, bounded_svg_write, NULL, NULL);
           dev = fz_new_svg_device(ctx, out, w, h, FZ_SVG_TEXT_AS_PATH, 1);
@@ -177,6 +260,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
           fz_close_device(ctx, dev); fz_drop_device(ctx, dev); dev = NULL;
           fz_close_output(ctx, out); fz_drop_output(ctx, out); out = NULL;
           if (png->len > 16 * 1024 * 1024) fz_throw(ctx, FZ_ERROR_GENERIC, "SVG transfer budget");
+          txp_profile_record("svg-export", svg_start, p->request, page, png->len);
           svg = true;
           image_width = (int)ceilf(w); image_height = (int)ceilf(h);
         }
@@ -189,6 +273,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     }
     if (!svg)
     {
+      double draw_start = txp_profile_now();
       float scale = fminf(p->width / w, sqrtf(4000000.0f / (w * h)));
       scale = fminf(scale, 8192.0f / fmaxf(w, h));
       /* Leave room for outward rounding of the raster bounds. */
@@ -201,14 +286,20 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
       dev = fz_new_draw_device(ctx, fz_identity, pix);
       fz_run_display_list(ctx, list, dev, ctm, fz_rect_from_irect(bbox), NULL);
       fz_close_device(ctx, dev);
+      txp_profile_record("png-draw", draw_start, p->request, page, 0);
+      double color_start = txp_profile_now();
       txp_renderer_colorize_rgb(ctx, renderer, pix);
-      png = fz_new_buffer_from_pixmap_as_png(ctx, pix, fz_default_color_params);
+      txp_profile_record("png-color", color_start, p->request, page, 0);
+      double encode_start = txp_profile_now();
+      png = txp_preview_png(ctx, pix);
+      txp_profile_record("png-encode", encode_start, p->request, page, png->len);
       image_width = fz_pixmap_width(ctx, pix); image_height = fz_pixmap_height(ctx, pix);
     }
     unsigned char *data;
     size_t len = fz_buffer_storage(ctx, png, &data);
     if (len > 16 * 1024 * 1024)
       fz_throw(ctx, FZ_ERROR_GENERIC, "Preview image exceeds the transfer budget");
+    double transfer_start = txp_profile_now();
     printf("[\"preview-image\",{\"requestId\":%d,\"revision\":%d,\"sequence\":%d,"
            "\"page\":%d,\"bounds\":[%.9g,%.9g,%.9g,%.9g],\"width\":%d,"
            "\"height\":%d,\"mime\":\"%s\",\"byteLength\":%zu",
@@ -223,6 +314,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     if (fwrite(data, 1, len, stdout) != len)
       _Exit(1); /* A partial binary frame cannot be recovered. */
     if (fflush(stdout) != 0) _Exit(1);
+    txp_profile_record("pipe-write", transfer_start, p->request, page, len);
   }
   fz_always(ctx)
   {
