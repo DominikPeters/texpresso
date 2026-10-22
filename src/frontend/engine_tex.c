@@ -249,18 +249,13 @@ static void pop_process(fz_context *ctx, struct tex_engine *self)
   log_rollback(ctx, self->log, mark);
 }
 
-static void clear_convergence_stash(fz_context *ctx, struct tex_engine *self)
+static void cancel_convergence(struct tex_engine *self)
 {
-  fileentry_t *e;
-  for (int index = 0; (e = filesystem_scan(self->fs, &index));)
-  {
-    if (e->edit_data_from_convergence && e->edit_data)
-    {
-      fz_drop_buffer(ctx, e->edit_data);
-      e->edit_data = NULL;
-      e->edit_data_from_convergence = false;
-    }
-  }
+  // A source edit cancels the finishing pass, not its last complete auxiliary
+  // input. Dropping that input here makes root replays forget resolved labels
+  // until another idle pass reaches EOF. Keep the copied previous-pass bytes,
+  // just as LaTeX keeps .aux files between normal runs; finish_convergence will
+  // replace them when a complete pass changes or removes labels.
   self->aux_dirty = false;
   self->finishing = false;
 }
@@ -1064,7 +1059,7 @@ static void rollback_processes(fz_context *ctx, struct tex_engine *self, int rev
   double profile_start = txp_profile_now();
   int tokens_before = self->last_tokens;
   self->deferred.active = false;
-  clear_convergence_stash(ctx, self);
+  cancel_convergence(self);
 
   fprintf(
     stderr,
