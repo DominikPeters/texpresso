@@ -160,3 +160,11 @@ test-preview-png: texpresso
 build/test-preview-png: test/test_preview_png.c build/frontend/preview.o build/frontend/renderer.o
 	$(CC) -Isrc/frontend -Isrc/dvi -c -o build/test-preview-png.o test/test_preview_png.c
 	$(LDCC) -o $@ build/test-preview-png.o build/frontend/preview.o build/frontend/renderer.o $(LIBS)
+
+.PHONY: test-dvi-strokes
+test-dvi-strokes: texpresso
+	$(MAKE) -f Makefile.config -f Makefile build/test-dvi-strokes
+	build/test-dvi-strokes
+build/test-dvi-strokes: test/test_dvi_strokes.c build/frontend/libmydvi.a build/common/libcommon.a
+	$(CC) -Isrc/dvi -c -o build/test-dvi-strokes.o test/test_dvi_strokes.c
+	$(LDCC) -o $@ build/test-dvi-strokes.o build/frontend/libmydvi.a build/common/libcommon.a $(LIBS)
