@@ -39,6 +39,8 @@ enum EDITOR_COMMAND
   EDIT_RERUN_ONCE,
   EDIT_PREVIEW_RENDER,
   EDIT_PREVIEW_CANCEL,
+  EDIT_PREVIEW_PREPARE,
+  EDIT_PREVIEW_PREPARE_CANCEL,
   EDIT_PREVIEW_INVERSE,
   EDIT_PREVIEW_BARRIER,
   EDIT_PREVIEW_DESTINATION,
@@ -144,6 +146,7 @@ struct editor_command
 
     struct { int request, page, width, revision, sequence; bool region; float bounds[4]; bool svg, automatic; int vector_limit; bool patches; int patch_base; bool background; } preview_render;
     struct { int request, page; } preview_cancel;
+    struct { int request, offset, revision, sequence; const char *path; } preview_prepare;
     struct { int revision, sequence, page; float x, y; } preview_inverse;
     struct { int sequence; } preview_barrier;
     struct { int revision, sequence; const char *name; } preview_destination;

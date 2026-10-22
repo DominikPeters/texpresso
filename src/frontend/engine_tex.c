@@ -58,6 +58,8 @@ typedef struct
   int trace_len;
   int tokens;
   mark_t snap;
+  fileentry_t *checkpoint_entry;
+  int checkpoint_offset;
 } process_t;
 
 enum
@@ -105,6 +107,9 @@ struct tex_engine
   bool aux_dirty;
   bool finishing;
   int last_tokens;
+  fileentry_t *fork_entry;
+  int fork_offset;
+  struct { fileentry_t *entry; int offset, status; } prepare;
 };
 
 // Backtrackable process state & VFS representation
@@ -215,6 +220,7 @@ static void prepare_process(fz_context *ctx, struct tex_engine *self)
     p->pid = exec_xelatex(self->engine_path, self->use_texlive, self->name, &p->fd);
     p->trace_len = 0;
     p->tokens = 0;
+    p->checkpoint_entry = NULL;
     if (!channel_handshake(self->c, p->fd))
       mabort();
   }
@@ -751,6 +757,11 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
       if ((fork || periodic) && txp_profile_now())
         fprintf(stderr, "[profile] {\"stage\":\"compiler-checkpoint\",\"ms\":0,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"trace\":%d,\"offset\":%d,\"checkpoints\":%d,\"fence\":%s}\n",
                 q->time, p->trace_len, q->read.pos, self->process_count - 1, fork ? "true" : "false");
+      if (fork || periodic)
+      {
+        self->fork_entry = e;
+        self->fork_offset = q->read.pos;
+      }
       if (fork)
       {
         a.tag = A_FORK;
@@ -973,6 +984,13 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
       process_t *p2 = get_process(self);
       p->snap = log_snapshot(ctx, self->log);
       p->tokens = q->time;
+      p->checkpoint_entry = self->fork_entry;
+      p->checkpoint_offset = self->fork_offset;
+      p2->checkpoint_entry = NULL;
+      if (self->prepare.status == TXP_PREPARE_PENDING &&
+          self->prepare.entry == self->fork_entry &&
+          self->prepare.offset == self->fork_offset)
+        self->prepare.status = TXP_PREPARE_READY;
       p2->fd = q->chld.fd;
       p2->pid = q->chld.pid;
       p2->trace_len = p->trace_len;
@@ -1149,6 +1167,59 @@ static int compute_fences(fz_context *ctx, struct tex_engine *self, int trace, i
   }
 
   return trace;
+}
+
+int txp_engine_prepare_status(txp_engine *_self)
+{
+  if (_self->_class != &_class) return TXP_PREPARE_SKIPPED;
+  SELF;
+  return self->prepare.status;
+}
+
+void txp_engine_cancel_prepare(txp_engine *_self)
+{
+  if (_self->_class != &_class) return;
+  SELF;
+  if (self->prepare.status == TXP_PREPARE_PENDING) self->fence_pos = -1;
+  self->prepare.status = TXP_PREPARE_SKIPPED;
+}
+
+int txp_engine_prepare_edit(txp_engine *_self, fz_context *ctx, const char *path, int offset)
+{
+  if (_self->_class != &_class) return TXP_PREPARE_SKIPPED;
+  SELF;
+  txp_engine_cancel_prepare(_self);
+  fileentry_t *entry = filesystem_lookup(self->fs, path);
+  if (!entry || entry->saved.level != FILE_READ || self->finishing ||
+      self->process_count == 0 || offset < 0)
+    return TXP_PREPARE_SKIPPED;
+  fz_buffer *data = entry_data(entry);
+  if (!data || offset >= data->len) return TXP_PREPARE_SKIPPED;
+  int bucket = offset & ~63;
+  for (int i = 0; i < self->process_count; ++i)
+  {
+    process_t *p = &self->processes[i];
+    if (p->fd >= 0 && p->checkpoint_entry == entry &&
+        p->checkpoint_offset <= offset && p->checkpoint_offset >= bucket)
+      return TXP_PREPARE_CACHED;
+  }
+  if (entry->seen < offset || bucket >= data->len) return TXP_PREPARE_SKIPPED;
+  int length = get_process(self)->trace_len, target = length - 1;
+  while (target >= 0 && (self->trace[target].entry != entry || self->trace[target].seen >= bucket))
+    --target;
+  // Unread files and offsets not represented by a safe READ trace are cheap
+  // skips. Never advance arbitrary documents merely to discover a warm target.
+  if (target <= 0) return TXP_PREPARE_SKIPPED;
+  compute_fences(ctx, self, target, bucket);
+  // One target only: don't build the earlier exponential editing fences.
+  self->fence_pos = 0;
+  self->prepare.entry = entry;
+  self->prepare.offset = self->fences[0].position;
+  rollback_processes(ctx, self, length, target);
+  self->prepare.status = TXP_PREPARE_PENDING;
+  fprintf(stderr, "[prepare-edit] replay %s at byte %d\n", path, self->prepare.offset);
+  prepare_process(ctx, self);
+  return TXP_PREPARE_PENDING;
 }
 
 static int engine_page_count(txp_engine *_self)

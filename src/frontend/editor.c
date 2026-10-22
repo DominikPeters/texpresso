@@ -359,6 +359,27 @@ bool editor_parse(fz_context *ctx,
       *out = (struct editor_command){.tag = EDIT_PREVIEW_INVERSE,
         .preview_inverse = {a[0], a[1], a[2], a[3], a[4]}};
   }
+  else if (strcmp(verb, "preview-prepare") == 0 || strcmp(verb, "preview-prepare-cancel") == 0)
+  {
+    bool cancel = strcmp(verb, "preview-prepare-cancel") == 0;
+    if (len != (cancel ? 2 : 6)) goto arity;
+    int a[4] = {0};
+    for (int i = 0; i < (cancel ? 1 : 4); ++i) {
+      val v = val_array_get(ctx, stack, command, i ? i + 2 : 1);
+      if (!val_is_number(v)) goto arguments;
+      double n = val_number(ctx, v);
+      if (!isfinite(n) || n < 0 || n > INT_MAX || floor(n) != n) goto arguments;
+      a[i] = n;
+    }
+    const char *path = NULL;
+    if (!cancel) {
+      val v = val_array_get(ctx, stack, command, 2);
+      if (!val_is_string(v) || val_string_length(ctx, stack, v) == 0 || val_string_length(ctx, stack, v) > 4096) goto arguments;
+      path = val_string(ctx, stack, v);
+    }
+    *out = (struct editor_command){.tag = cancel ? EDIT_PREVIEW_PREPARE_CANCEL : EDIT_PREVIEW_PREPARE,
+      .preview_prepare = {a[0], a[1], a[2], a[3], path}};
+  }
   else if (strcmp(verb, "preview-cancel") == 0)
   {
     if (len != 3) goto arity;

@@ -51,6 +51,14 @@ txp_engine *txp_create_dvi_engine(fz_context *ctx,
                                   const char *dvi_path,
                                   dvi_reshooks hooks);
 
+// Speculative edit preparation uses the same READ fences as a real edit.
+// It never changes source bytes; callers must retain their visible page while
+// the compiler's output prefix is replayed.
+enum txp_prepare_status { TXP_PREPARE_SKIPPED, TXP_PREPARE_CACHED, TXP_PREPARE_PENDING, TXP_PREPARE_READY };
+int txp_engine_prepare_edit(txp_engine *self, fz_context *ctx, const char *path, int offset);
+int txp_engine_prepare_status(txp_engine *self);
+void txp_engine_cancel_prepare(txp_engine *self);
+
 typedef enum {
   DOC_RUNNING,
   DOC_TERMINATED

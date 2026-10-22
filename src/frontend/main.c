@@ -117,6 +117,13 @@ typedef struct {
   enum ui_mouse_status mouse_status;
   bool advancing;
   txp_preview preview;
+  struct {
+    bool queued, active, held;
+    int request, revision, sequence, offset;
+    char path[4097];
+    uint32_t started;
+  } prepare;
+  struct { bool pending; int revision, sequence, page; float x, y; } prepared_inverse;
 } ui_state;
 
 /* UI rendering */
@@ -1011,6 +1018,88 @@ static void interpret_register(struct persistent_state *ps,
   fprintf(stderr, "[command] register %s: marked as promised\n", path);
 }
 
+static void prepare_reply(ui_state *ui, const char *status)
+{
+  printf("[\"preview-prepared\",%d,%d,%d,\"%s\"]\n", ui->prepare.request,
+    ui->prepare.revision, ui->prepare.sequence, status);
+  fflush(stdout);
+}
+
+static void cancel_prepare(struct persistent_state *ps, ui_state *ui, bool release)
+{
+  if (ui->prepare.queued || ui->prepare.active) prepare_reply(ui, "cancelled");
+  ui->prepare.queued = ui->prepare.active = false;
+  txp_engine_cancel_prepare(ui->eng);
+  if (release && ui->prepare.held) {
+    ui->prepare.held = false;
+    ui->preview.valid = false;
+    schedule_event(RELOAD_EVENT);
+  }
+}
+
+static bool advance_prepare(struct persistent_state *ps, ui_state *ui)
+{
+  if (ui->prepare.queued) {
+    ui->prepare.queued = false;
+    if (ps->paused || !ui->preview.valid || ui->preview.pending || ui->preview.background || ui->preview.destination[0] ||
+        synctex_has_target(send(synctex, ui->eng, NULL)) || send(is_finishing, ui->eng) || ui->prepare.revision != ui->preview.revision ||
+        ui->prepare.sequence != ui->preview.sequence || delayed_changes.count) {
+      prepare_reply(ui, "skipped");
+      return false;
+    }
+    int go_up = 0;
+    const char *path = relative_path(ui->prepare.path, ps->doc_path, &go_up);
+    int status = go_up ? TXP_PREPARE_SKIPPED : txp_engine_prepare_edit(ui->eng, ps->ctx, path, ui->prepare.offset);
+    if (status != TXP_PREPARE_PENDING) {
+      prepare_reply(ui, status == TXP_PREPARE_CACHED ? "cached" : "skipped");
+      return false;
+    }
+    ui->prepare.active = ui->prepare.held = true;
+    ui->prepare.started = SDL_GetTicks();
+  }
+  if (!ui->prepare.active) return false;
+  uint32_t burst = SDL_GetTicks();
+  do {
+    if (!send(step, ui->eng, ps->ctx, false)) break;
+    int status = txp_engine_prepare_status(ui->eng);
+    if (status == TXP_PREPARE_READY) {
+      ui->prepare.active = false;
+      prepare_reply(ui, "ready");
+      break;
+    }
+  } while (SDL_GetTicks() - burst < 5);
+  if (ui->prepare.active && (SDL_GetTicks() - ui->prepare.started > 2500 ||
+      send(get_status, ui->eng) == DOC_TERMINATED)) {
+    txp_engine_cancel_prepare(ui->eng);
+    ui->prepare.active = false;
+    prepare_reply(ui, "skipped");
+  }
+  return ui->prepare.active;
+}
+
+static void process_prepared_inverse(struct persistent_state *ps, ui_state *ui)
+{
+  if (!ui->prepared_inverse.pending || !ui->preview.valid ||
+      ui->prepared_inverse.page != ui->page ||
+      ui->prepared_inverse.revision != ui->preview.revision ||
+      ui->prepared_inverse.sequence != ui->preview.sequence) return;
+  fz_buffer *buf;
+  synctex_t *stx = send(synctex, ui->eng, &buf);
+  float factor = send(scale_factor, ui->eng);
+  if (!stx || !buf || factor <= 0 || synctex_page_count(stx) <= ui->page) return;
+  ui->prepared_inverse.pending = false;
+  char *word = NULL;
+  fz_var(word);
+  fz_try(ps->ctx) {
+    word = txp_renderer_word_at(ps->ctx, ui->doc_renderer,
+      fz_make_point(ui->prepared_inverse.x, ui->prepared_inverse.y));
+  }
+  fz_catch(ps->ctx) { fprintf(stderr, "[preview] Could not extract clicked word\n"); }
+  synctex_scan_word(ps->ctx, stx, buf, ps->doc_path, ui->page,
+    ui->prepared_inverse.x / factor, ui->prepared_inverse.y / factor, word);
+  fz_free(ps->ctx, word);
+}
+
 static void interpret_command(struct persistent_state *ps,
                               ui_state *ui,
                               vstack *stack,
@@ -1019,6 +1108,19 @@ static void interpret_command(struct persistent_state *ps,
   struct editor_command cmd;
   if (!editor_parse(ps->ctx, stack, command, &cmd))
     return;
+
+  if (ps->headless && (cmd.tag == EDIT_OPEN || cmd.tag == EDIT_CLOSE || cmd.tag == EDIT_CHANGE ||
+      cmd.tag == EDIT_RESCAN || cmd.tag == EDIT_RERUN_ONCE || cmd.tag == EDIT_RESUME ||
+      cmd.tag == EDIT_SYNCTEX_FORWARD || cmd.tag == EDIT_PREVIEW_CANCEL ||
+      (cmd.tag == EDIT_PREVIEW_INVERSE && cmd.preview_inverse.revision == ui->preview.revision && cmd.preview_inverse.sequence == ui->preview.sequence) ||
+      (cmd.tag == EDIT_PREVIEW_DESTINATION && cmd.preview_destination.revision == ui->preview.revision && cmd.preview_destination.sequence == ui->preview.sequence) ||
+      (cmd.tag == EDIT_PREVIEW_RENDER && cmd.preview_render.revision == ui->preview.revision && cmd.preview_render.sequence == ui->preview.sequence) ||
+      (cmd.tag == EDIT_PREVIEW_BARRIER && cmd.preview_barrier.sequence != ui->preview.sequence)))
+  {
+    cancel_prepare(ps, ui, true);
+    if (cmd.tag != EDIT_PREVIEW_INVERSE) ui->prepared_inverse.pending = false;
+  }
+  if (ps->headless && cmd.tag == EDIT_PAUSE) cancel_prepare(ps, ui, false);
 
   if (ps->headless && (cmd.tag == EDIT_OPEN || cmd.tag == EDIT_CLOSE ||
       cmd.tag == EDIT_CHANGE || cmd.tag == EDIT_RESCAN || cmd.tag == EDIT_RERUN_ONCE)) {
@@ -1210,6 +1312,23 @@ static void interpret_command(struct persistent_state *ps,
       }
       break;
 
+    case EDIT_PREVIEW_PREPARE:
+      if (ps->headless) {
+        cancel_prepare(ps, ui, false);
+        ui->prepare.queued = true;
+        ui->prepare.request = cmd.preview_prepare.request;
+        ui->prepare.offset = cmd.preview_prepare.offset;
+        ui->prepare.revision = cmd.preview_prepare.revision;
+        ui->prepare.sequence = cmd.preview_prepare.sequence;
+        snprintf(ui->prepare.path, sizeof ui->prepare.path, "%s", cmd.preview_prepare.path);
+      }
+      break;
+
+    case EDIT_PREVIEW_PREPARE_CANCEL:
+      if (ps->headless && (!cmd.preview_prepare.request || cmd.preview_prepare.request == ui->prepare.request))
+        cancel_prepare(ps, ui, false);
+      break;
+
     case EDIT_PREVIEW_CANCEL:
       if (ps->headless && (cmd.preview_cancel.request == 0 ||
           (ui->preview.background && ui->preview.request == cmd.preview_cancel.request)))
@@ -1220,8 +1339,8 @@ static void interpret_command(struct persistent_state *ps,
       if (ps->headless)
       {
         txp_preview *p = &ui->preview;
-        if (cmd.preview_render.background && (cmd.preview_render.revision != p->revision ||
-            cmd.preview_render.sequence != p->sequence)) {
+        if (cmd.preview_render.revision != p->revision ||
+            cmd.preview_render.sequence != p->sequence) {
           printf("[\"preview-retry\",%d]\n", cmd.preview_render.request);
           break;
         }
@@ -1263,35 +1382,19 @@ static void interpret_command(struct persistent_state *ps,
 
     case EDIT_PREVIEW_INVERSE:
       if (ps->headless && cmd.preview_inverse.revision == ui->preview.revision &&
-          cmd.preview_inverse.sequence == ui->preview.sequence)
+          cmd.preview_inverse.sequence == ui->preview.sequence) {
         preempt_background(ps, ui, cmd.preview_inverse.page);
-      if (ps->headless && !ui->preview.valid &&
-          cmd.preview_inverse.revision == ui->preview.revision &&
-          cmd.preview_inverse.sequence == ui->preview.sequence &&
-          cmd.preview_inverse.page == ui->page && ui->page < send(page_count, ui->eng))
-        display_page(ps, ui);
-      if (ps->headless && ui->preview.valid &&
-          cmd.preview_inverse.revision == ui->preview.revision &&
-          cmd.preview_inverse.sequence == ui->preview.sequence &&
-          cmd.preview_inverse.page == ui->page)
-      {
-        fz_buffer *buf;
-        synctex_t *stx = send(synctex, ui->eng, &buf);
-        float factor = send(scale_factor, ui->eng);
-        if (stx && buf && factor > 0)
-        {
-          char *word = NULL;
-          fz_var(word);
-          fz_try(ps->ctx)
-          {
-            word = txp_renderer_word_at(ps->ctx, ui->doc_renderer,
-                       fz_make_point(cmd.preview_inverse.x, cmd.preview_inverse.y));
-          }
-          fz_catch(ps->ctx) { fprintf(stderr, "[preview] Could not extract clicked word\n"); }
-          synctex_scan_word(ps->ctx, stx, buf, ps->doc_path, ui->page,
-                       cmd.preview_inverse.x / factor, cmd.preview_inverse.y / factor, word);
-          fz_free(ps->ctx, word);
-        }
+        if (ui->page != cmd.preview_inverse.page) ui->preview.valid = false;
+        ui->page = cmd.preview_inverse.page;
+        ui->prepared_inverse.pending = true;
+        ui->prepared_inverse.revision = cmd.preview_inverse.revision;
+        ui->prepared_inverse.sequence = cmd.preview_inverse.sequence;
+        ui->prepared_inverse.page = cmd.preview_inverse.page;
+        ui->prepared_inverse.x = cmd.preview_inverse.x;
+        ui->prepared_inverse.y = cmd.preview_inverse.y;
+        ui->need_synctex = true;
+        schedule_event(RELOAD_EVENT);
+        process_prepared_inverse(ps, ui);
       }
       break;
 
@@ -1504,6 +1607,7 @@ bool texpresso_main(struct persistent_state *ps)
 
     if (send(end_changes, ui->eng, ps->ctx))
     {
+      if (ps->headless) cancel_prepare(ps, ui, true);
       if (ps->headless) txp_preview_invalidate(&ui->preview);
       if (!ps->paused)
         send(step, ui->eng, ps->ctx, true);
@@ -1514,10 +1618,11 @@ bool texpresso_main(struct persistent_state *ps)
     // Process document
     {
       int before_page_count = send(page_count, ui->eng);
-      bool advance = !ps->paused && advance_engine(ps->ctx, ui);
-      send(finish_convergence, ui->eng, ps->ctx);
+      bool warming = ps->headless && !ps->paused && advance_prepare(ps, ui);
+      bool advance = warming || (!ui->prepare.held && !ps->paused && advance_engine(ps->ctx, ui));
+      if (!ui->prepare.held) send(finish_convergence, ui->eng, ps->ctx);
       int after_page_count = send(page_count, ui->eng);
-      if (ps->headless)
+      if (ps->headless && !ui->prepare.held)
       {
         bool complete = send(get_status, ui->eng) == DOC_TERMINATED;
         if (complete && ui->page >= after_page_count && after_page_count > 0)
@@ -1541,17 +1646,19 @@ bool texpresso_main(struct persistent_state *ps)
         }
         if (ui->preview.background && !ui->preview.pending)
           finish_background(ps, ui, ui->preview.foreground_page);
-        if (stdin_eof) quit = true;
       }
+      // EOF must also terminate a held speculative replay or ready checkpoint.
+      if (ps->headless && stdin_eof) quit = true;
       fflush(stdout);
 
-      if (ui->page >= before_page_count && ui->page < after_page_count)
+      if (!ui->prepare.held && ui->page >= before_page_count && ui->page < after_page_count)
         schedule_event(RELOAD_EVENT);
 
       // Fire an on-demand rerun as soon as the engine is ready, regardless of
       // idle state. Runs in the main body of the loop (not inside the idle
       // wait) so it triggers even during active compilation cycles.
-      bool aux_ready = !send(is_finishing, ui->eng)
+      process_prepared_inverse(ps, ui);
+      bool aux_ready = !ui->prepare.held && !send(is_finishing, ui->eng)
                        && send(aux_dirty, ui->eng);
       if (ps->rerun_once_pending && aux_ready)
       {
@@ -1858,6 +1965,7 @@ bool texpresso_main(struct persistent_state *ps)
           send(detect_changes, ui->eng, ps->ctx);
           if (send(end_changes, ui->eng, ps->ctx))
           {
+            if (ps->headless) cancel_prepare(ps, ui, true);
             if (ps->headless) txp_preview_invalidate(&ui->preview);
             if (!ps->paused)
               send(step, ui->eng, ps->ctx, true);
@@ -1871,6 +1979,7 @@ bool texpresso_main(struct persistent_state *ps)
           flush_changes(ps, ui);
           if (send(end_changes, ui->eng, ps->ctx))
           {
+            if (ps->headless) cancel_prepare(ps, ui, true);
             if (ps->headless) txp_preview_invalidate(&ui->preview);
             if (!ps->paused)
               send(step, ui->eng, ps->ctx, true);
@@ -1879,6 +1988,7 @@ bool texpresso_main(struct persistent_state *ps)
           break;
 
         case RELOAD_EVENT:
+          if (ui->prepare.held) break;
           page_count = send(page_count, ui->eng);
           if (ui->page >= page_count &&
               send(get_status, ui->eng) == DOC_TERMINATED)
