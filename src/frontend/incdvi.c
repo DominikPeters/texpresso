@@ -132,7 +132,7 @@ void incdvi_update(fz_context *ctx, incdvi_t *d, fz_buffer *buf)
     while (d->offset < len)
     {
       int ilen = dvi_instr_size(buf->data + d->offset, len - d->offset, version);
-      if (ilen <= 0)
+      if (ilen <= 0 || ilen > len - d->offset)
         break;
       if (buf->data[d->offset] == BOP || buf->data[d->offset] == EOP)
       {

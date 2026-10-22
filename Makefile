@@ -144,3 +144,11 @@ test-texlive-provider:
 	build/test-texlive-provider
 build/test-texlive-provider: test/test_texlive_provider.c src/common/texlive_provider.c
 	$(CC) -Isrc/include -o $@ test/test_texlive_provider.c
+
+.PHONY: test-dvi-annotations
+test-dvi-annotations: texpresso
+	$(MAKE) -f Makefile.config -f Makefile build/test-dvi-annotations
+	build/test-dvi-annotations
+build/test-dvi-annotations: test/test_dvi_annotations.c build/frontend/incdvi.o build/frontend/libmydvi.a build/common/libcommon.a
+	$(CC) -Isrc/frontend -Isrc/dvi -c -o build/test-dvi-annotations.o test/test_dvi_annotations.c
+	$(LDCC) -o $@ build/test-dvi-annotations.o build/frontend/incdvi.o build/frontend/libmydvi.a build/common/libcommon.a $(LIBS)
