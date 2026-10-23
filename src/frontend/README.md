@@ -85,7 +85,7 @@ count. `transaction` includes all request writes, buffered flushes, response tag
 and response payload reads. Diagnostic mode makes the existing implicit stdio
 write-to-read flush explicit, so request flushing and response reading can be
 separated. One-way SEEN ends after its buffered write. `fork` measures the parent's
-fork syscall; `park` includes CHLD delivery, waiting for the child and the DONE
+`fork()` call (including library wrappers); `park` includes CHLD delivery, waiting for the child and the DONE
 resume response. Both child return and parent resume reset the work baseline.
 Workers killed mid-interval cannot report their unfinished work; process sampling
 is still useful for those intervals.
