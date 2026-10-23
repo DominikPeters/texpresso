@@ -59,6 +59,16 @@ int txp_engine_prepare_edit(txp_engine *self, fz_context *ctx, const char *path,
 int txp_engine_prepare_status(txp_engine *self);
 void txp_engine_cancel_prepare(txp_engine *self);
 
+// Only an explicit worker result completes a TeX pass. Socket closure alone
+// may mean an error, crash, or edit cancellation and must not promote aux data.
+typedef enum txp_pass_status {
+  TXP_PASS_UNKNOWN, TXP_PASS_RUNNING, TXP_PASS_SUCCEEDED,
+  TXP_PASS_FAILED, TXP_PASS_CANCELLED
+} txp_pass_status;
+txp_pass_status txp_engine_pass_status(txp_engine *self);
+uint64_t txp_engine_page_token(txp_engine *self, fz_display_list *list);
+
+
 typedef enum {
   DOC_RUNNING,
   DOC_TERMINATED

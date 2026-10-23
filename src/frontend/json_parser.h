@@ -66,7 +66,7 @@ typedef struct
     struct
     {
       int sign, exp_sign;
-      float num, frac, exp;
+      double num, frac, exp;
     };
   };
 } json_parser;

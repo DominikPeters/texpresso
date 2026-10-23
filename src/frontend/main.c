@@ -117,6 +117,7 @@ typedef struct {
   enum ui_mouse_status mouse_status;
   bool advancing;
   txp_preview preview;
+  int source_request;
   struct {
     bool queued, active, held;
     int request, revision, sequence, offset;
@@ -161,6 +162,14 @@ static int repaint_on_resize(void *data, SDL_Event *event)
 }
 
 /* Document processing */
+
+static bool document_complete(txp_engine *engine)
+{
+  enum txp_pass_status pass = txp_engine_pass_status(engine);
+  return send(get_status, engine) == DOC_TERMINATED &&
+    (pass == TXP_PASS_SUCCEEDED || pass == TXP_PASS_UNKNOWN);
+}
+
 
 static bool need_advance(fz_context *ctx, ui_state *ui)
 {
@@ -992,6 +1001,21 @@ SDL_SetWindowAlwaysOnTop(SDL_Window *window, SDL_bool state)
 #endif
 
 
+static void cancel_source(ui_state *ui)
+{
+  if (ui->source_request > 0) printf("[\"preview-cancelled\",%d]\n", ui->source_request);
+  ui->source_request = 0;
+  fflush(stdout);
+  synctex_set_target(send(synctex, ui->eng, NULL), 0, NULL, 0);
+}
+
+static void cancel_render(struct persistent_state *ps, ui_state *ui, int page)
+{
+  if (ui->preview.pending) printf("[\"preview-cancelled\",%d]\n", ui->preview.request);
+  finish_background(ps, ui, page);
+  fflush(stdout);
+}
+
 static void resolve_forward(struct persistent_state *ps, ui_state *ui)
 {
   if (ui->prepare.held) return;
@@ -999,7 +1023,7 @@ static void resolve_forward(struct persistent_state *ps, ui_state *ui)
   synctex_t *stx = send(synctex, ui->eng, &buf);
   int page = -1, x = -1, y = -1;
   int found = ps->headless
-    ? synctex_find_resolved_target(ps->ctx, stx, buf, send(get_status, ui->eng) == DOC_TERMINATED, &page, &x, &y)
+    ? synctex_find_resolved_target(ps->ctx, stx, buf, document_complete(ui->eng), &page, &x, &y)
     : synctex_find_target(ps->ctx, stx, buf, &page, &x, &y);
   if (found)
   {
@@ -1022,9 +1046,15 @@ static void resolve_forward(struct persistent_state *ps, ui_state *ui)
     fz_point p = fz_make_point(f * x, f * y);
     if (ps->headless)
     {
-      printf("[\"preview-forward\",%d,%d,%d,%.9g,%.9g]\n",
-             ui->preview.revision, ui->preview.sequence, page, p.x, p.y);
+      if (ui->source_request > 0)
+        printf("[\"preview-source\",%d,%d,%d,%d,%.9g,%.9g]\n", ui->source_request,
+          ui->preview.revision, ui->preview.sequence, page, p.x, p.y);
+      else
+        printf("[\"preview-forward\",%d,%d,%d,%.9g,%.9g]\n",
+          ui->preview.revision, ui->preview.sequence, page, p.x, p.y);
+      ui->source_request = 0;
       if (superseded >= 0) printf("[\"preview-retry\",%d]\n", superseded);
+      fflush(stdout);
     }
     else
     {
@@ -1172,7 +1202,7 @@ static void interpret_command(struct persistent_state *ps,
 
   if (ps->headless && (cmd.tag == EDIT_OPEN || cmd.tag == EDIT_CLOSE || cmd.tag == EDIT_CHANGE ||
       cmd.tag == EDIT_RESCAN || cmd.tag == EDIT_RERUN_ONCE || cmd.tag == EDIT_RESUME ||
-      cmd.tag == EDIT_SYNCTEX_FORWARD || cmd.tag == EDIT_PREVIEW_CANCEL ||
+      cmd.tag == EDIT_SYNCTEX_FORWARD || cmd.tag == EDIT_PREVIEW_SEARCH || cmd.tag == EDIT_PREVIEW_CANCEL ||
       (cmd.tag == EDIT_PREVIEW_INVERSE && cmd.preview_inverse.revision == ui->preview.revision && cmd.preview_inverse.sequence == ui->preview.sequence) ||
       (cmd.tag == EDIT_PREVIEW_DESTINATION && cmd.preview_destination.revision == ui->preview.revision && cmd.preview_destination.sequence == ui->preview.sequence) ||
       (cmd.tag == EDIT_PREVIEW_RENDER && cmd.preview_render.revision == ui->preview.revision && cmd.preview_render.sequence == ui->preview.sequence) ||
@@ -1186,6 +1216,7 @@ static void interpret_command(struct persistent_state *ps,
   if (ps->headless && (cmd.tag == EDIT_OPEN || cmd.tag == EDIT_CLOSE ||
       cmd.tag == EDIT_CHANGE || cmd.tag == EDIT_RESCAN || cmd.tag == EDIT_RERUN_ONCE)) {
     preempt_background(ps, ui, ui->preview.foreground_page);
+    cancel_source(ui);
     txp_preview_invalidate(&ui->preview);
   }
 
@@ -1238,10 +1269,12 @@ static void interpret_command(struct persistent_state *ps,
     break;
 
     case EDIT_PREVIOUS_PAGE:
+      if (ps->headless) cancel_source(ui);
       previous_page(ps->ctx, ui, 0);
       break;
 
     case EDIT_NEXT_PAGE:
+      if (ps->headless) cancel_source(ui);
       next_page(ps->ctx, ui, 0);
       break;
 
@@ -1296,21 +1329,29 @@ static void interpret_command(struct persistent_state *ps,
       break;
 
     case EDIT_SYNCTEX_FORWARD:
+    case EDIT_PREVIEW_SEARCH:
     {
+      bool identified = cmd.tag == EDIT_PREVIEW_SEARCH;
+      if (identified && (!ps->headless || cmd.preview_search.sequence != ui->preview.sequence)) {
+        printf("[\"preview-cancelled\",%d]\n", cmd.preview_search.request);
+        break;
+      }
+      cancel_source(ui);
+      if (identified) ui->source_request = cmd.preview_search.request;
       if (ps->headless) preempt_background(ps, ui, ui->preview.foreground_page);
       fz_buffer *buf;
       synctex_t *stx = send(synctex, ui->eng, &buf);
       int go_up = 0;
-      const char *path = relative_path(cmd.synctex_forward.path, ps->doc_path, &go_up);
-      if (go_up > 0)
+      const char *path = relative_path(identified ? cmd.preview_search.path : cmd.synctex_forward.path, ps->doc_path, &go_up);
+      if (go_up > 0 || strlen(path) >= 1024)
       {
         fprintf(stderr,
-                "[command] synctex-forward %s: file has a different root, skipping\n",
-                path);
+                "[command] synctex-forward: incompatible or overlong source path, skipping\n");
+        cancel_source(ui);
       }
       else
       {
-        synctex_set_target(stx, ui->page, path, cmd.synctex_forward.line);
+        synctex_set_target(stx, ui->page, path, identified ? cmd.preview_search.line : cmd.synctex_forward.line);
         schedule_event(STDIN_EVENT);
       }
     }
@@ -1359,8 +1400,7 @@ static void interpret_command(struct persistent_state *ps,
     case EDIT_PREVIEW_BARRIER:
       if (ps->headless)
       {
-        if (cmd.preview_barrier.sequence != ui->preview.sequence)
-          synctex_set_target(send(synctex, ui->eng, NULL), 0, NULL, 0);
+        if (cmd.preview_barrier.sequence != ui->preview.sequence) cancel_source(ui);
         flush_changes(ps, ui);
         ui->preview.sequence = cmd.preview_barrier.sequence;
         ui->preview.destination[0] = 0;
@@ -1370,6 +1410,7 @@ static void interpret_command(struct persistent_state *ps,
     case EDIT_PREVIEW_DESTINATION:
       if (ps->headless && cmd.preview_destination.revision == ui->preview.revision &&
           cmd.preview_destination.sequence == ui->preview.sequence) {
+        cancel_source(ui);
         preempt_background(ps, ui, ui->preview.foreground_page);
         snprintf(ui->preview.destination, sizeof ui->preview.destination, "%s", cmd.preview_destination.name);
       }
@@ -1393,11 +1434,14 @@ static void interpret_command(struct persistent_state *ps,
       break;
 
     case EDIT_PREVIEW_CANCEL:
-      if (ps->headless && cmd.preview_cancel.request == 0)
-        synctex_set_target(send(synctex, ui->eng, NULL), 0, NULL, 0);
-      if (ps->headless && (cmd.preview_cancel.request == 0 ||
-          (ui->preview.background && ui->preview.request == cmd.preview_cancel.request)))
-        finish_background(ps, ui, cmd.preview_cancel.page);
+      if (ps->headless) {
+        int request = cmd.preview_cancel.request;
+        if (request == 0 || request == ui->source_request) cancel_source(ui);
+        if (request == 0 || (ui->preview.pending && ui->preview.request == request))
+          cancel_render(ps, ui, cmd.preview_cancel.page);
+        if ((ui->prepare.queued || ui->prepare.active) && (!request || request == ui->prepare.request))
+          cancel_prepare(ps, ui, false);
+      }
       break;
 
     case EDIT_PREVIEW_RENDER:
@@ -1410,6 +1454,7 @@ static void interpret_command(struct persistent_state *ps,
           printf("[\"preview-retry\",%d]\n", cmd.preview_render.request);
           break;
         }
+        if (p->pending) printf("[\"preview-cancelled\",%d]\n", p->request);
         if (!cmd.preview_render.background && p->background)
           finish_background(ps, ui, cmd.preview_render.page);
         if (cmd.preview_render.background) {
@@ -1440,7 +1485,10 @@ static void interpret_command(struct persistent_state *ps,
         {
           ui->page = p->page;
           p->valid = false;
-          synctex_set_target(send(synctex, ui->eng, NULL), 0, NULL, 0);
+          // Passive image refreshes must not silently retire an identified
+          // source search. Manual navigation explicitly cancels that intent.
+          if (!ui->source_request)
+            synctex_set_target(send(synctex, ui->eng, NULL), 0, NULL, 0);
           schedule_event(RELOAD_EVENT);
         }
       }
@@ -1449,6 +1497,7 @@ static void interpret_command(struct persistent_state *ps,
     case EDIT_PREVIEW_INVERSE:
       if (ps->headless && cmd.preview_inverse.revision == ui->preview.revision &&
           cmd.preview_inverse.sequence == ui->preview.sequence) {
+        cancel_source(ui);
         preempt_background(ps, ui, cmd.preview_inverse.page);
         if (ui->page != cmd.preview_inverse.page) ui->preview.valid = false;
         ui->page = cmd.preview_inverse.page;
@@ -1689,16 +1738,22 @@ bool texpresso_main(struct persistent_state *ps)
       int before_page_count = send(page_count, ui->eng);
       bool warming = ps->headless && advance_prepare(ps, ui);
       bool advance = warming || (!ui->prepare.held && !ps->paused && advance_engine(ps->ctx, ui));
+      // Consume successful EOF mappings before convergence can restore a live
+      // prefix. Failed passes still cannot resolve nearest-line fallbacks.
+      resolve_forward(ps, ui);
       if (!ui->prepare.held) send(finish_convergence, ui->eng, ps->ctx);
       resolve_forward(ps, ui);
       int after_page_count = send(page_count, ui->eng);
       if (ps->headless && !ui->prepare.held)
       {
-        bool complete = send(get_status, ui->eng) == DOC_TERMINATED;
+        bool terminated = send(get_status, ui->eng) == DOC_TERMINATED;
+        bool complete = document_complete(ui->eng);
+        if (terminated && (ui->source_request > 0 || synctex_has_target(send(synctex, ui->eng, NULL)))) cancel_source(ui);
         if (complete && ui->page >= after_page_count && after_page_count > 0)
         {
           ui->page = after_page_count - 1;
-          ui->preview.page = ui->page;
+          // Keep the requested page immutable so a missing page terminates
+          // with an error instead of returning the last page under its ID.
           ui->preview.valid = false;
           schedule_event(RELOAD_EVENT);
         }
@@ -1706,10 +1761,11 @@ bool texpresso_main(struct persistent_state *ps)
                           ui->preview.background ? ui->preview.foreground_page : ui->page, complete);
         // Reject obsolete revision/sequence requests before reporting a real
         // no-page failure. Rapid edits can invalidate a request during rollback.
-        txp_preview_export(ps->ctx, &ui->preview,
-                          ui->preview.background ? ui->preview.background_list :
-                          txp_renderer_get_contents(ps->ctx, ui->doc_renderer), ui->page, ui->doc_renderer);
-        if (complete && after_page_count == 0 && ui->preview.pending)
+        fz_display_list *export_list = ui->preview.background ? ui->preview.background_list :
+          txp_renderer_get_contents(ps->ctx, ui->doc_renderer);
+        ui->preview.content_token = txp_engine_page_token(ui->eng, export_list);
+        txp_preview_export(ps->ctx, &ui->preview, export_list, ui->page, ui->doc_renderer);
+        if (terminated && (after_page_count == 0 || ui->preview.page >= after_page_count) && ui->preview.pending)
         {
           printf("[\"preview-error\",%d,\"The document has not produced a page. Open Output for compiler messages.\"]\n", ui->preview.request);
           ui->preview.pending = false;
@@ -2058,6 +2114,7 @@ bool texpresso_main(struct persistent_state *ps)
   fz_drop_buffer(ps->ctx, ui->preview.annotations);
   fz_drop_buffer(ps->ctx, ui->preview.foreground_annotations);
   fz_drop_display_list(ps->ctx, ui->preview.background_list);
+  txp_preview_drop_cache(ps->ctx, &ui->preview);
   fz_drop_pixmap(ps->ctx, ui->preview.previous_png);
   txp_renderer_free(ps->ctx, ui->doc_renderer);
   send(destroy, ui->eng, ps->ctx);

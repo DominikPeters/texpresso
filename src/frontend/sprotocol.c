@@ -186,8 +186,8 @@ static bool refill_at_least(channel_t *c, int fd, int at_least)
 
 /* HANDSHAKE */
 
-#define HND_SERVER "TEXPRESSOS01"
-#define HND_CLIENT "TEXPRESSOC01"
+#define HND_SERVER "TEXPRESSOS02"
+#define HND_CLIENT "TEXPRESSOC02"
 
 bool channel_handshake(channel_t *c, int fd)
 {
@@ -218,6 +218,7 @@ const char *query_to_string(enum query q)
     CASE(Q,GPIC);
     CASE(Q,SPIC);
     CASE(Q,CHLD);
+    CASE(Q,FINI);
     CASE(Q,MTIM);
   }
 }
@@ -420,6 +421,9 @@ void log_query(FILE *f, query_t *r)
               r->spic.cache.bounds[0], r->spic.cache.bounds[1],
               r->spic.cache.bounds[2], r->spic.cache.bounds[3]);
       return;
+    case Q_FINI:
+      fprintf(f, "FINI(%d)\n", r->fini.success);
+      return;
     case Q_CHLD:
       fprintf(f, "CHLD(pid:%d, fd:%d)\n", r->chld.pid, r->chld.fd);
       return;
@@ -536,6 +540,9 @@ bool channel_read_query(channel_t *t, int fd, query_t *r)
         r->spic.cache.bounds[3] = read_f32(t, fd);
         break;
       }
+    case Q_FINI:
+      r->fini.success = read_u32(t, fd);
+      break;
     case Q_CHLD:
       {
         r->chld.pid = read_u32(t, fd);

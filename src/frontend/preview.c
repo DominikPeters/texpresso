@@ -204,6 +204,85 @@ bool txp_preview_dirty_rect(fz_context *ctx, fz_pixmap *before, fz_pixmap *after
   return true;
 }
 
+/* Encoded bytes and immutable PNG pixels are reusable only for a validated
+ * display-list content token. The DVI owner generates monotonic tokens; this
+ * cache owns no display lists and cannot extend their separate retention budget.
+ * Region crops deliberately bypass reuse. Request/source IDs and annotations are
+ * serialized freshly below, even when all rendering/export work is skipped. */
+#define EXPORT_CACHE_ENTRIES 4
+#define EXPORT_CACHE_BYTES (32u * 1024u * 1024u)
+typedef struct {
+  uint64_t token;
+  int width, mode, vector_limit, image_width, image_height;
+  bool themed, inverted, svg, eligible;
+  uint32_t foreground, background;
+  size_t vector_cost, charge;
+  unsigned long used;
+  fz_rect bounds;
+  const char *fallback;
+  fz_buffer *bytes;
+  fz_pixmap *pixels;
+} export_entry;
+struct txp_preview_cache { export_entry entries[EXPORT_CACHE_ENTRIES]; size_t bytes; unsigned long clock; };
+
+void txp_preview_drop_cache(fz_context *ctx, txp_preview *p)
+{
+  if (!p->export_cache) return;
+  for (int i=0;i<EXPORT_CACHE_ENTRIES;i++) {
+    fz_drop_buffer(ctx,p->export_cache->entries[i].bytes);
+    fz_drop_pixmap(ctx,p->export_cache->entries[i].pixels);
+  }
+  fz_free(ctx,p->export_cache); p->export_cache=NULL;
+}
+static bool export_key(export_entry *e, txp_preview *p, fz_rect bounds, txp_renderer_config *c)
+{
+  return e->token && e->token==p->content_token && e->width==p->width &&
+    e->mode==(p->svg?1:p->automatic?2:0) && e->vector_limit==p->vector_limit &&
+    e->themed==c->themed_color && e->inverted==c->invert_color &&
+    e->foreground==c->foreground_color && e->background==c->background_color &&
+    !memcmp(&e->bounds,&bounds,sizeof bounds);
+}
+static export_entry *export_lookup(txp_preview *p, fz_rect bounds, txp_renderer_config *c)
+{
+  if (!p->export_cache || !p->content_token || p->region) return NULL;
+  for (int i=0;i<EXPORT_CACHE_ENTRIES;i++) if (export_key(&p->export_cache->entries[i],p,bounds,c)) {
+    p->export_cache->entries[i].used=++p->export_cache->clock;
+    return &p->export_cache->entries[i];
+  }
+  return NULL;
+}
+static void export_remember(fz_context *ctx, txp_preview *p, fz_rect bounds, txp_renderer_config *c,
+  fz_buffer *bytes, fz_pixmap *pixels, bool svg, bool eligible, size_t cost, const char *fallback, int width, int height)
+{
+  if (!p->content_token || p->region) return;
+  size_t charge=sizeof(export_entry)+(bytes?bytes->len:0)+(pixels?(size_t)pixels->stride*pixels->h:0);
+  if (charge>EXPORT_CACHE_BYTES) return;
+  if (!p->export_cache) p->export_cache=fz_malloc_struct(ctx,txp_preview_cache);
+  txp_preview_cache *cache=p->export_cache;
+  int slot=-1;
+  for (int i=0;i<EXPORT_CACHE_ENTRIES;i++) if (export_key(&cache->entries[i],p,bounds,c)) { slot=i; break; }
+  if (slot>=0) {
+    export_entry *old=&cache->entries[slot]; cache->bytes-=old->charge;
+    fz_drop_buffer(ctx,old->bytes); fz_drop_pixmap(ctx,old->pixels); memset(old,0,sizeof *old);
+  }
+  while (slot<0 || cache->bytes+charge>EXPORT_CACHE_BYTES) {
+    int oldest=-1;
+    for (int i=0;i<EXPORT_CACHE_ENTRIES;i++) {
+      if (!cache->entries[i].token) { slot=i; continue; }
+      if (oldest<0 || cache->entries[i].used<cache->entries[oldest].used) oldest=i;
+    }
+    if (slot>=0 && cache->bytes+charge<=EXPORT_CACHE_BYTES) break;
+    export_entry *old=&cache->entries[oldest]; cache->bytes-=old->charge;
+    fz_drop_buffer(ctx,old->bytes); fz_drop_pixmap(ctx,old->pixels); memset(old,0,sizeof *old); slot=oldest;
+  }
+  cache->entries[slot]=(export_entry){.token=p->content_token,.width=p->width,.mode=p->svg?1:p->automatic?2:0,
+    .vector_limit=p->vector_limit,.image_width=width,.image_height=height,.themed=c->themed_color,.inverted=c->invert_color,
+    .svg=svg,.eligible=eligible,.foreground=c->foreground_color,.background=c->background_color,.vector_cost=cost,
+    .charge=charge,.used=++cache->clock,.bounds=bounds,.fallback=fallback,
+    .bytes=fz_keep_buffer(ctx,bytes),.pixels=fz_keep_pixmap(ctx,pixels)};
+  cache->bytes+=charge;
+}
+
 void txp_preview_init(txp_preview *p)
 {
   memset(p, 0, sizeof *p);
@@ -275,9 +354,17 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     if (!isfinite(w) || !isfinite(h) || w < 0.01f || h < 0.01f || w > 1e7f || h > 1e7f ||
         fabsf(b.x0) >= 1e9f || fabsf(b.y0) >= 1e9f || fabsf(b.x1) >= 1e9f || fabsf(b.y1) >= 1e9f)
       fz_throw(ctx, FZ_ERROR_GENERIC, "Invalid page bounds");
-    if ((p->svg || p->automatic) && !p->region)
+    txp_renderer_config *config = txp_renderer_get_config(ctx, renderer);
+    double cache_start=txp_profile_now();
+    export_entry *cached=export_lookup(p,b,config);
+    if (cached) {
+      png=fz_keep_buffer(ctx,cached->bytes); pix=fz_keep_pixmap(ctx,cached->pixels);
+      svg=cached->svg; svg_eligible=cached->eligible; vector_cost=cached->vector_cost;
+      fallback=cached->fallback; image_width=cached->image_width; image_height=cached->image_height;
+      txp_profile_record("page-export-cache-hit",cache_start,p->request,page,p->export_cache->bytes);
+    }
+    if (!cached && (p->svg || p->automatic) && !p->region)
     {
-      txp_renderer_config *config = txp_renderer_get_config(ctx, renderer);
       double preflight_start = txp_profile_now();
       fallback = ceilf(w) > 8192 || ceilf(h) > 8192 || ceilf(w) * ceilf(h) > 4000000 ? "Oversized SVG page" : config->invert_color || (config->themed_color &&
         ((config->foreground_color & 0xFFFFFF) != 0 || (config->background_color & 0xFFFFFF) != 0xFFFFFF))
@@ -319,6 +406,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     if (p->automatic) fallback = NULL; /* PNG is an ordinary Auto choice. */
     if (!svg)
     {
+      if (!pix) {
       double draw_start = txp_profile_now();
       float scale = fminf(p->width / w, sqrtf(4000000.0f / (w * h)));
       scale = fminf(scale, 8192.0f / fmaxf(w, h));
@@ -336,6 +424,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
       double color_start = txp_profile_now();
       txp_renderer_colorize_rgb(ctx, renderer, pix);
       txp_profile_record("png-color", color_start, p->request, page, 0);
+      }
       image_width = fz_pixmap_width(ctx, pix); image_height = fz_pixmap_height(ctx, pix);
       double compare_start = txp_profile_now();
       patch = p->patches && !p->background && !p->region && p->patch_base > 0 && p->patch_base == p->previous_id &&
@@ -345,8 +434,9 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
         (double)(dirty.x1 - dirty.x0) * (dirty.y1 - dirty.y0) <= (double)image_width * image_height * 0.4;
       txp_profile_record("png-compare", compare_start, p->request, page, patch ? (dirty.x1-dirty.x0)*(dirty.y1-dirty.y0) : 0);
       double encode_start = txp_profile_now();
+      if (patch) { fz_drop_buffer(ctx,png); png=NULL; }
       if (patch && !dirty.x1) png = fz_new_buffer(ctx, 0); /* same pixels, fresh metadata */
-      else {
+      else if (!png) {
         fz_pixmap *source = pix;
         if (patch) {
           crop = fz_new_pixmap_with_data(ctx, fz_device_rgb(ctx), dirty.x1-dirty.x0, dirty.y1-dirty.y0,
@@ -358,6 +448,11 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
       }
       txp_profile_record("png-encode", encode_start, p->request, page, png->len);
     }
+    if (!cached) {
+      export_remember(ctx,p,b,config,patch?NULL:png,pix,svg,svg_eligible,vector_cost,fallback,image_width,image_height);
+      txp_profile_record(p->content_token&&!p->region?"page-export-cache-miss":"page-export-cache-bypass",cache_start,p->request,page,p->export_cache?p->export_cache->bytes:0);
+    }
+    else if (!patch && !cached->bytes) export_remember(ctx,p,b,config,png,pix,svg,svg_eligible,vector_cost,fallback,image_width,image_height);
     unsigned char *data;
     size_t len = fz_buffer_storage(ctx, png, &data);
     if (len > 16 * 1024 * 1024)

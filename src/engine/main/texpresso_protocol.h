@@ -90,6 +90,9 @@ bool txp_gpic(txp_client *client, const char *path, int typ, int page, float *bo
 // Cache bounds of graphic object (spic)
 void txp_spic(txp_client *client, const char *path, int typ, int page, const float *bounds);
 
+// Report a completed compiler pass after all output writes.
+void txp_finish(txp_client *client, bool success);
+
 // Fork the client
 pid_t txp_fork(txp_client *client);
 

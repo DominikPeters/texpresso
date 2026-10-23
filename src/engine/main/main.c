@@ -1092,6 +1092,9 @@ int main(int argc, char **argv)
   tt_history_t result =
       tt_run_engine("texpresso.fmt", primary_document, build_date);
 
+  if (texpresso)
+    txp_finish(texpresso, result == HISTORY_SPOTLESS || result == HISTORY_WARNING_ISSUED);
+
   fprintf(stderr, "Document generation: ");
   switch (result)
   {

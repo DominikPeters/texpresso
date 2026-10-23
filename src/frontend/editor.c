@@ -380,6 +380,22 @@ bool editor_parse(fz_context *ctx,
     *out = (struct editor_command){.tag = cancel ? EDIT_PREVIEW_PREPARE_CANCEL : EDIT_PREVIEW_PREPARE,
       .preview_prepare = {a[0], a[1], a[2], a[3], path}};
   }
+  else if (strcmp(verb, "preview-search") == 0)
+  {
+    if (len != 5) goto arity;
+    int a[3];
+    for (int i = 0; i < 3; ++i) {
+      val v = val_array_get(ctx, stack, command, i ? i + 2 : 1);
+      if (!val_is_number(v)) goto arguments;
+      double n = val_number(ctx, v);
+      if (!isfinite(n) || n < (i < 2 ? 1 : 0) || n > INT_MAX || floor(n) != n) goto arguments;
+      a[i] = n;
+    }
+    val path = val_array_get(ctx, stack, command, 2);
+    if (!val_is_string(path) || val_string_length(ctx, stack, path) < 1 || val_string_length(ctx, stack, path) > 4096) goto arguments;
+    *out = (struct editor_command){.tag = EDIT_PREVIEW_SEARCH,
+      .preview_search = {a[0], a[1], a[2], val_string(ctx, stack, path)}};
+  }
   else if (strcmp(verb, "preview-cancel") == 0)
   {
     if (len != 3) goto arity;

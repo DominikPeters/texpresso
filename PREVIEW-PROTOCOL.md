@@ -173,3 +173,25 @@ unfiltered scanlines and fast deflate. Scratch storage is one scanline, a 64 KiB
 output block and zlib state, rather than whole-image compression buffers.
 After checking every RGB pixel, neutral pages use 8-bit grayscale PNG; one colored pixel keeps RGB. Other pixmap formats retain MuPDF's general PNG writer. Rasterization, color
 conversion, pixel limits and SVG fallback decisions are independent of encoding.
+
+## Identified requests and cancellation
+
+Builds advertising `requestLifecycle:true` accept
+`["preview-search", requestId, sourcePath, oneBasedLine, sourceSequence]`.
+They answer with `["preview-source", requestId, revision, sourceSequence, page, x, y]`.
+Replacing a pending search or crossing a source barrier cancels the previous ID;
+the extension ignores already queued replies for retired IDs, including replies
+within the same source sequence. Legacy `synctex-forward`/`preview-forward`
+remain supported.
+
+`["preview-cancel", requestId, foregroundPage]` retires matching native render,
+search or preparation work; ID zero cancels all current work. Pending renders and
+searches terminate with `["preview-cancelled", requestId]`. Preparation retains
+its existing `preview-prepared` terminal statuses. A request whose image or result
+was already sent has already completed; canceling it does not manufacture a second
+completion. Superseded or rejected renders can also terminate with `preview-retry`.
+All terminal replies are flushed before the engine waits for more input.
+
+Successful document completion is distinct from a worker error or cancellation.
+A failed partial pass does not declare a shorter final document, promote partial
+auxiliary output, or resolve a source search to the best page of a failed prefix.

@@ -168,3 +168,11 @@ test-dvi-strokes: texpresso
 build/test-dvi-strokes: test/test_dvi_strokes.c build/frontend/libmydvi.a build/common/libcommon.a
 	$(CC) -Isrc/dvi -c -o build/test-dvi-strokes.o test/test_dvi_strokes.c
 	$(LDCC) -o $@ build/test-dvi-strokes.o build/frontend/libmydvi.a build/common/libcommon.a $(LIBS)
+
+.PHONY: test-protocol-numbers
+test-protocol-numbers: texpresso
+	$(MAKE) -f Makefile.config -f Makefile build/test-protocol-numbers
+	build/test-protocol-numbers
+build/test-protocol-numbers: test/test_protocol_numbers.c build/frontend/json_parser.o build/frontend/sexp_parser.o build/frontend/myabort.o build/frontend/libmydvi.a build/common/libcommon.a
+	$(CC) -Isrc/frontend -Isrc/dvi -Isrc/include -c -o build/test-protocol-numbers.o test/test_protocol_numbers.c
+	$(LDCC) -o $@ build/test-protocol-numbers.o build/frontend/json_parser.o build/frontend/sexp_parser.o build/frontend/myabort.o build/frontend/libmydvi.a build/common/libcommon.a $(LIBS)

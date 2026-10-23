@@ -84,6 +84,7 @@ enum
   TAG_ARRAY,
   TAG_DICT,
   TAG_REF,
+  TAG_INTEGER,
 };
 
 enum val_string_kind
@@ -165,13 +166,25 @@ void vstack_push_null(fz_context *ctx, vstack *t)
   vstack_alloc(ctx, t, 1)[0] = TAG_NULL;
 }
 
-void vstack_push_number(fz_context *ctx, vstack *t, float value)
+void vstack_push_number(fz_context *ctx, vstack *t, double value)
 {
   ASSERT(t->string_kind == CTX_NONE);
   t->struct_length += 1;
   uint8_t *p = vstack_alloc(ctx, t, 5);
-  p[0] = TAG_NUMBER;
-  memcpy(&p[1], &value, 4);
+  // Preserve protocol counters/IDs through INT32_MAX without widening every
+  // DVI value. Both integer and geometric float encodings remain five bytes.
+  if (value >= INT32_MIN && value <= INT32_MAX && value == (int32_t)value)
+  {
+    int32_t integer = value;
+    p[0] = TAG_INTEGER;
+    memcpy(&p[1], &integer, 4);
+  }
+  else
+  {
+    float number = value;
+    p[0] = TAG_NUMBER;
+    memcpy(&p[1], &number, 4);
+  }
 }
 
 void vstack_push_bool(fz_context* ctx, vstack *t, bool value)
@@ -226,6 +239,7 @@ static void vstack_close_struct(fz_context *ctx, vstack *t, uint8_t tag, val *ou
         offset += 1;
         break;
 
+      case TAG_INTEGER:
       case TAG_NUMBER:
         offset += 5;
         break;
@@ -370,6 +384,12 @@ static val decode(const uint8_t* data, uint32_t *offset)
     case TAG_FALSE:
       *offset += 1;
       return (val){.kind = VAL_BOOL, .b = 0};
+
+    case TAG_INTEGER:
+      result.kind = VAL_INTEGER;
+      memcpy(&result.i, &data[*offset + 1], 4);
+      *offset += 5;
+      return result;
 
     case TAG_NUMBER:
       result.kind = VAL_NUMBER;

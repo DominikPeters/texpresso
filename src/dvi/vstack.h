@@ -35,7 +35,7 @@ void vstack_free(fz_context *ctx, vstack *t);
 void vstack_reset(fz_context *ctx, vstack *t);
 
 void vstack_push_null(fz_context *ctx, vstack *t);
-void vstack_push_number(fz_context *ctx, vstack *t, float value);
+void vstack_push_number(fz_context *ctx, vstack *t, double value);
 void vstack_push_bool(fz_context *ctx, vstack *t, bool value);
 void vstack_push_ref(fz_context *ctx, vstack *t, int obj, int gen);
 
@@ -68,6 +68,7 @@ enum val_kind
   VAL_ARRAY,
   VAL_DICT,
   VAL_REF,
+  VAL_INTEGER,
 };
 
 typedef struct
@@ -77,6 +78,7 @@ typedef struct
   union
   {
     float f;
+    int32_t i;
     bool b;
     uint32_t o;
   };
@@ -89,7 +91,7 @@ void vstack_get_floats(fz_context *ctx, vstack *t, float *values, int count);
 #define inlined static inline __attribute__((unused))
 
 inlined bool val_is_null(val v)   { return (v.kind == VAL_NULL); }
-inlined bool val_is_number(val v) { return (v.kind == VAL_NUMBER); }
+inlined bool val_is_number(val v) { return (v.kind == VAL_NUMBER || v.kind == VAL_INTEGER); }
 inlined bool val_is_bool(val v)   { return (v.kind == VAL_BOOL); }
 inlined bool val_is_string(val v) { return (v.kind == VAL_STRING || v.kind == VAL_HEXSTRING); }
 inlined bool val_is_name(val v)   { return (v.kind == VAL_NAME); }
@@ -101,8 +103,8 @@ inlined bool val_is_ref(val v)    { return (v.kind == VAL_REF); }
   if (!val_is_##kind(v)) \
     fz_throw(ctx, 0, "%s: value is not a %s", __func__, #kind)
 
-inlined float val_number(fz_context *ctx, val v)
-{ VAL_CHECK(v, number); return v.f; }
+inlined double val_number(fz_context *ctx, val v)
+{ VAL_CHECK(v, number); return v.kind == VAL_INTEGER ? (double)v.i : (double)v.f; }
 
 inlined bool val_bool(fz_context *ctx, val v)
 { VAL_CHECK(v, bool); return v.b; }

@@ -5,9 +5,13 @@
 #include <stdbool.h>
 #include "renderer.h"
 
+typedef struct txp_preview_cache txp_preview_cache;
+
 /* One current display-list snapshot and one replaceable render request. */
 typedef struct {
   int revision, sequence;
+  uint64_t content_token;
+  txp_preview_cache *export_cache;
   bool valid, pending, region, svg, automatic, patches, background;
   bool foreground_valid;
   int foreground_page, saved_foreground_page, foreground_revision, foreground_sequence;
@@ -27,6 +31,7 @@ typedef struct {
 bool txp_preview_dirty_rect(fz_context *ctx, fz_pixmap *before, fz_pixmap *after, fz_irect *rect);
 fz_buffer *txp_preview_png(fz_context *ctx, fz_pixmap *pix);
 void txp_preview_init(txp_preview *p);
+void txp_preview_drop_cache(fz_context *ctx, txp_preview *p);
 void txp_preview_invalidate(txp_preview *p);
 void txp_preview_state(txp_preview *p, int count, int page, bool complete);
 const char *txp_preview_svg_fallback(fz_context *ctx, fz_display_list *list);

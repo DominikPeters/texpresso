@@ -49,8 +49,8 @@ typedef struct
     int octal;
     struct
     {
-      float number;
-      float frac;
+      double number;
+      double frac;
     };
   };
 } sexp_parser;

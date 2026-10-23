@@ -61,6 +61,7 @@ enum query {
   Q_GPIC = PACK('G','P','I','C'),
   Q_SPIC = PACK('S','P','I','C'),
   Q_CHLD = PACK('C','H','L','D'),
+  Q_FINI = PACK('F','I','N','I'),
 };
 
 enum txp_file_kind
@@ -131,6 +132,7 @@ typedef struct {
       int fd;
       int pid;
     } chld;
+    struct { int success; } fini;
     struct {
       char *path;
       int type, page;

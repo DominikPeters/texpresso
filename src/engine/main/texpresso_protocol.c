@@ -24,6 +24,7 @@ enum tag
   T_DONE = FOURCC('D', 'O', 'N', 'E'),
   T_FLSH = FOURCC('F', 'L', 'S', 'H'),
   T_FORK = FOURCC('F', 'O', 'R', 'K'),
+  T_FINI = FOURCC('F', 'I', 'N', 'I'),
   T_GPIC = FOURCC('G', 'P', 'I', 'C'),
   T_OPRD = FOURCC('O', 'P', 'R', 'D'),
   T_OPWR = FOURCC('O', 'P', 'W', 'R'),
@@ -58,13 +59,13 @@ static void read_exact(FILE *file, void *data, int len)
 
 txp_client *txp_connect(FILE *file)
 {
-  write_or_panic(file, "TEXPRESSOC01", 12);
+  write_or_panic(file, "TEXPRESSOC02", 12);
   if (fflush(file) != 0)
     ppanic("Cannot flush");
 
   char buf[12];
   read_exact(file, buf, 12);
-  if (memcmp (buf, "TEXPRESSOS01", 12) != 0)
+  if (memcmp (buf, "TEXPRESSOS02", 12) != 0)
     ppanic("Invalid handshake");
   fprintf(stderr, "texpresso: handshake success\n");
 
@@ -337,6 +338,13 @@ void txp_close(txp_client *io, txp_file_id file)
 {
   txp_io_send_tag(io, T_CLOS);
   txp_io_send_u32(io, file);
+  txp_io_check_done(io);
+}
+
+void txp_finish(txp_client *io, bool success)
+{
+  txp_io_send_tag(io, T_FINI);
+  txp_io_send_u32(io, success ? 1 : 0);
   txp_io_check_done(io);
 }
 

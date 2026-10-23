@@ -24,6 +24,7 @@
 
 #include <mupdf/fitz/buffer.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <limits.h>
 #include <unistd.h>
 #include <string.h>
@@ -56,6 +57,7 @@ typedef struct
 {
   int pid, fd;
   int trace_len;
+  txp_pass_status pass_status;
   int tokens;
   mark_t snap;
   fileentry_t *checkpoint_entry;
@@ -64,7 +66,8 @@ typedef struct
 
 enum
 {
-  MAX_PROCESS = 32
+  MAX_PROCESS = 32,
+  MAX_ROOT_CHILDREN = 64
 };
 
 struct tex_engine
@@ -84,6 +87,8 @@ struct tex_engine
   channel_t *c;
   process_t processes[MAX_PROCESS];
   int process_count;
+  struct { pid_t pid; bool closed; } root_children[MAX_ROOT_CHILDREN];
+  int root_child_count;
 
   trace_entry_t *trace;
   int trace_cap;
@@ -141,6 +146,37 @@ TXP_ENGINE_DEF_CLASS;
 #define SELF struct tex_engine *self = (struct tex_engine*)_self
 
 static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q);
+
+// Only exec_xelatex's direct children belong to this reaper. Snapshot children
+// are reaped by their compiler parents; provider popen/system statuses are not
+// ours. Wait only after closing a root's channel, so a reaped/reused PID can
+// never still be targeted by close_process.
+static void reap_root_children(struct tex_engine *self, bool dispose)
+{
+  int retained = 0;
+  for (int i = 0; i < self->root_child_count; ++i)
+  {
+    pid_t pid = self->root_children[i].pid;
+    if (!dispose && !self->root_children[i].closed)
+    {
+      self->root_children[retained++] = self->root_children[i];
+      continue;
+    }
+    pid_t result;
+    do result = waitpid(pid, NULL, WNOHANG);
+    while (result < 0 && errno == EINTR);
+    if (dispose && result == 0)
+    {
+      kill(pid, SIGKILL);
+      do result = waitpid(pid, NULL, 0);
+      while (result < 0 && errno == EINTR);
+    }
+    if (result == 0 || (result < 0 && errno != ECHILD))
+      self->root_children[retained++] = self->root_children[i];
+  }
+  self->root_child_count = retained;
+}
+
 
 // Launching processes
 
@@ -213,12 +249,18 @@ static void prepare_process(fz_context *ctx, struct tex_engine *self)
 {
   if (self->process_count == 0)
   {
+    reap_root_children(self, false);
+    if (self->root_child_count == MAX_ROOT_CHILDREN)
+      fz_throw(ctx, FZ_ERROR_GENERIC, "Compiler workers have not exited; restart the preview");
     self->deferred.active = false;
     log_rollback(ctx, self->log, self->restart);
     self->process_count = 1;
     process_t *p = get_process(self);
     p->pid = exec_xelatex(self->engine_path, self->use_texlive, self->name, &p->fd);
+    self->root_children[self->root_child_count].pid = p->pid;
+    self->root_children[self->root_child_count++].closed = false;
     p->trace_len = 0;
+    p->pass_status = TXP_PASS_RUNNING;
     p->tokens = 0;
     p->checkpoint_entry = NULL;
     if (!channel_handshake(self->c, p->fd))
@@ -228,10 +270,17 @@ static void prepare_process(fz_context *ctx, struct tex_engine *self)
 
 // Terminating processes
 
-static void close_process(process_t *p)
+static void close_process(struct tex_engine *self, process_t *p)
 {
   if (p->fd != -1)
   {
+    for (int i = 0; i < self->root_child_count; ++i)
+      if (self->root_children[i].pid == p->pid) self->root_children[i].closed = true;
+    if (p->pass_status == TXP_PASS_RUNNING)
+    {
+      p->pass_status = TXP_PASS_CANCELLED;
+      fprintf(stderr, "[pass] cancelled\n");
+    }
     kill(p->pid, SIGTERM);
     close(p->fd);
     p->fd = -1;
@@ -241,7 +290,8 @@ static void close_process(process_t *p)
 static void pop_process(fz_context *ctx, struct tex_engine *self)
 {
   process_t *p = get_process(self);
-  close_process(p);
+  close_process(self, p);
+  reap_root_children(self, false);
   channel_reset(self->c);
   self->process_count -= 1;
   mark_t mark =
@@ -266,12 +316,15 @@ static bool read_query(struct tex_engine *self, channel_t *t, query_t *q)
   bool result = channel_read_query(t, p->fd, q);
   if (!result)
   {
+    if (p->pass_status == TXP_PASS_RUNNING)
+      p->pass_status = TXP_PASS_FAILED;
+    fprintf(stderr, "[pass] %s\n", p->pass_status == TXP_PASS_SUCCEEDED ? "succeeded" : "failed");
     fprintf(stderr, "[process] terminating process\n");
     if (self->prepare.retained_fence) {
       self->fence_pos = -1;
       self->prepare.retained_fence = false;
     }
-    close_process(p);
+    close_process(self, p);
   }
   return result;
 }
@@ -319,7 +372,7 @@ static void decimate_processes(struct tex_engine *self)
   {
     if (!keep[j])
     {
-      close_process(&self->processes[j]);
+      close_process(self, &self->processes[j]);
       continue;
     }
     if (i != j)
@@ -346,6 +399,7 @@ static void engine_destroy(txp_engine *_self, fz_context *ctx)
   SELF;
   while (self->process_count > 0)
     pop_process(ctx, self);
+  reap_root_children(self, true);
   incdvi_free(ctx, self->dvi);
   synctex_free(ctx, self->stex);
   fz_free(ctx, self->name);
@@ -983,6 +1037,12 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
       break;
     }
 
+    case Q_FINI:
+      p->pass_status = q->fini.success ? TXP_PASS_SUCCEEDED : TXP_PASS_FAILED;
+      a.tag = A_DONE;
+      channel_write_answer(self->c, p->fd, &a);
+      break;
+
     case Q_CHLD:
     {
       if (self->process_count == MAX_PROCESS)
@@ -998,6 +1058,7 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
       p->checkpoint_entry = self->fork_entry;
       p->checkpoint_offset = self->fork_offset;
       p2->checkpoint_entry = NULL;
+      p2->pass_status = TXP_PASS_RUNNING;
       if (self->prepare.status == TXP_PREPARE_PENDING &&
           self->prepare.entry == self->fork_entry &&
           self->prepare.offset == self->fork_offset)
@@ -1124,6 +1185,12 @@ static bool possible_fence(trace_entry_t *te)
 
 static int compute_fences(fz_context *ctx, struct tex_engine *self, int trace, int offset)
 {
+  // An edit can interrupt a cancelled warm replay before its first trace.
+  // No adaptive replacement can be built then: retain its one safe READ fence
+  // across root respawns. rollback_add_change invalidates it for earlier or
+  // different-file edits, and Q_READ/EOF bound its lifetime.
+  if (trace <= 0 && self->prepare.retained_fence)
+    return trace;
   self->fence_pos = -1;
   self->prepare.retained_fence = false;
 
@@ -1249,24 +1316,13 @@ static int engine_page_count(txp_engine *_self)
 static fz_display_list *engine_render_page(txp_engine *_self, fz_context *ctx, int page)
 {
   SELF;
-
-  float pw, ph;
-  bool landscape;
-  fz_buffer *data = self->st.document.entry->saved.data;
-  incdvi_page_dim(self->dvi, data, page, &pw, &ph, &landscape);
-
-  fz_rect box = fz_make_rect(0, 0, pw, ph);
-  fz_display_list *dl = fz_new_display_list(ctx, box);
-  fz_device *dev = fz_new_list_device(ctx, dl);
-  incdvi_render_page(ctx, self->dvi, data, page, dev);
-  fz_close_device(ctx, dev);
-  fz_drop_device(ctx, dev);
-  return dl;
+  return incdvi_display_list(ctx, self->dvi, self->st.document.entry->saved.data, page);
 }
 
 static bool engine_step(txp_engine *_self, fz_context *ctx, bool restart_if_needed)
 {
   SELF;
+  reap_root_children(self, false);
   if (restart_if_needed)
     prepare_process(ctx, self);
 
@@ -1459,7 +1515,7 @@ static bool process_pending_messages(fz_context *ctx, struct tex_engine *self)
       fprintf(stderr, "[kill] worker might be stuck, killing\n");
       // The process hasn't answered in 10ms
       // It might be stuck in long computation or a loop, kill it to start from the previous one.
-      close_process(p);
+      close_process(self, p);
       break;
     }
     // Process only pending SEEN to have an updated view on process state
@@ -1490,11 +1546,29 @@ static bool process_pending_messages(fz_context *ctx, struct tex_engine *self)
 static void rollback_add_change(fz_context *ctx, struct tex_engine *self, fileentry_t *e, int changed)
 {
   int trace_len = self->rollback.trace_len;
+  if (self->prepare.retained_fence &&
+      (self->fences[0].entry != e || changed < self->fences[0].position))
+  {
+    self->fence_pos = -1;
+    self->prepare.retained_fence = false;
+  }
   // if (changed > 0) changed--;
 
   // No transaction opened: legitimate when begin was a no-op (no worker).
   if (trace_len == NOT_IN_TRANSACTION)
     return;
+
+  // A worker cannot hold bytes (or an existence answer) for an unopened file:
+  // Q_OPRD records seen=0 before returning A_OPEN; failed opens use INT_MAX.
+  // Do not mistake startup/preamble work for a hung consumer of this input.
+  if (e->seen < 0)
+  {
+    if (get_process(self)->fd < 0)
+      self->rollback.flush = 1; // A genuinely dead root still needs replacement.
+    else if (txp_profile_now())
+      fprintf(stderr, "[profile] {\"stage\":\"compiler-unread-edit\",\"ms\":0,\"request\":-1,\"page\":-1,\"bytes\":0,\"offset\":%d,\"trace\":%d}\n", changed, get_process(self)->trace_len);
+    return;
+  }
 
   if (e->seen < changed && trace_len == get_process(self)->trace_len)
   {
@@ -1597,6 +1671,15 @@ static void engine_finish_convergence(txp_engine *_self, fz_context *ctx)
     return;
 
   self->finishing = false;
+  if (txp_engine_pass_status(_self) != TXP_PASS_SUCCEEDED)
+  {
+    // Failed/aborted passes can close a truncated .aux. Keep the last completed
+    // pass's copied input and wait for the next source edit; retrying here
+    // would repeatedly compile the same unfinished document.
+    fprintf(stderr, "[rerun] incomplete pass: retaining completed auxiliary input\n");
+    self->aux_dirty = false;
+    return;
+  }
 
   bool converged = true;
   fileentry_t *e;
@@ -1726,9 +1809,24 @@ static bool engine_end_changes(txp_engine *_self, fz_context *ctx)
   return true;
 }
 
+uint64_t txp_engine_page_token(txp_engine *_self, fz_display_list *list)
+{
+  if (_self->_class != &_class) return 0;
+  SELF;
+  return incdvi_display_list_token(self->dvi, list);
+}
+
+txp_pass_status txp_engine_pass_status(txp_engine *_self)
+{
+  if (_self->_class != &_class) return TXP_PASS_UNKNOWN;
+  SELF;
+  return self->process_count ? get_process(self)->pass_status : TXP_PASS_CANCELLED;
+}
+
 static txp_engine_status engine_get_status(txp_engine *_self)
 {
   SELF;
+  reap_root_children(self, false);
   if (self->process_count == 0)
     return DOC_TERMINATED;
   return get_process(self)->fd > -1 ? DOC_RUNNING : DOC_TERMINATED;

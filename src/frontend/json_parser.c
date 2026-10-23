@@ -392,8 +392,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
         }
         if (!(input < limit))
           return NULL;
-        float f = exp(cp->exp * log(10.0));
-        if (cp->sign) f = -f;
+        double f = pow(10.0, cp->sign ? -cp->exp : cp->exp);
         vstack_push_number(ctx, stack, cp->num * f);
         POP_CONTEXT(input);
         break;

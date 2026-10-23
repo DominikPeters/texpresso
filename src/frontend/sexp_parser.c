@@ -139,7 +139,7 @@ const char *sexp_parse(fz_context *ctx, sexp_parser *cp, vstack *stack, const
           break;
         if (*input != '.')
         {
-          float n = cp->number;
+          double n = cp->number;
           n = (cp->state == P_POS_NUMBER) ? n : -n;
           vstack_push_number(ctx, stack, n);
           cp->state = P_IDLE;
@@ -161,7 +161,7 @@ const char *sexp_parse(fz_context *ctx, sexp_parser *cp, vstack *stack, const
         }
         if (input < limit)
         {
-          float n = cp->number;
+          double n = cp->number;
           n = (cp->state == P_POS_NUMBER_FRAC) ? n : -n;
           vstack_push_number(ctx, stack, n);
           cp->state = P_IDLE;
