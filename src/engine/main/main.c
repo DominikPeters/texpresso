@@ -230,6 +230,22 @@ ttbc_input_handle_t *ttstub_input_open(const char *path,
     char *ipath =
       txp_open(texpresso, id, path, kind_of_ttbc_format(format), TXP_READ);
 
+    // Resolve suffixes through the frontend before falling back to local or
+    // package-provider I/O. In particular, \input{chapter} must read the
+    // editor's chapter.tex, with tracked reads and the resolved SyncTeX name.
+    // Opening that suffix only through fopen below silently ignores unsaved
+    // contents and makes later edits invisible to compiler rollback.
+    for (const char **exts = format_extensions(format); !ipath && *exts; exts++)
+    {
+      char candidate[PATH_MAX + 1];
+      size_t path_len = strlen(path), ext_len = strlen(*exts);
+      if (path_len + ext_len >= sizeof(candidate))
+        continue;
+      memcpy(candidate, path, path_len);
+      memcpy(candidate + path_len, *exts, ext_len + 1);
+      ipath = txp_open(texpresso, id, candidate, kind_of_ttbc_format(format), TXP_READ);
+    }
+
     if (ipath)
     {
       strcpy(last_open, ipath);
