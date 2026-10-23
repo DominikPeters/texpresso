@@ -206,7 +206,9 @@ typedef struct {
 channel_t *channel_new(void);
 void channel_free(channel_t *c);
 
-bool channel_handshake(channel_t *c, int fd);
+enum channel_handshake_status { CHANNEL_HANDSHAKE_FAILED = -1, CHANNEL_HANDSHAKE_PENDING, CHANNEL_HANDSHAKE_READY };
+void channel_handshake_begin(channel_t *c);
+enum channel_handshake_status channel_handshake_poll(channel_t *c, int fd);
 bool channel_has_pending_query(channel_t *t, int fd, int timeout);
 enum query channel_peek_query(channel_t *t, int fd);
 bool channel_read_query(channel_t *t, int fd, query_t *r);

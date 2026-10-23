@@ -44,6 +44,7 @@ struct channel_s
     int pos;
   } output;
   int passed_fd;
+  struct { char answer[12]; int sent, received; } handshake;
   char *buf;
   int buf_size;
 };
@@ -189,15 +190,44 @@ static bool refill_at_least(channel_t *c, int fd, int at_least)
 #define HND_SERVER "TEXPRESSOS02"
 #define HND_CLIENT "TEXPRESSOC02"
 
-bool channel_handshake(channel_t *c, int fd)
+void channel_handshake_begin(channel_t *c)
 {
-  char answer[LEN(HND_CLIENT)];
-  write_all(fd, HND_SERVER, LEN(HND_SERVER));
-  if (!read_all(c, fd, answer, LEN(HND_CLIENT)))
-    return 0;
-  c->input.len = c->input.pos = 0;
-  c->output.pos = 0;
-  return (strncmp(HND_CLIENT, answer, LEN(HND_CLIENT)) == 0);
+  channel_reset(c);
+  c->handshake.sent = c->handshake.received = 0;
+}
+
+enum channel_handshake_status channel_handshake_poll(channel_t *c, int fd)
+{
+  int flags = MSG_DONTWAIT;
+#ifdef MSG_NOSIGNAL
+  flags |= MSG_NOSIGNAL;
+#elif defined(SO_NOSIGPIPE)
+  int enabled = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) != 0)
+    return CHANNEL_HANDSHAKE_FAILED;
+#endif
+  while (c->handshake.sent < LEN(HND_SERVER))
+  {
+    ssize_t n = send(fd, &HND_SERVER[c->handshake.sent],
+                     LEN(HND_SERVER) - c->handshake.sent, flags);
+    if (n < 0 && errno == EINTR) continue;
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return CHANNEL_HANDSHAKE_PENDING;
+    if (n <= 0) return CHANNEL_HANDSHAKE_FAILED;
+    c->handshake.sent += n;
+  }
+  while (c->handshake.received < LEN(HND_CLIENT))
+  {
+    // Limit this read to the greeting: a coalesced first query belongs to the
+    // ordinary channel parser and must remain in the socket until startup ends.
+    ssize_t n = recv(fd, c->handshake.answer + c->handshake.received,
+                     LEN(HND_CLIENT) - c->handshake.received, MSG_DONTWAIT);
+    if (n < 0 && errno == EINTR) continue;
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return CHANNEL_HANDSHAKE_PENDING;
+    if (n <= 0) return CHANNEL_HANDSHAKE_FAILED;
+    c->handshake.received += n;
+  }
+  return memcmp(c->handshake.answer, HND_CLIENT, LEN(HND_CLIENT)) == 0
+    ? CHANNEL_HANDSHAKE_READY : CHANNEL_HANDSHAKE_FAILED;
 }
 
 /* PROTOCOL DEFINITION */

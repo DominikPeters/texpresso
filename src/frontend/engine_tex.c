@@ -40,6 +40,7 @@
 #include "synctex.h"
 #include "editor.h"
 #include "profile.h"
+#include "checkpoint_selection.h"
 
 typedef struct
 {
@@ -58,15 +59,19 @@ typedef struct
   int pid, fd;
   int trace_len;
   txp_pass_status pass_status;
+  bool starting, startup_failed;
+  double handshake_started;
+  const char *startup_reason;
   int tokens;
   mark_t snap;
   fileentry_t *checkpoint_entry;
   int checkpoint_offset;
+  uint64_t anchor;
 } process_t;
 
 enum
 {
-  MAX_PROCESS = 32,
+  MAX_PROCESS = TXP_CHECKPOINT_CAPACITY,
   MAX_ROOT_CHILDREN = 64
 };
 
@@ -89,6 +94,7 @@ struct tex_engine
   int process_count;
   struct { pid_t pid; bool closed; } root_children[MAX_ROOT_CHILDREN];
   int root_child_count;
+  pid_t startup_cleanup_pid;
 
   trace_entry_t *trace;
   int trace_cap;
@@ -116,6 +122,8 @@ struct tex_engine
   int fork_offset;
   double fork_started;
   int fork_parent_pid;
+  bool fork_is_anchor;
+  uint64_t anchor_serial;
   struct { fileentry_t *entry; int offset, status; bool retained_fence; } prepare;
 };
 
@@ -270,14 +278,12 @@ static void prepare_process(fz_context *ctx, struct tex_engine *self, const char
     p->pass_status = TXP_PASS_RUNNING;
     p->tokens = 0;
     p->checkpoint_entry = NULL;
+    p->anchor = 0;
     self->fork_started = 0;
-    double handshake_start = txp_profile_now();
-    if (!channel_handshake(self->c, p->fd))
-      mabort();
-    if (handshake_start) {
-      double now = txp_profile_now();
-      fprintf(stderr, "[profile] {\"stage\":\"compiler-handshake\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"pid\":%d,\"reason\":\"%s\"}\n", now-handshake_start, now, p->pid, reason);
-    }
+    p->starting = true; p->startup_failed = false;
+    p->handshake_started = txp_monotonic_ms();
+    p->startup_reason = reason;
+    channel_handshake_begin(self->c);
   }
 }
 
@@ -285,6 +291,7 @@ static void prepare_process(fz_context *ctx, struct tex_engine *self, const char
 
 static void close_process(struct tex_engine *self, process_t *p)
 {
+  p->starting = false;
   if (p->fd != -1)
   {
     for (int i = 0; i < self->root_child_count; ++i)
@@ -297,6 +304,60 @@ static void close_process(struct tex_engine *self, process_t *p)
     kill(p->pid, SIGTERM);
     close(p->fd);
     p->fd = -1;
+  }
+}
+
+static int startup_timeout_ms(void)
+{
+  // A cold first format build can take much longer than the usual 160ms.
+  // Tests exercise the same deadline without waiting two minutes.
+  const char *value = getenv("TEXPRESSO_TEST_STARTUP_TIMEOUT_MS");
+  if (value && *value) {
+    char *end;
+    long timeout = strtol(value, &end, 10);
+    if (!*end && timeout >= 50 && timeout <= 120000) return timeout;
+  }
+  return 120000;
+}
+
+bool txp_engine_startup_pending(txp_engine *_self)
+{
+  if (_self->_class != &_class) return false;
+  SELF;
+  return self->startup_cleanup_pid || (self->process_count && get_process(self)->starting);
+}
+
+void txp_engine_poll_startup(txp_engine *_self)
+{
+  if (_self->_class != &_class) return;
+  SELF;
+  if (self->startup_cleanup_pid) {
+    reap_root_children(self, false);
+    bool retained = false;
+    for (int i = 0; i < self->root_child_count; ++i)
+      retained |= self->root_children[i].closed && self->root_children[i].pid == self->startup_cleanup_pid;
+    if (!retained) self->startup_cleanup_pid = 0;
+  }
+  if (!self->process_count || !get_process(self)->starting) return;
+  process_t *p = get_process(self);
+  double now = txp_monotonic_ms();
+  bool timeout = now - p->handshake_started >= startup_timeout_ms();
+  enum channel_handshake_status result = timeout ? CHANNEL_HANDSHAKE_FAILED : channel_handshake_poll(self->c, p->fd);
+  if (result == CHANNEL_HANDSHAKE_PENDING) return;
+  p->starting = false;
+  if (txp_profile_now())
+    fprintf(stderr, "[profile] {\"stage\":\"compiler-handshake\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"pid\":%d,\"reason\":\"%s\",\"outcome\":\"%s\"}\n",
+      now-p->handshake_started, now, p->pid, p->startup_reason, result == CHANNEL_HANDSHAKE_READY ? "ready" : "failed");
+  if (result == CHANNEL_HANDSHAKE_FAILED) {
+    fprintf(stderr, "[process] Compiler startup %s. Check that texpresso-xetex matches this frontend and that the TeX distribution is available.\n",
+      timeout ? "timed out waiting for the worker greeting" : "failed: the worker closed its connection or sent an incompatible greeting");
+    p->pass_status = TXP_PASS_FAILED; p->startup_failed = true;
+    close_process(self, p);
+    // A worker stuck before its greeting cannot perform protocol cleanup. Do
+    // not let ignored SIGTERM keep a timed-out startup alive indefinitely.
+    kill(p->pid, SIGKILL);
+    self->startup_cleanup_pid = p->pid;
+    reap_root_children(self, false);
   }
 }
 
@@ -346,38 +407,23 @@ static void decimate_processes(struct tex_engine *self)
 {
   bool keep[MAX_PROCESS] = {0,};
 
-  int target = 32;
-  fprintf(stderr, "before process decimation:\n");
-  for  (int i = 0; i < self->process_count; ++i)
-  {
+  txp_checkpoint points[MAX_PROCESS];
+  int anchor_count = 0;
+  for (int i = 0; i < self->process_count; ++i) {
     process_t *p = &self->processes[i];
-    fprintf(stderr, "- position %d, time %d tokens [pid %d]\n",
-            p->trace_len,
-            p->trace_len == 0 ? 0 : self->trace[p->trace_len - 1].time,
-            p->pid);
-    if (p->trace_len >= target)
-    {
-        keep[i] = true;
-        target *= 2;
-    }
+    points[i] = (txp_checkpoint){ .trace=p->trace_len, .entry=p->checkpoint_entry,
+      .offset=p->checkpoint_offset, .anchor=p->anchor, .live=p->fd>=0 };
+    anchor_count += p->anchor != 0;
   }
-
-  target = self->processes[self->process_count - 1].trace_len;
-  int delta = 32;
-  for (int i = self->process_count - 1; i >= 0; --i)
-  {
-    process_t *p = &self->processes[i];
-    if (p->trace_len <= target)
-    {
-      keep[i] = true;
-      delta *= 2;
-      target -= delta;
+  int reserved_anchors = 0;
+  txp_select_checkpoints(points, self->process_count, keep, &reserved_anchors);
+  if (txp_profile_now()) {
+    int retained = 0, kept_anchors = 0;
+    for (int i = 0; i < self->process_count; ++i) {
+      retained += keep[i]; kept_anchors += keep[i] && self->processes[i].anchor != 0;
     }
-    else if (keep[i])
-    {
-      delta *= 2;
-      target = p->trace_len - delta;
-    }
+    fprintf(stderr, "[profile] {\"stage\":\"compiler-decimation\",\"ms\":0,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"before\":%d,\"after\":%d,\"taggedAnchors\":%d,\"reservedAnchors\":%d,\"evictedAnchors\":%d}\n",
+            txp_profile_now(), self->process_count, retained, kept_anchors, reserved_anchors, anchor_count-kept_anchors);
   }
 
   int i = 0;
@@ -840,6 +886,7 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
         self->fork_offset = q->read.pos;
         self->fork_started = txp_profile_now();
         self->fork_parent_pid = p->pid;
+        self->fork_is_anchor = fork && self->fence_pos == 0;
       }
       if (fork)
       {
@@ -1072,8 +1119,11 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
       p->tokens = q->time;
       p->checkpoint_entry = self->fork_entry;
       p->checkpoint_offset = self->fork_offset;
+      p->anchor = self->fork_is_anchor ? ++self->anchor_serial : 0;
       p2->checkpoint_entry = NULL;
+      p2->anchor = 0;
       p2->pass_status = TXP_PASS_RUNNING;
+      p2->starting = p2->startup_failed = false;
       if (self->prepare.status == TXP_PREPARE_PENDING &&
           self->prepare.entry == self->fork_entry &&
           self->prepare.offset == self->fork_offset)
@@ -1309,8 +1359,10 @@ int txp_engine_prepare_edit(txp_engine *_self, fz_context *ctx, const char *path
   {
     process_t *p = &self->processes[i];
     if (p->fd >= 0 && p->checkpoint_entry == entry &&
-        p->checkpoint_offset <= offset && p->checkpoint_offset >= bucket)
+        p->checkpoint_offset <= offset && p->checkpoint_offset >= bucket) {
+      p->anchor = ++self->anchor_serial;
       return TXP_PREPARE_CACHED;
+    }
   }
   if (entry->seen < offset || bucket >= data->len) return TXP_PREPARE_SKIPPED;
   int length = get_process(self)->trace_len, target = length - 1;
@@ -1348,7 +1400,16 @@ static bool engine_step(txp_engine *_self, fz_context *ctx, bool restart_if_need
   SELF;
   reap_root_children(self, false);
   if (restart_if_needed)
+  {
+    // Explicit Resume/edit demand can recover a root that failed before its
+    // first open. No source trace/file entry exists to trigger normal rollback.
+    if (self->process_count && get_process(self)->startup_failed && get_process(self)->fd < 0)
+      pop_process(ctx, self);
     prepare_process(ctx, self, "demand");
+  }
+
+  txp_engine_poll_startup(_self);
+  if (txp_engine_startup_pending(_self)) return false;
 
   if (self->deferred.active)
   {
@@ -1487,6 +1548,7 @@ static bool rollback_end(fz_context *ctx, struct tex_engine *self, int *tracep, 
       return false;
     if (p->fd > -1)
     {
+      if (p->starting) return false;
       ask_t a;
       a.tag = C_FLSH;
       channel_write_ask(self->c, p->fd, &a);
@@ -1526,7 +1588,7 @@ static bool process_pending_messages(fz_context *ctx, struct tex_engine *self)
   process_t *p = get_process(self);
 
   // If process is dead, nothing has been missed
-  if (p->fd == -1)
+  if (p->fd == -1 || p->starting)
     return 1;
 
   // Synchronize with the child process:

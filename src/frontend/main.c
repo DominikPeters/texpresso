@@ -1735,6 +1735,7 @@ bool texpresso_main(struct persistent_state *ps)
     {
       // Consult already available records before demanding another compiler
       // burst, and inspect each new prefix before the loop can wait or advance.
+      txp_engine_poll_startup(ui->eng);
       resolve_forward(ps, ui);
       int before_page_count = send(page_count, ui->eng);
       bool warming = ps->headless && advance_prepare(ps, ui);
@@ -1813,7 +1814,12 @@ bool texpresso_main(struct persistent_state *ps)
       if (quit) break;
       if (!has_event)
       {
-        if (advance)
+        bool starting = txp_engine_startup_pending(ui->eng);
+        // Convergence can spawn after `advance` was computed. While its greeting
+        // is pending, sleep briefly rather than spinning or waiting forever for
+        // a worker FD which the stdin watcher does not monitor.
+        bool startup_wait = starting;
+        if (advance && !starting)
           continue;
         if (!stdin_eof)
           wakeup_poll_thread(poll_stdin_pipe, 'c');
@@ -1821,12 +1827,15 @@ bool texpresso_main(struct persistent_state *ps)
         bool rerun_eligible = ps->rerun_enabled
                               && rerun_count < MAX_RERUNS
                               && aux_ready;
-        if (rerun_eligible)
+        if (startup_wait)
+          has_event = SDL_WaitEventTimeout(&e, 5);
+        else if (rerun_eligible)
           has_event = SDL_WaitEventTimeout(&e, T_IDLE_MS);
         else
           has_event = SDL_WaitEvent(&e);
         if (!has_event)
         {
+          if (startup_wait) continue;
           if (rerun_eligible)
           {
             rerun_count++;
