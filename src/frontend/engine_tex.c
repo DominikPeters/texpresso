@@ -114,6 +114,8 @@ struct tex_engine
   int last_tokens;
   fileentry_t *fork_entry;
   int fork_offset;
+  double fork_started;
+  int fork_parent_pid;
   struct { fileentry_t *entry; int offset, status; bool retained_fence; } prepare;
 };
 
@@ -245,7 +247,7 @@ static pid_t exec_xelatex(char *engine_path, bool use_texlive, const char *filen
   return pid;
 }
 
-static void prepare_process(fz_context *ctx, struct tex_engine *self)
+static void prepare_process(fz_context *ctx, struct tex_engine *self, const char *reason)
 {
   if (self->process_count == 0)
   {
@@ -256,15 +258,26 @@ static void prepare_process(fz_context *ctx, struct tex_engine *self)
     log_rollback(ctx, self->log, self->restart);
     self->process_count = 1;
     process_t *p = get_process(self);
+    double spawn_start = txp_profile_now();
     p->pid = exec_xelatex(self->engine_path, self->use_texlive, self->name, &p->fd);
+    if (spawn_start) {
+      double now = txp_profile_now();
+      fprintf(stderr, "[profile] {\"stage\":\"compiler-spawn\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"pid\":%d,\"reason\":\"%s\"}\n", now-spawn_start, now, p->pid, reason);
+    }
     self->root_children[self->root_child_count].pid = p->pid;
     self->root_children[self->root_child_count++].closed = false;
     p->trace_len = 0;
     p->pass_status = TXP_PASS_RUNNING;
     p->tokens = 0;
     p->checkpoint_entry = NULL;
+    self->fork_started = 0;
+    double handshake_start = txp_profile_now();
     if (!channel_handshake(self->c, p->fd))
       mabort();
+    if (handshake_start) {
+      double now = txp_profile_now();
+      fprintf(stderr, "[profile] {\"stage\":\"compiler-handshake\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"pid\":%d,\"reason\":\"%s\"}\n", now-handshake_start, now, p->pid, reason);
+    }
   }
 }
 
@@ -819,12 +832,14 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
       }
       bool periodic = !fork && need_snapshot(ctx, self, q->time);
       if ((fork || periodic) && txp_profile_now())
-        fprintf(stderr, "[profile] {\"stage\":\"compiler-checkpoint\",\"ms\":0,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"trace\":%d,\"offset\":%d,\"checkpoints\":%d,\"fence\":%s}\n",
-                q->time, p->trace_len, q->read.pos, self->process_count - 1, fork ? "true" : "false");
+        fprintf(stderr, "[profile] {\"stage\":\"compiler-checkpoint\",\"ms\":0,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"trace\":%d,\"offset\":%d,\"checkpoints\":%d,\"fence\":%s}\n",
+                txp_profile_now(), q->time, p->trace_len, q->read.pos, self->process_count - 1, fork ? "true" : "false");
       if (fork || periodic)
       {
         self->fork_entry = e;
         self->fork_offset = q->read.pos;
+        self->fork_started = txp_profile_now();
+        self->fork_parent_pid = p->pid;
       }
       if (fork)
       {
@@ -1069,6 +1084,12 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
       p2->tokens = q->time;
       a.tag = A_DONE;
       channel_write_answer(self->c, p->fd, &a);
+      if (self->fork_started) {
+        double now = txp_profile_now();
+        fprintf(stderr, "[profile] {\"stage\":\"compiler-fork\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"parentPid\":%d,\"pid\":%d,\"tokens\":%d,\"checkpoints\":%d}\n",
+                now-self->fork_started, now, self->fork_parent_pid, p2->pid, q->time, self->process_count-1);
+        self->fork_started = 0;
+      }
       break;
     }
   }
@@ -1089,6 +1110,7 @@ static void revert_trace(trace_entry_t *te)
 
 static void restore_rollback_outputs(fz_context *ctx, struct tex_engine *self)
 {
+  double profile_start = txp_profile_now();
   fprintf(stderr, "after rollback: %d bytes of output\n",
     self->st.document.entry
     ? (int)self->st.document.entry->saved.data->len
@@ -1113,11 +1135,13 @@ static void restore_rollback_outputs(fz_context *ctx, struct tex_engine *self)
     synctex_rollback(ctx, self->stex, 0);
   editor_truncate(BUF_OUT, output_data(self->st.stdout.entry));
   editor_truncate(BUF_LOG, output_data(self->st.log.entry));
+  txp_profile_record("compiler-restore", profile_start, -1, -1, output_length(self->st.document.entry));
 }
 
 static void rollback_processes(fz_context *ctx, struct tex_engine *self, int reverted, int trace)
 {
   double profile_start = txp_profile_now();
+  self->fork_started = 0;
   int tokens_before = self->last_tokens;
   self->deferred.active = false;
   cancel_convergence(self);
@@ -1161,8 +1185,8 @@ static void rollback_processes(fz_context *ctx, struct tex_engine *self, int rev
 
   int trace_len = self->process_count == 0 ? 0 : get_process(self)->trace_len;
   if (profile_start)
-    fprintf(stderr, "[profile] {\"stage\":\"compiler-rollback\",\"ms\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"resumeTokens\":%d,\"changedTrace\":%d,\"resumeTrace\":%d,\"checkpoints\":%d}\n",
-            txp_profile_now() - profile_start, tokens_before,
+    fprintf(stderr, "[profile] {\"stage\":\"compiler-rollback\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"resumeTokens\":%d,\"changedTrace\":%d,\"resumeTrace\":%d,\"checkpoints\":%d}\n",
+            txp_profile_now() - profile_start, txp_profile_now(), tokens_before,
             self->process_count ? get_process(self)->tokens : 0,
             reverted, trace_len, self->process_count ? self->process_count - 1 : 0);
   while (reverted > trace_len)
@@ -1303,7 +1327,7 @@ int txp_engine_prepare_edit(txp_engine *_self, fz_context *ctx, const char *path
   rollback_processes(ctx, self, length, target);
   self->prepare.status = TXP_PREPARE_PENDING;
   fprintf(stderr, "[prepare-edit] replay %s at byte %d\n", path, self->prepare.offset);
-  prepare_process(ctx, self);
+  prepare_process(ctx, self, "prewarm");
   return TXP_PREPARE_PENDING;
 }
 
@@ -1324,7 +1348,7 @@ static bool engine_step(txp_engine *_self, fz_context *ctx, bool restart_if_need
   SELF;
   reap_root_children(self, false);
   if (restart_if_needed)
-    prepare_process(ctx, self);
+    prepare_process(ctx, self, "demand");
 
   if (self->deferred.active)
   {
@@ -1566,7 +1590,7 @@ static void rollback_add_change(fz_context *ctx, struct tex_engine *self, fileen
     if (get_process(self)->fd < 0)
       self->rollback.flush = 1; // A genuinely dead root still needs replacement.
     else if (txp_profile_now())
-      fprintf(stderr, "[profile] {\"stage\":\"compiler-unread-edit\",\"ms\":0,\"request\":-1,\"page\":-1,\"bytes\":0,\"offset\":%d,\"trace\":%d}\n", changed, get_process(self)->trace_len);
+      fprintf(stderr, "[profile] {\"stage\":\"compiler-unread-edit\",\"ms\":0,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"offset\":%d,\"trace\":%d}\n", txp_profile_now(), changed, get_process(self)->trace_len);
     return;
   }
 
@@ -1662,6 +1686,14 @@ static void engine_start_finishing(txp_engine *_self)
   self->finishing = true;
 }
 
+static void profile_convergence(struct tex_engine *self, double start, int old_processes, const char *outcome, bool respawn, size_t bytes)
+{
+  if (!start) return;
+  double now = txp_profile_now();
+  fprintf(stderr, "[profile] {\"stage\":\"compiler-convergence\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":%zu,\"oldProcesses\":%d,\"processes\":%d,\"outcome\":\"%s\",\"respawn\":%s}\n",
+          now-start, now, bytes, old_processes, self->process_count, outcome, respawn ? "true" : "false");
+}
+
 static void engine_finish_convergence(txp_engine *_self, fz_context *ctx)
 {
   SELF;
@@ -1670,6 +1702,9 @@ static void engine_finish_convergence(txp_engine *_self, fz_context *ctx)
   if (engine_get_status(_self) != DOC_TERMINATED)
     return;
 
+  double profile_start = txp_profile_now();
+  int old_processes = self->process_count;
+  size_t aux_bytes = 0;
   self->finishing = false;
   if (txp_engine_pass_status(_self) != TXP_PASS_SUCCEEDED)
   {
@@ -1678,6 +1713,7 @@ static void engine_finish_convergence(txp_engine *_self, fz_context *ctx)
     // would repeatedly compile the same unfinished document.
     fprintf(stderr, "[rerun] incomplete pass: retaining completed auxiliary input\n");
     self->aux_dirty = false;
+    profile_convergence(self, profile_start, old_processes, "incomplete", false, 0);
     return;
   }
 
@@ -1732,16 +1768,18 @@ static void engine_finish_convergence(txp_engine *_self, fz_context *ctx)
         revert_trace(&self->trace[--reverted]);
       restore_rollback_outputs(ctx, self);
     }
-    if (self->process_count == 0)
+    bool respawn = self->process_count == 0;
+    if (respawn)
     {
       reset_seen_for_respawn(self);
       incdvi_reset(self->dvi);
       synctex_rollback(ctx, self->stex, 0);
       editor_truncate(BUF_OUT, output_data(self->st.stdout.entry));
       editor_truncate(BUF_LOG, output_data(self->st.log.entry));
-      prepare_process(ctx, self);
+      prepare_process(ctx, self, "convergence-stable");
     }
     self->aux_dirty = false;
+    profile_convergence(self, profile_start, old_processes, "stable", respawn, 0);
     return;
   }
 
@@ -1760,6 +1798,7 @@ static void engine_finish_convergence(txp_engine *_self, fz_context *ctx)
     // Copy, don't share: log_rollback truncates saved.data->len in place.
     e->edit_data = fz_new_buffer_from_copied_data(ctx, e->saved.data->data,
                                                   e->saved.data->len);
+    aux_bytes += e->saved.data->len;
     e->edit_data_from_convergence = true;
   }
 
@@ -1772,8 +1811,9 @@ static void engine_finish_convergence(txp_engine *_self, fz_context *ctx)
   editor_truncate(BUF_OUT, output_data(self->st.stdout.entry));
   editor_truncate(BUF_LOG, output_data(self->st.log.entry));
 
-  prepare_process(ctx, self);
+  prepare_process(ctx, self, "convergence-changed");
   self->aux_dirty = false;
+  profile_convergence(self, profile_start, old_processes, "changed", true, aux_bytes);
 }
 
 static void engine_begin_changes(txp_engine *_self, fz_context *ctx)

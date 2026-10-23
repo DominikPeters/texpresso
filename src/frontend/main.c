@@ -212,32 +212,30 @@ static bool advance_engine(fz_context *ctx, ui_state *ui)
   if (!need)
     return false;
 
-  struct timespec start;
-  clock_gettime(CLOCK_MONOTONIC, &start);
-
-  int steps = 10;
+  double start = txp_monotonic_ms();
+  int steps = 0;
+  const char *reason = "ready";
   while (need)
   {
-    if (!send(step, ui->eng, ctx, false))
+    if (!send(step, ui->eng, ctx, false)) {
+      reason = "wait";
       break;
-
-    steps -= 1;
-    need = need_advance(ctx, ui);
-
-    if (steps == 0)
-    {
-      steps = 10;
-
-      struct timespec curr;
-      clock_gettime(CLOCK_MONOTONIC, &curr);
-
-      int delta =
-        (curr.tv_sec - start.tv_sec) * 1000 * 1000 * 1000 +
-        (curr.tv_nsec - start.tv_nsec);
-
-      if (delta > 5000000)
-        break;
     }
+    steps += 1;
+    need = need_advance(ctx, ui);
+    // A query can wait for worker computation. Check every completed query,
+    // rather than allowing ten paced queries to monopolize stdin handling.
+    if (need && txp_monotonic_ms() - start >= 5) {
+      reason = "budget";
+      break;
+    }
+  }
+  // Deferred streamed input can briefly make step return immediately. Do
+  // not flood profiling with zero-work spins while the editor supplies it.
+  if (txp_profile_now() && (steps || txp_monotonic_ms() - start >= 5)) {
+    double now = txp_monotonic_ms();
+    fprintf(stderr, "[profile] {\"stage\":\"compiler-burst\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":%d,\"page\":%d,\"bytes\":0,\"steps\":%d,\"reason\":\"%s\"}\n",
+            now - start, now, ui->preview.request, ui->page, steps, reason);
   }
   return need;
 }
