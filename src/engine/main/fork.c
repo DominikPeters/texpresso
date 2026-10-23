@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <signal.h>
+#include "../../include/txp_activity.h"
 
 #define NO_EINTR(command) \
   do {} while ((command) == -1 && errno == EINTR)
@@ -55,7 +56,7 @@ static void send_child_fd(int chan_fd, int32_t pid, uint32_t time, int child_fd)
   PASSERT(sent == 12);
 }
 
-pid_t texpresso_fork_with_channel(int fd, uint32_t time)
+pid_t texpresso_fork_with_channel(int fd, uint32_t time, txp_activity *profile, uint64_t query)
 {
   int sockets[2];
 
@@ -64,7 +65,13 @@ pid_t texpresso_fork_with_channel(int fd, uint32_t time)
 
   // Fork
   pid_t child;
+  txp_activity_sample fork_start={0},park_start={0};
+  if(profile) fork_start=txp_activity_clock();
   PERROR((child = fork()));
+  if(profile && child>0) {
+    txp_activity_add(profile,TXPA_FORK,fork_start,txp_activity_clock(),query,0x444c4843,time,child);
+    park_start=txp_activity_clock();
+  }
 
   if (child == 0)
   {
@@ -98,6 +105,10 @@ pid_t texpresso_fork_with_channel(int fd, uint32_t time)
              answer[0] == 'F' && answer[1] == 'L' &&
              answer[2] == 'S' && answer[3] == 'H');
 
+    if(profile) {
+      txp_activity_add(profile,TXPA_PARK,park_start,txp_activity_clock(),query,0x444c4843,time,child);
+      txp_activity_flush(profile,txp_activity_clock().wall);
+    }
     PASSERT(recvd == 4 &&
             answer[0] == 'D' && answer[1] == 'O' &&
             answer[2] == 'N' && answer[3] == 'E',

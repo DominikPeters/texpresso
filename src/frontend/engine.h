@@ -70,6 +70,7 @@ txp_pass_status txp_engine_pass_status(txp_engine *self);
 bool txp_engine_startup_pending(txp_engine *self);
 // Greeting I/O only: safe while compiler query stepping is paused.
 void txp_engine_poll_startup(txp_engine *self);
+int txp_engine_worker_pid(txp_engine *self);
 uint64_t txp_engine_page_token(txp_engine *self, fz_display_list *list);
 
 

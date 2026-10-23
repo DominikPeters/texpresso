@@ -184,3 +184,11 @@ test-checkpoint-selection: | Makefile.config
 build/test-checkpoint-selection: test/test_checkpoint_selection.c src/frontend/checkpoint_selection.h
 	mkdir -p build
 	$(CC) -o $@ test/test_checkpoint_selection.c
+
+.PHONY: test-activity
+test-activity: | Makefile.config
+	$(MAKE) -f Makefile.config -f Makefile build/test-activity
+	python3 test/test_activity.py build/test-activity
+build/test-activity: test/test_activity.c test/activity_worker.c src/include/txp_activity.h src/frontend/sprotocol.c src/frontend/sprotocol.h src/engine/main/texpresso_protocol.c src/engine/main/fork.c
+	mkdir -p build
+	$(CC) -o $@ test/test_activity.c test/activity_worker.c src/frontend/sprotocol.c src/frontend/myabort.c src/engine/main/texpresso_protocol.c src/engine/main/fork.c

@@ -1,11 +1,16 @@
 #include "texpresso_protocol.h"
 #include <string.h>
+#include "../../include/txp_activity.h"
 
 #define BUF_SIZE 4096
 
 struct txp_client
 {
   FILE *file;
+  txp_activity activity;
+  txp_activity_sample work_start, transaction_start;
+  uint64_t query;
+  int profile_tag, profile_tokens, in_transaction, pending_write;
   uint32_t generation;
   uint32_t seen_pos;
   txp_file_id seen_file;
@@ -15,6 +20,30 @@ struct txp_client
   int stdout_len;
   char stdout_buf[BUF_SIZE];
 };
+
+/* Complete transaction boundaries keep response payload reads and implicit
+ * stdio flushes out of active worker work. SEEN has no response. */
+static void profile_work(txp_client *io, txp_activity_sample now, int tag, int tokens)
+{
+  if(io->work_start.wall)
+    txp_activity_add(&io->activity,TXPA_WORK,io->work_start,now,io->query+1,tag,tokens,0);
+}
+static void profile_begin(txp_client *io,int tag,int tokens)
+{
+  if(!txp_activity_enabled()) return;
+  txp_activity_sample now=txp_activity_clock();
+  if(!io->in_transaction) profile_work(io,now,tag,tokens);
+  io->query++;io->profile_tag=tag;io->profile_tokens=tokens;
+  io->transaction_start=now;io->in_transaction=1;
+}
+static void profile_complete(txp_client *io)
+{
+  if(!txp_activity_enabled()) return;
+  txp_activity_sample now=txp_activity_clock();
+  if(io->in_transaction)
+    txp_activity_add(&io->activity,TXPA_TRANSACTION,io->transaction_start,now,io->query,io->profile_tag,io->profile_tokens,0);
+  io->in_transaction=0;io->work_start=txp_activity_clock();
+}
 
 /* QUERIES */
 
@@ -57,6 +86,25 @@ static void read_exact(FILE *file, void *data, int len)
     ppanic("Cannot read from server");
 }
 
+static void profiled_write(txp_client *io,const void *data,int len)
+{
+  if(!txp_activity_enabled()) {write_or_panic(io->file,data,len);return;}
+  txp_activity_sample start=txp_activity_clock();write_or_panic(io->file,data,len);
+  io->pending_write=1;
+  txp_activity_add(&io->activity,TXPA_WRITE,start,txp_activity_clock(),io->query,io->profile_tag,io->profile_tokens,0);
+}
+static void txp_io_flush(txp_client *io);
+static void profiled_read(txp_client *io,void *data,int len)
+{
+  if(!txp_activity_enabled()) {read_exact(io->file,data,len);return;}
+  // Switching an update stream from writing to fread can flush implicitly.
+  // Make that same boundary explicit only in diagnostic mode, so blocked
+  // request writes are distinguished from waiting for the response payload.
+  if(io->pending_write) txp_io_flush(io);
+  txp_activity_sample start=txp_activity_clock();read_exact(io->file,data,len);
+  txp_activity_add(&io->activity,TXPA_READ,start,txp_activity_clock(),io->query,io->profile_tag,io->profile_tokens,0);
+}
+
 txp_client *txp_connect(FILE *file)
 {
   write_or_panic(file, "TEXPRESSOC02", 12);
@@ -74,6 +122,10 @@ txp_client *txp_connect(FILE *file)
     ppanic("Cannot allocate client");
 
   client->file = file;
+  if(txp_activity_enabled()) {
+    txp_activity_init(&client->activity,"worker");
+    client->work_start=txp_activity_clock();
+  }
   client->generation = 0;
   client->seen_pos = 0;
   client->append_len = 0;
@@ -84,12 +136,12 @@ txp_client *txp_connect(FILE *file)
 
 static void txp_io_send_str(txp_client *io, const char *str)
 {
-  write_or_panic(io->file, str, strlen(str) + 1);
+  profiled_write(io, str, strlen(str) + 1);
 }
 
 static void txp_io_send4(txp_client *io, const uint8_t data[4])
 {
-  write_or_panic(io->file, data, 4);
+  profiled_write(io, data, 4);
 }
 
 #define DECOMPOSE4(i) \
@@ -98,13 +150,13 @@ static void txp_io_send4(txp_client *io, const uint8_t data[4])
 static void txp_io_send_u32(txp_client *io, uint32_t i)
 {
   uint8_t buf[4] = {DECOMPOSE4(i)};
-  write_or_panic(io->file, buf, 4);
+  profiled_write(io, buf, 4);
 }
 
 static uint32_t txp_io_recv_u32(txp_client *io)
 {
   uint8_t buf[4];
-  read_exact(io->file, buf, 4);
+  profiled_read(io, buf, 4);
   return (buf[0] | (buf[1] << 8) | (buf[2] << 16) | (buf[3] << 24));
 }
 
@@ -133,6 +185,7 @@ extern int xetex_tokens;
 
 static void txp_io_send_tag_raw(txp_client *io, enum tag t)
 {
+  profile_begin(io,t,xetex_tokens);
   txp_io_send_u32(io, t);
   uint32_t time = xetex_tokens;
   txp_io_send_u32(io, time);
@@ -140,8 +193,17 @@ static void txp_io_send_tag_raw(txp_client *io, enum tag t)
 
 static void txp_io_flush(txp_client *io)
 {
-  if (fflush(io->file) != 0)
-    ppanic("Cannot flush");
+  txp_activity_sample start={0};
+  if(txp_activity_enabled()) {
+    start=txp_activity_clock();
+    if(!io->in_transaction) profile_work(io,start,0,xetex_tokens);
+  }
+  if (fflush(io->file) != 0) ppanic("Cannot flush");
+  if(txp_activity_enabled()) {
+    io->pending_write=0;
+    txp_activity_add(&io->activity,TXPA_FLUSH,start,txp_activity_clock(),io->query,io->profile_tag,io->profile_tokens,0);
+    if(!io->in_transaction) io->work_start=txp_activity_clock();
+  }
 }
 
 static enum tag txp_io_recv_tag(txp_client *io)
@@ -164,8 +226,8 @@ static void panic_tag(enum tag t)
 
 static void txp_io_check_done(txp_client *io) {
   enum tag t = txp_io_recv_tag(io);
-  if (t != T_DONE)
-    panic_tag(t);
+  if (t != T_DONE) panic_tag(t);
+  profile_complete(io);
 }
 
 static void txp_io_seen(txp_client *io, txp_file_id file, uint32_t pos)
@@ -173,6 +235,7 @@ static void txp_io_seen(txp_client *io, txp_file_id file, uint32_t pos)
   txp_io_send_tag_raw(io, T_SEEN);
   txp_io_send_u32(io, file);
   txp_io_send_u32(io, pos);
+  profile_complete(io);
 }
 
 static void txp_flush_pending(txp_client *io)
@@ -187,7 +250,7 @@ static void txp_flush_pending(txp_client *io)
     txp_io_send_tag_raw(io, T_APND);
     txp_io_send_u32(io, -1);
     txp_io_send_u32(io, io->stdout_len);
-    write_or_panic(io->file, io->stdout_buf, io->stdout_len);
+    profiled_write(io, io->stdout_buf, io->stdout_len);
     txp_io_check_done(io);
     io->stdout_len = 0;
   }
@@ -196,7 +259,7 @@ static void txp_flush_pending(txp_client *io)
     txp_io_send_tag_raw(io, T_APND);
     txp_io_send_u32(io, io->append_file);
     txp_io_send_u32(io, io->append_len);
-    write_or_panic(io->file, io->append_buf, io->append_len);
+    profiled_write(io, io->append_buf, io->append_len);
     txp_io_check_done(io);
     io->append_len = 0;
   }
@@ -235,6 +298,7 @@ char *txp_open(txp_client *io,
   {
     case T_PASS:
       // fprintf(stderr, "PASS\n");
+      profile_complete(io);
       return NULL;
     case T_OPEN:
     {
@@ -246,8 +310,9 @@ char *txp_open(txp_client *io,
         fprintf(stderr, "Cannot allocate filename (length: %d)\n", size);
         exit(1);
       }
-      read_exact(io->file, buf, size);
+      profiled_read(io, buf, size);
       buf[size] = 0;
+      profile_complete(io);
       return buf;
     }
     default:
@@ -271,6 +336,7 @@ size_t txp_read(txp_client *io,
     switch (t)
     {
       case T_FORK:
+        profile_complete(io);
         txp_fork(io);
         continue;
       case T_READ:
@@ -278,7 +344,8 @@ size_t txp_read(txp_client *io,
         uint32_t size = txp_io_recv_u32(io);
         if (size > len)
           exit(1);
-        read_exact(io->file, buf, size);
+        profiled_read(io, buf, size);
+        profile_complete(io);
         return size;
       }
       default:
@@ -312,7 +379,7 @@ void txp_append(txp_client *io, txp_file_id file, const void *buf, size_t len)
   txp_io_send_tag(io, T_APND);
   txp_io_send_u32(io, file);
   txp_io_send_u32(io, len);
-  write_or_panic(io->file, buf, len);
+  profiled_write(io, buf, len);
   txp_io_check_done(io);
 }
 
@@ -346,6 +413,7 @@ void txp_finish(txp_client *io, bool success)
   txp_io_send_tag(io, T_FINI);
   txp_io_send_u32(io, success ? 1 : 0);
   txp_io_check_done(io);
+  if(txp_activity_enabled()) txp_activity_flush(&io->activity,txp_activity_clock().wall);
 }
 
 pid_t txp_fork(txp_client *io)
@@ -356,7 +424,20 @@ pid_t txp_fork(txp_client *io)
   int fd = fileno(io->file);
   if (fd == -1)
     ppanic("fork_with_channel: fileno");
-  pid_t result = texpresso_fork_with_channel(fd, xetex_tokens);
+  pid_t original=txp_activity_enabled()?getpid():0;
+  if(txp_activity_enabled()) {
+    // CHLD is written by fork.c directly on the parent's channel.
+    io->query++;io->profile_tag=FOURCC('C','H','L','D');
+    txp_activity_flush(&io->activity,txp_activity_clock().wall);
+  }
+  pid_t result = texpresso_fork_with_channel(fd, xetex_tokens,
+    txp_activity_enabled()?&io->activity:NULL,io->query);
+  if(txp_activity_enabled()) {
+    if(getpid()!=original) {io->query=0;txp_activity_init(&io->activity,"worker");}
+    // The parent's waitpid/read interval is checkpoint parking, even though its
+    // PID is unchanged. Both resumed parent and child need a fresh CPU baseline.
+    io->in_transaction=0;io->work_start=txp_activity_clock();
+  }
   return result;
 }
 
@@ -374,6 +455,7 @@ bool txp_gpic(txp_client *io,
   switch (t)
   {
     case T_PASS:
+      profile_complete(io);
       return 0;
     case T_GPIC:
     {
@@ -381,6 +463,7 @@ bool txp_gpic(txp_client *io,
       bounds[1] = txp_io_recv_f32(io);
       bounds[2] = txp_io_recv_f32(io);
       bounds[3] = txp_io_recv_f32(io);
+      profile_complete(io);
       return 1;
     }
     default:
@@ -431,7 +514,9 @@ uint32_t txp_mtime(txp_client *io, txp_file_id file)
   enum tag t = txp_io_recv_tag(io);
   if (t != T_MTIM)
     panic_tag(t);
-  return txp_io_recv_u32(io);
+  uint32_t value=txp_io_recv_u32(io);
+  profile_complete(io);
+  return value;
 }
 
 // File size
@@ -442,5 +527,7 @@ uint32_t txp_size(txp_client *io, txp_file_id file)
   enum tag t = txp_io_recv_tag(io);
   if (t != T_SIZE)
     panic_tag(t);
-  return txp_io_recv_u32(io);
+  uint32_t value=txp_io_recv_u32(io);
+  profile_complete(io);
+  return value;
 }

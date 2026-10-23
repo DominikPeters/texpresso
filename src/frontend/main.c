@@ -33,6 +33,7 @@
 #include "providers.h"
 #include "renderer.h"
 #include "engine.h"
+#include "../include/txp_activity.h"
 #include "driver.h"
 #include "synctex.h"
 #include "vstack.h"
@@ -234,8 +235,8 @@ static bool advance_engine(fz_context *ctx, ui_state *ui)
   // not flood profiling with zero-work spins while the editor supplies it.
   if (txp_profile_now() && (steps || txp_monotonic_ms() - start >= 5)) {
     double now = txp_monotonic_ms();
-    fprintf(stderr, "[profile] {\"stage\":\"compiler-burst\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":%d,\"page\":%d,\"bytes\":0,\"steps\":%d,\"reason\":\"%s\"}\n",
-            now - start, now, ui->preview.request, ui->page, steps, reason);
+    fprintf(stderr, "[profile] {\"stage\":\"compiler-burst\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":%d,\"page\":%d,\"bytes\":0,\"steps\":%d,\"reason\":\"%s\",\"workerPid\":%d}\n",
+            now - start, now, ui->preview.request, ui->page, steps, reason, txp_engine_worker_pid(ui->eng));
   }
   return need;
 }
@@ -1675,13 +1676,29 @@ bool texpresso_main(struct persistent_state *ps)
     SDL_CreateThread(poll_stdin_thread_main, "poll_stdin_thread", poll_stdin_pipe);
   bool stdin_eof = 0;
   int rerun_count = 0;
+  txp_activity loop_activity;
+  txp_activity_sample loop_start = {0};
+  if (txp_activity_enabled()) {
+    txp_activity_init(&loop_activity, "frontend-loop");
+    loop_start = txp_activity_clock();
+  }
 
   while (!quit)
   {
+    // Whole iterations include nested compiler, input, rendering and idle spans.
+    // Recording at the next iteration also covers every early continue path.
+    if (txp_activity_enabled()) {
+      txp_activity_sample now = txp_activity_clock();
+      txp_activity_add(&loop_activity, TXPA_LOOP, loop_start, now,
+        ui->preview.request, 0, 0, txp_engine_worker_pid(ui->eng));
+      loop_start = txp_activity_clock();
+    }
     SDL_Event e;
     bool has_event = SDL_PollEvent(&e);
 
-    // Process stdin
+    // Process stdin, including rollback/end_changes and any immediate restart.
+    txp_activity_sample input_start = {0};
+    if (txp_activity_enabled()) input_start = txp_activity_clock();
     send(begin_changes, ui->eng, ps->ctx);
     char buffer[4096];
     int n = -1;
@@ -1730,6 +1747,10 @@ bool texpresso_main(struct persistent_state *ps)
       schedule_event(RELOAD_EVENT);
       rerun_count = 0;
     }
+
+    if (txp_activity_enabled())
+      txp_activity_add(&loop_activity, TXPA_INPUT, input_start, txp_activity_clock(),
+        ui->preview.request, 0, 0, txp_engine_worker_pid(ui->eng));
 
     // Process document
     {
@@ -1827,12 +1848,17 @@ bool texpresso_main(struct persistent_state *ps)
         bool rerun_eligible = ps->rerun_enabled
                               && rerun_count < MAX_RERUNS
                               && aux_ready;
+        txp_activity_sample wait_start = {0};
+        if (txp_activity_enabled()) wait_start = txp_activity_clock();
         if (startup_wait)
           has_event = SDL_WaitEventTimeout(&e, 5);
         else if (rerun_eligible)
           has_event = SDL_WaitEventTimeout(&e, T_IDLE_MS);
         else
           has_event = SDL_WaitEvent(&e);
+        if (txp_activity_enabled())
+          txp_activity_add(&loop_activity, TXPA_IDLE, wait_start, txp_activity_clock(),
+            ui->preview.request, 0, 0, txp_engine_worker_pid(ui->eng));
         if (!has_event)
         {
           if (startup_wait) continue;
@@ -2113,6 +2139,12 @@ bool texpresso_main(struct persistent_state *ps)
     }
   }
 
+  if (txp_activity_enabled()) {
+    txp_activity_sample now = txp_activity_clock();
+    txp_activity_add(&loop_activity, TXPA_LOOP, loop_start, now,
+      ui->preview.request, 0, 0, txp_engine_worker_pid(ui->eng));
+    txp_activity_flush(&loop_activity, now.wall);
+  }
   {
     int status = 0;
     wakeup_poll_thread(poll_stdin_pipe, 'q');

@@ -67,6 +67,7 @@ typedef struct
   fileentry_t *checkpoint_entry;
   int checkpoint_offset;
   uint64_t anchor;
+  uint64_t profile_query;
 } process_t;
 
 enum
@@ -279,6 +280,7 @@ static void prepare_process(fz_context *ctx, struct tex_engine *self, const char
     p->tokens = 0;
     p->checkpoint_entry = NULL;
     p->anchor = 0;
+    p->profile_query = 0;
     self->fork_started = 0;
     p->starting = true; p->startup_failed = false;
     p->handshake_started = txp_monotonic_ms();
@@ -387,7 +389,19 @@ static void cancel_convergence(struct tex_engine *self)
 static bool read_query(struct tex_engine *self, channel_t *t, query_t *q)
 {
   process_t *p = get_process(self);
+  txp_activity_sample start={0};
+  if(txp_activity_enabled()) {
+    channel_profile_context(t,p->pid,p->profile_query+1,0,0);
+    start=txp_activity_clock();
+  }
   bool result = channel_read_query(t, p->fd, q);
+  if(txp_activity_enabled()) {
+    if(result) {
+      q->profile_pid=p->pid;q->profile_query=++p->profile_query;
+      channel_profile_context(t,p->pid,p->profile_query,q->tag,q->time);
+    }
+    channel_profile_record(t,TXPA_QUERY_READ,start,txp_activity_clock());
+  }
   if (!result)
   {
     if (p->pass_status == TXP_PASS_RUNNING)
@@ -459,6 +473,7 @@ static void engine_destroy(txp_engine *_self, fz_context *ctx)
   while (self->process_count > 0)
     pop_process(ctx, self);
   reap_root_children(self, true);
+  channel_profile_finish(self->c);
   incdvi_free(ctx, self->dvi);
   synctex_free(ctx, self->stex);
   fz_free(ctx, self->name);
@@ -642,7 +657,16 @@ static bool need_snapshot(fz_context *ctx, struct tex_engine *self, int time)
   return time > 500 + last_time;
 }
 
+static void answer_query_impl(fz_context *ctx, struct tex_engine *self, query_t *q);
 static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
+{
+  if(!txp_activity_enabled()) {answer_query_impl(ctx,self,q);return;}
+  channel_profile_context(self->c,q->profile_pid,q->profile_query,q->tag,q->time);
+  txp_activity_sample start=txp_activity_clock();
+  answer_query_impl(ctx,self,q);
+  channel_profile_record(self->c,TXPA_ANSWER,start,txp_activity_clock());
+}
+static void answer_query_impl(fz_context *ctx, struct tex_engine *self, query_t *q)
 {
   process_t *p = get_process(self);
   answer_t a;
@@ -1122,6 +1146,7 @@ static void answer_query(fz_context *ctx, struct tex_engine *self, query_t *q)
       p->anchor = self->fork_is_anchor ? ++self->anchor_serial : 0;
       p2->checkpoint_entry = NULL;
       p2->anchor = 0;
+      p2->profile_query = 0;
       p2->pass_status = TXP_PASS_RUNNING;
       p2->starting = p2->startup_failed = false;
       if (self->prepare.status == TXP_PREPARE_PENDING &&
@@ -1235,8 +1260,8 @@ static void rollback_processes(fz_context *ctx, struct tex_engine *self, int rev
 
   int trace_len = self->process_count == 0 ? 0 : get_process(self)->trace_len;
   if (profile_start)
-    fprintf(stderr, "[profile] {\"stage\":\"compiler-rollback\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"resumeTokens\":%d,\"changedTrace\":%d,\"resumeTrace\":%d,\"checkpoints\":%d}\n",
-            txp_profile_now() - profile_start, txp_profile_now(), tokens_before,
+    fprintf(stderr, "[profile] {\"stage\":\"compiler-rollback\",\"ms\":%.4f,\"nativeAt\":%.4f,\"pid\":%d,\"workerPid\":%d,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"resumeTokens\":%d,\"changedTrace\":%d,\"resumeTrace\":%d,\"checkpoints\":%d}\n",
+            txp_profile_now() - profile_start, txp_profile_now(), (int)getpid(), self->process_count?get_process(self)->pid:0, tokens_before,
             self->process_count ? get_process(self)->tokens : 0,
             reverted, trace_len, self->process_count ? self->process_count - 1 : 0);
   while (reverted > trace_len)
@@ -1431,6 +1456,7 @@ static bool engine_step(txp_engine *_self, fz_context *ctx, bool restart_if_need
     int fd = get_process(self)->fd;
     if (fd == -1)
       return 0;
+    if(txp_activity_enabled()) channel_profile_context(self->c,get_process(self)->pid,get_process(self)->profile_query+1,0,0);
     if (!channel_has_pending_query(self->c, fd, 10))
       return 0;
     if (!read_query(self, self->c, &q))
@@ -1596,6 +1622,7 @@ static bool process_pending_messages(fz_context *ctx, struct tex_engine *self)
   // - check pending SEEN messages to update vision of the process
   int nothing_seen = 1;
   do {
+    if(txp_activity_enabled()) channel_profile_context(self->c,p->pid,p->profile_query+1,0,0);
     if (!channel_has_pending_query(self->c, p->fd, 10))
     {
       fprintf(stderr, "[kill] worker might be stuck, killing\n");
@@ -1909,6 +1936,12 @@ static bool engine_end_changes(txp_engine *_self, fz_context *ctx)
   rollback_processes(ctx, self, reverted, trace);
 
   return true;
+}
+
+int txp_engine_worker_pid(txp_engine *_self)
+{
+  if(_self->_class!=&_class) return 0;
+  SELF;return self->process_count?get_process(self)->pid:0;
 }
 
 uint64_t txp_engine_page_token(txp_engine *_self, fz_display_list *list)

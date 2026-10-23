@@ -47,6 +47,8 @@ typedef int file_id;
 
 #define PACK(a,b,c,d) ((d << 24) | (c << 16) | (b << 8) | a)
 
+#include "../include/txp_activity.h"
+
 /* QUERIES */
 
 enum query {
@@ -100,6 +102,8 @@ struct pic_cache {
 typedef struct {
   int time;
   enum query tag;
+  int profile_pid;
+  uint64_t profile_query;
   union {
     struct {
       file_id fid;
@@ -217,6 +221,9 @@ void channel_write_answer(channel_t *t, int fd, answer_t *a);
 void *channel_get_buffer(channel_t *t, size_t n);
 void channel_flush(channel_t *t, int fd);
 void channel_reset(channel_t *t);
+void channel_profile_context(channel_t *t,int pid,uint64_t query,int tag,int tokens);
+void channel_profile_record(channel_t *t,int kind,txp_activity_sample start,txp_activity_sample end);
+void channel_profile_finish(channel_t *t);
 
 void log_query(FILE *f, query_t *q);
 #endif /*!SPROTOCOL_H*/

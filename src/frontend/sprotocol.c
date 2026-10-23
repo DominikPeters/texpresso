@@ -44,10 +44,27 @@ struct channel_s
     int pos;
   } output;
   int passed_fd;
+  txp_activity activity;
+  struct {int pid,tag,tokens;uint64_t query;} profile;
   struct { char answer[12]; int sent, received; } handshake;
   char *buf;
   int buf_size;
 };
+
+void channel_profile_context(channel_t *t,int pid,uint64_t query,int tag,int tokens)
+{
+  if(!txp_activity_enabled()) return;
+  t->profile.pid=pid;t->profile.query=query;t->profile.tag=tag;t->profile.tokens=tokens;
+}
+void channel_profile_record(channel_t *t,int kind,txp_activity_sample start,txp_activity_sample end)
+{
+  if(txp_activity_enabled()) txp_activity_add(&t->activity,kind,start,end,
+    t->profile.query,t->profile.tag,t->profile.tokens,t->profile.pid);
+}
+void channel_profile_finish(channel_t *t)
+{
+  if(txp_activity_enabled()) txp_activity_flush(&t->activity,txp_activity_clock().wall);
+}
 
 static ssize_t read_(channel_t *t, int fd, void *data, size_t len)
 {
@@ -60,9 +77,11 @@ static ssize_t read_(channel_t *t, int fd, void *data, size_t len)
   };
   msg.msg_control = &msg_control;
 
+  txp_activity_sample start={0};if(txp_activity_enabled()) start=txp_activity_clock();
   ssize_t recvd;
   do { recvd = recvmsg(fd, &msg, 0); } 
   while (recvd == -1 && errno == EINTR);
+  if(txp_activity_enabled()) channel_profile_record(t,TXPA_SOCKET_READ,start,txp_activity_clock());
 
   if (recvd == -1)
   {
@@ -131,8 +150,9 @@ static bool read_all(channel_t *t, int fd, char *buf, int size)
   return 1;
 }
 
-static void write_all(int fd, const char *buf, int size)
+static void write_all(channel_t *t,int fd, const char *buf, int size)
 {
+  txp_activity_sample start={0};if(txp_activity_enabled()) start=txp_activity_clock();
   while (size > 0)
   {
     int n = write(fd, buf, size);
@@ -151,13 +171,16 @@ static void write_all(int fd, const char *buf, int size)
     buf += n;
     size -= n;
   }
+  if(txp_activity_enabled()) channel_profile_record(t,TXPA_SOCKET_WRITE,start,txp_activity_clock());
 }
 
 static void cflush(channel_t *c, int fd)
 {
   int pos = c->output.pos;
   if (pos == 0) return;
-  write_all(fd, c->output.buffer, pos);
+  txp_activity_sample start={0};if(txp_activity_enabled()) start=txp_activity_clock();
+  write_all(c,fd, c->output.buffer, pos);
+  if(txp_activity_enabled()) channel_profile_record(c,TXPA_RESPONSE_FLUSH,start,txp_activity_clock());
   c->output.pos = 0;
 }
 
@@ -284,11 +307,13 @@ channel_t *channel_new(void)
   if (!c->buf) mabort();
   c->buf_size = 256;
   c->passed_fd = -1;
+  if(txp_activity_enabled()) txp_activity_init(&c->activity,"frontend");
   return c;
 }
 
 void channel_free(channel_t *c)
 {
+  channel_profile_finish(c);
   free(c->buf);
   free(c);
 }
@@ -359,7 +384,7 @@ static void write_bytes(channel_t *t, int fd, void *buf, int size)
   cflush(t, fd);
 
   if (size > BUF_SIZE)
-    write_all(fd, buf, size);
+    write_all(t,fd, buf, size);
   else
   {
     memcpy(t->output.buffer, buf, size);
@@ -466,6 +491,7 @@ bool channel_has_pending_query(channel_t *t, int fd, int timeout)
   if (t->input.pos != t->input.len) return 1;
 
   struct pollfd pfd;
+  txp_activity_sample start={0};if(txp_activity_enabled()) start=txp_activity_clock();
   int n;
   while(1)
   {
@@ -477,6 +503,7 @@ bool channel_has_pending_query(channel_t *t, int fd, int timeout)
       break;
   }
 
+  if(txp_activity_enabled()) channel_profile_record(t,TXPA_POLL,start,txp_activity_clock());
   if (n == -1)
     pabort();
   if (n == 0)
@@ -501,6 +528,7 @@ bool channel_read_query(channel_t *t, int fd, query_t *r)
     return 0;
   r->tag = tag;
   r->time = read_u32(t, fd);
+  if(txp_activity_enabled()) {t->profile.tag=tag;t->profile.tokens=r->time;}
   int pos = 0;
   switch (tag)
   {

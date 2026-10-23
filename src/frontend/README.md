@@ -70,3 +70,46 @@ current version).
 
 [logo.c](logo.c), [logo.h](logo.h) is the TeXpresso logo, represented as a [qoi.h](qoi.h) image
 and serialized as a C string.
+
+### Native activity attribution
+
+`TEXPRESSO_PROFILE=1 TEXPRESSO_PROFILE_ACTIVITY=1` enables detailed wall/CPU
+attribution on stderr. Leave the second flag unset for a same-binary stage-timing
+control. No C02 wire fields change. `nativeAt`, `beginAt`, and `maxAt` use shared
+`CLOCK_MONOTONIC` milliseconds; CPU deltas use the current process's
+`CLOCK_PROCESS_CPUTIME_ID`. Wall minus CPU includes external work, I/O, parking
+and descheduling; it is not a measurement of OS scheduling alone.
+
+The worker's `work` interval ends at the next query, with that query's end token
+count. `transaction` includes all request writes, buffered flushes, response tags
+and response payload reads. Diagnostic mode makes the existing implicit stdio
+write-to-read flush explicit, so request flushing and response reading can be
+separated. One-way SEEN ends after its buffered write. `fork` measures the parent's
+fork syscall; `park` includes CHLD delivery, waiting for the child and the DONE
+resume response. Both child return and parent resume reset the work baseline.
+Workers killed mid-interval cannot report their unfinished work; process sampling
+is still useful for those intervals.
+
+The frontend reports socket reads/writes, poll, complete query read, answer and
+response flush. Its `peerPid` and per-worker `query` ordinal correlate with worker
+`pid` and `query`; raw CHLD counts as a parent query and children restart at one.
+A poll before a tag is available has an unknown tag. Query-read/answer contain
+socket operations; worker transactions contain their I/O. These are nested
+measurements: do not sum their durations or CPU totals. The main loop additionally
+reports `input` (stdin parsing through end_changes/restart), SDL `idle`, and whole
+`loop` intervals, which contain compiler/rendering/input/idle work. Loop peer PIDs
+are sampled at the end, rather than assigning the whole iteration to one worker.
+
+Each process/context aggregates fixed stage counters for 250 ms windows and emits
+at most four individual spans of at least 10 ms per window. Fork/finish/shutdown
+also flush summaries. Each JSON line uses a single write of fewer than 512 bytes.
+Summary `query`, `tag`, `tokens`, `peerPid`, `maxAt`, and `cpuAtMaxMs` describe the
+maximum-wall span; `maxCpuMs` is an independent CPU maximum. `dropped` includes
+suppressed slow spans and failed/truncated records; it is repeated on summary
+rows, so take a window's maximum rather than adding the rows. Detail mode adds
+clock and output overhead; compare both flags on/off in the same binary before
+interpreting latency changes.
+
+`make test-activity` runs controlled real C02 exchanges without TeX or rendering:
+CPU versus sleep, a delayed response payload, fork parking and resume, local query
+numbering, default-off parity, and bounded-output accounting.

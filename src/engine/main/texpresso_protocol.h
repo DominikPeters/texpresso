@@ -46,7 +46,8 @@ enum txp_open_mode
   TXP_WRITE
 };
 
-extern pid_t texpresso_fork_with_channel(int fd, uint32_t time);
+struct txp_activity;
+extern pid_t texpresso_fork_with_channel(int fd, uint32_t time, struct txp_activity *profile, uint64_t query);
 
 // File descriptors and client identifiers
 typedef int32_t txp_file_id;
