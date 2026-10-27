@@ -30,6 +30,8 @@ typedef struct {
 
 bool txp_preview_dirty_rect(fz_context *ctx, fz_pixmap *before, fz_pixmap *after, fz_irect *rect);
 fz_buffer *txp_preview_png(fz_context *ctx, fz_pixmap *pix);
+/* Full-page text geometry, excluding paths/images; empty if there is no text. */
+fz_rect txp_preview_text_bounds(fz_context *ctx, fz_display_list *list);
 void txp_preview_init(txp_preview *p);
 void txp_preview_drop_cache(fz_context *ctx, txp_preview *p);
 void txp_preview_invalidate(txp_preview *p);

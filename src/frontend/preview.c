@@ -5,6 +5,39 @@
 #include <string.h>
 #include <zlib.h>
 
+/* Measure text without rasterizing figures or segmenting words. The viewer only
+ * needs the horizontal extent, in the original display-list coordinate space. */
+typedef struct { fz_device super; fz_rect bounds; } text_bounds_device;
+static void bound_fill_text(fz_context *ctx, fz_device *dev, const fz_text *text, fz_matrix ctm,
+                           fz_colorspace *cs, const float *color, float alpha, fz_color_params cp)
+{
+  text_bounds_device *self = (text_bounds_device *)dev;
+  if (alpha > 0) self->bounds = fz_union_rect(self->bounds, fz_bound_text(ctx, text, NULL, ctm));
+}
+static void bound_stroke_text(fz_context *ctx, fz_device *dev, const fz_text *text,
+                             const fz_stroke_state *stroke, fz_matrix ctm,
+                             fz_colorspace *cs, const float *color, float alpha, fz_color_params cp)
+{
+  text_bounds_device *self = (text_bounds_device *)dev;
+  if (alpha > 0) self->bounds = fz_union_rect(self->bounds, fz_bound_text(ctx, text, stroke, ctm));
+}
+fz_rect txp_preview_text_bounds(fz_context *ctx, fz_display_list *list)
+{
+  text_bounds_device *dev = fz_new_derived_device(ctx, text_bounds_device);
+  fz_rect bounds = fz_empty_rect;
+  dev->bounds = bounds;
+  dev->super.fill_text = bound_fill_text;
+  dev->super.stroke_text = bound_stroke_text;
+  fz_try(ctx) {
+    fz_run_display_list(ctx, list, &dev->super, fz_identity, fz_infinite_rect, NULL);
+    fz_close_device(ctx, &dev->super);
+    bounds = dev->bounds;
+  }
+  fz_always(ctx) fz_drop_device(ctx, &dev->super);
+  fz_catch(ctx) fz_rethrow(ctx);
+  return bounds;
+}
+
 /* Audit against MuPDF 1.28.5 source/fitz/svg-device.c. Keep this cheap pass
  * independent of export: no glyph outlining, image decoding, or rasterization.
  * Conservative fallbacks preserve the draw device as the fidelity reference. */
@@ -223,7 +256,31 @@ typedef struct {
   fz_buffer *bytes;
   fz_pixmap *pixels;
 } export_entry;
-struct txp_preview_cache { export_entry entries[EXPORT_CACHE_ENTRIES]; size_t bytes; unsigned long clock; };
+#define TEXT_BOUNDS_CACHE_ENTRIES 16
+struct txp_preview_cache {
+  export_entry entries[EXPORT_CACHE_ENTRIES]; size_t bytes; unsigned long clock;
+  struct { uint64_t token; fz_rect bounds; unsigned long used; } text[TEXT_BOUNDS_CACHE_ENTRIES];
+};
+
+static fz_rect cached_text_bounds(fz_context *ctx, txp_preview *p, fz_display_list *list)
+{
+  if (!p->content_token) return txp_preview_text_bounds(ctx, list);
+  if (!p->export_cache) p->export_cache = fz_malloc_struct(ctx, txp_preview_cache);
+  txp_preview_cache *cache = p->export_cache;
+  int oldest = 0;
+  for (int i = 0; i < TEXT_BOUNDS_CACHE_ENTRIES; ++i) {
+    if (cache->text[i].token == p->content_token) {
+      cache->text[i].used = ++cache->clock;
+      return cache->text[i].bounds;
+    }
+    if (cache->text[i].used < cache->text[oldest].used) oldest = i;
+  }
+  fz_rect bounds = txp_preview_text_bounds(ctx, list);
+  cache->text[oldest].token = p->content_token;
+  cache->text[oldest].bounds = bounds;
+  cache->text[oldest].used = ++cache->clock;
+  return bounds;
+}
 
 void txp_preview_drop_cache(fz_context *ctx, txp_preview *p)
 {
@@ -457,6 +514,12 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     size_t len = fz_buffer_storage(ctx, png, &data);
     if (len > 16 * 1024 * 1024)
       fz_throw(ctx, FZ_ERROR_GENERIC, "Preview image exceeds the transfer budget");
+    fz_rect text_bounds = fz_empty_rect;
+    if (!p->region) {
+      double text_start = txp_profile_now();
+      text_bounds = cached_text_bounds(ctx, p, list);
+      txp_profile_record("text-bounds", text_start, p->request, page, 0);
+    }
     struct timespec export_end;
     clock_gettime(CLOCK_MONOTONIC, &export_end);
     double export_ms = (export_end.tv_sec - export_start.tv_sec) * 1000.0 +
@@ -469,6 +532,9 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
            b.x0, b.y0, b.x1, b.y1,
            image_width, image_height, svg ? "image/svg+xml" : "image/png", len);
     printf(",\"exportMs\":%.4f", export_ms);
+    if (!p->region && !fz_is_empty_rect(text_bounds) && !fz_is_infinite_rect(text_bounds) &&
+        isfinite(text_bounds.x0) && isfinite(text_bounds.y0) && isfinite(text_bounds.x1) && isfinite(text_bounds.y1))
+      printf(",\"textBounds\":[%.9g,%.9g,%.9g,%.9g]", text_bounds.x0, text_bounds.y0, text_bounds.x1, text_bounds.y1);
     if ((p->automatic || p->svg) && !p->region)
       printf(",\"svgEligible\":%s,\"vectorCost\":%zu", svg_eligible ? "true" : "false", vector_cost);
     if (!svg && !p->region && !p->background && p->patches) printf(",\"rasterId\":%d", p->request);
