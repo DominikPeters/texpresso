@@ -38,6 +38,25 @@ int main(void)
     assert((txp_preview_svg_fallback(ctx, list) != NULL) == (flag != 0));
     fz_drop_display_list(ctx, list); fz_drop_image(ctx, image); fz_drop_pixmap(ctx, pix);
   }
+  /* Text fitting ignores figures, preserves translated page coordinates, and
+   * does not invent geometry on blank or graphics-only pages. */
+  fz_display_list *list = page(ctx, 0, 1, 0, FZ_BLEND_NORMAL);
+  assert(fz_is_empty_rect(txp_preview_text_bounds(ctx, list)));
+  fz_drop_display_list(ctx, list);
+  list = fz_new_display_list(ctx, fz_make_rect(20, 30, 620, 830));
+  fz_device *dev = fz_new_list_device(ctx, list);
+  fz_font *font = fz_new_base14_font(ctx, "Helvetica");
+  fz_text *text = fz_new_text(ctx);
+  fz_show_string(ctx, text, font, fz_make_matrix(12, 0, 0, 12, 120, 200), "Text width", 0, 0, FZ_BIDI_NEUTRAL, FZ_LANG_UNSET);
+  float black[3] = {0, 0, 0};
+  fz_fill_text(ctx, dev, text, fz_identity, fz_device_rgb(ctx), black, 1, fz_default_color_params);
+  fz_path *path = fz_new_path(ctx); fz_rectto(ctx, path, 20, 30, 620, 830);
+  fz_fill_path(ctx, dev, path, 0, fz_identity, fz_device_rgb(ctx), black, 1, fz_default_color_params);
+  fz_close_device(ctx, dev); fz_drop_device(ctx, dev);
+  fz_rect bounds = txp_preview_text_bounds(ctx, list);
+  assert(bounds.x0 > 115 && bounds.x0 < 125 && bounds.x1 > 150 && bounds.x1 < 220);
+  assert(bounds.y0 > 180 && bounds.y1 < 210);
+  fz_drop_path(ctx, path); fz_drop_text(ctx, text); fz_drop_font(ctx, font); fz_drop_display_list(ctx, list);
   fz_drop_context(ctx);
   puts("PASS: SVG keeps ordinary vectors and isolated opacity; falls back for non-isolation, knockout, blending");
 }
