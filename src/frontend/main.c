@@ -1168,23 +1168,24 @@ static bool advance_prepare(struct persistent_state *ps, ui_state *ui)
 
 static void process_prepared_inverse(struct persistent_state *ps, ui_state *ui)
 {
-  if (!ui->prepared_inverse.pending || !ui->preview.valid ||
-      ui->prepared_inverse.page != ui->page ||
+  if (!ui->prepared_inverse.pending ||
       ui->prepared_inverse.revision != ui->preview.revision ||
       ui->prepared_inverse.sequence != ui->preview.sequence) return;
   fz_buffer *buf;
   synctex_t *stx = send(synctex, ui->eng, &buf);
   float factor = send(scale_factor, ui->eng);
-  if (!stx || !buf || factor <= 0 || synctex_page_count(stx) <= ui->page) return;
+  int page = ui->prepared_inverse.page;
+  if (!stx || !buf || factor <= 0 || page < 0 || synctex_page_count(stx) <= page) return;
   ui->prepared_inverse.pending = false;
   char *word = NULL;
   fz_var(word);
   fz_try(ps->ctx) {
-    word = txp_renderer_word_at(ps->ctx, ui->doc_renderer,
-      fz_make_point(ui->prepared_inverse.x, ui->prepared_inverse.y));
+    if (ui->preview.valid && !ui->preview.background && ui->page == page)
+      word = txp_renderer_word_at(ps->ctx, ui->doc_renderer,
+        fz_make_point(ui->prepared_inverse.x, ui->prepared_inverse.y));
   }
   fz_catch(ps->ctx) { fprintf(stderr, "[preview] Could not extract clicked word\n"); }
-  synctex_scan_word(ps->ctx, stx, buf, ps->doc_path, ui->page,
+  synctex_scan_word(ps->ctx, stx, buf, ps->doc_path, page,
     ui->prepared_inverse.x / factor, ui->prepared_inverse.y / factor, word);
   fz_free(ps->ctx, word);
 }
@@ -1499,15 +1500,20 @@ static void interpret_command(struct persistent_state *ps,
       if (ps->headless && cmd.preview_inverse.revision == ui->preview.revision &&
           cmd.preview_inverse.sequence == ui->preview.sequence) {
         cancel_source(ui);
-        preempt_background(ps, ui, cmd.preview_inverse.page);
-        if (ui->page != cmd.preview_inverse.page) ui->preview.valid = false;
-        ui->page = cmd.preview_inverse.page;
         ui->prepared_inverse.pending = true;
         ui->prepared_inverse.revision = cmd.preview_inverse.revision;
         ui->prepared_inverse.sequence = cmd.preview_inverse.sequence;
         ui->prepared_inverse.page = cmd.preview_inverse.page;
         ui->prepared_inverse.x = cmd.preview_inverse.x;
         ui->prepared_inverse.y = cmd.preview_inverse.y;
+        // A published SyncTeX page does not depend on the foreground renderer.
+        // Avoid changing page demand or rebuilding a display list just to jump
+        // from an already visible cached page back to its source line.
+        process_prepared_inverse(ps, ui);
+        if (!ui->prepared_inverse.pending) break;
+        preempt_background(ps, ui, cmd.preview_inverse.page);
+        if (ui->page != cmd.preview_inverse.page) ui->preview.valid = false;
+        ui->page = cmd.preview_inverse.page;
         ui->need_synctex = true;
         schedule_event(RELOAD_EVENT);
         process_prepared_inverse(ps, ui);
