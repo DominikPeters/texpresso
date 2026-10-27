@@ -118,6 +118,16 @@ and an explicit white page background. Clients should load it as an isolated
 blob-backed image rather than injecting markup. Shared cross-page glyph stores
 remain a future optimization.
 
+Full-page headers may include `textBounds: [x0,y0,x1,y1]`: the extent of
+fill/stroke text in the same page coordinate space as `bounds`, independent of
+codec and raster size. It describes the complete page even on PNG dirty patches
+and zero-byte updates; region frames omit it. Empty or non-finite text extents
+are omitted. Paths and images do not enlarge it, though text labels inside a
+figure do. This is a conservative ink extent: clipping, masks and occluding
+shapes are not evaluated. Clients can use it for lazy text-width fitting and
+must accept older engines that omit the field. Geometry is cached by page-content
+token without retaining another display list or raster.
+
 Full-page headers may include `annotations: {links, destinations}`. A link is
 `{bounds: [x0,y0,x1,y1], uri}`; `#name` denotes a DVI named destination. A
 page-local destination is `{name, x, y}`. Coordinates use the same page space
