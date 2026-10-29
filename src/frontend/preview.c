@@ -345,6 +345,7 @@ void txp_preview_init(txp_preview *p)
   memset(p, 0, sizeof *p);
   p->revision = 1;
   p->last_count = p->last_page = p->last_revision = p->last_sequence = p->last_complete = -1;
+  p->stopped_revision = p->stopped_sequence = -1;
 }
 
 void txp_preview_invalidate(txp_preview *p)
@@ -367,6 +368,15 @@ void txp_preview_state(txp_preview *p, int count, int page, bool complete)
   p->last_revision = p->revision;
   p->last_sequence = p->sequence;
   p->last_complete = complete;
+}
+
+void txp_preview_stopped(txp_preview *p, int count)
+{
+  if (p->stopped_revision == p->revision && p->stopped_sequence == p->sequence)
+    return;
+  printf("[\"preview-stopped\",%d,%d,%d]\n", p->revision, p->sequence, count);
+  p->stopped_revision = p->revision;
+  p->stopped_sequence = p->sequence;
 }
 
 void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, int page, txp_renderer *renderer)
