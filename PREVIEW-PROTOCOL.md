@@ -71,12 +71,23 @@ notifications describe availability and navigation:
 
 * `["preview-state", revision, sequence, completedPageCount, complete, currentPage]`
 * `["preview-invalidated", revision, sequence]`
+* `["preview-stopped", revision, sequence, availablePageCount]` after a failed
+  terminal pass. Sent once per revision/sequence, after `preview-state`, even
+  without a render request beyond the end. This bounds navigation at the
+  available prefix without claiming a successful exact total. Ignore obsolete
+  generations; older clients may ignore this additive notification.
 * `["preview-forward", revision, sequence, page, x, y]`, responding to the
   existing `synctex-forward` command without moving a native window.
 * `["preview-destination", revision, sequence, name, page]`, where `page` is
   zero-based or -1 when the current pass completed without that destination.
 * `["preview-retry", requestId]` if the requested snapshot became obsolete.
 * `["preview-error", requestId, message]` if a page cannot be exported.
+
+Successful auxiliary convergence retains its exact physical page total before
+restoring a live compiler checkpoint for editing. `preview-state.complete` and
+its count remain exact during that restoration and cursor prewarming. A real
+source invalidation or new finishing pass clears the retained total. A failed
+pass never sets `complete:true`.
 
 The revision is deliberately conservative: edits, rescans, reruns, and detected
 dependency changes invalidate the current display-list snapshot. Keep any old

@@ -26,6 +26,7 @@ typedef struct {
   int vector_limit;
   int request, page, width, expected_revision, expected_sequence;
   int last_count, last_page, last_revision, last_sequence, last_complete;
+  int stopped_revision, stopped_sequence;
 } txp_preview;
 
 bool txp_preview_dirty_rect(fz_context *ctx, fz_pixmap *before, fz_pixmap *after, fz_irect *rect);
@@ -36,6 +37,7 @@ void txp_preview_init(txp_preview *p);
 void txp_preview_drop_cache(fz_context *ctx, txp_preview *p);
 void txp_preview_invalidate(txp_preview *p);
 void txp_preview_state(txp_preview *p, int count, int page, bool complete);
+void txp_preview_stopped(txp_preview *p, int count);
 const char *txp_preview_svg_fallback(fz_context *ctx, fz_display_list *list);
 void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, int page, txp_renderer *renderer);
 

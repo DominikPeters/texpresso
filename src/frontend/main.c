@@ -1790,6 +1790,9 @@ bool texpresso_main(struct persistent_state *ps)
         }
         txp_preview_state(&ui->preview, preview_count,
                           ui->preview.background ? ui->preview.foreground_page : ui->page, complete);
+        // A failed EOF is a known navigation boundary, not a successful total.
+        // Report it even when no caller has requested a page beyond that end.
+        if (terminated && !complete) txp_preview_stopped(&ui->preview, after_page_count);
         // Reject obsolete revision/sequence requests before reporting a real
         // no-page failure. Rapid edits can invalidate a request during rollback.
         fz_display_list *export_list = ui->preview.background ? ui->preview.background_list :
