@@ -1729,7 +1729,11 @@ static void reset_seen_for_respawn(struct tex_engine *self)
 static bool engine_aux_dirty(txp_engine *_self)
 {
   SELF;
-  return self->aux_dirty;
+  // Replaying an unchanged prefix for a lens, page or warm checkpoint writes
+  // auxiliary bytes again. A converged source generation already proved those
+  // bytes stable; only a real edit (which clears completed_page_count) needs
+  // another convergence pass.
+  return self->aux_dirty && self->completed_page_count < 0;
 }
 
 static bool engine_is_finishing(txp_engine *_self)
