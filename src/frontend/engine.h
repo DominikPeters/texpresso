@@ -72,6 +72,9 @@ bool txp_engine_startup_pending(txp_engine *self);
 void txp_engine_poll_startup(txp_engine *self);
 int txp_engine_worker_pid(txp_engine *self);
 uint64_t txp_engine_page_token(txp_engine *self, fz_display_list *list);
+// Successful converged pagination survives restoring a live edit checkpoint.
+// -1 means that this source generation has no retained completed total.
+int txp_engine_completed_page_count(txp_engine *self);
 
 
 typedef enum {

@@ -118,6 +118,7 @@ struct tex_engine
 
   bool aux_dirty;
   bool finishing;
+  int completed_page_count;
   int last_tokens;
   fileentry_t *fork_entry;
   int fork_offset;
@@ -1772,6 +1773,7 @@ static bool engine_is_finishing(txp_engine *_self)
 static void engine_start_finishing(txp_engine *_self)
 {
   SELF;
+  self->completed_page_count = -1;
   self->finishing = true;
 }
 
@@ -1841,6 +1843,10 @@ static void engine_finish_convergence(txp_engine *_self, fz_context *ctx)
   if (converged)
   {
     fprintf(stderr, "[rerun] aux byte-stable, convergence reached\n");
+    // Pagination describes the completed source, not the worker checkpoint
+    // retained below for the next edit. Capture it before restoring that live
+    // prefix (whose pass status is RUNNING and may expose fewer pages).
+    self->completed_page_count = incdvi_page_count(self->dvi);
     // Finishing left the latest process dead (fd=-1) at the top of the
     // snapshot stack. Strip dead processes so get_process() returns a
     // live snapshot the next user edit can roll back into.
@@ -1932,6 +1938,7 @@ static bool engine_end_changes(txp_engine *_self, fz_context *ctx)
   if (!rollback_end(ctx, self, &reverted, &offset))
     return false;
 
+  self->completed_page_count = -1;
   trace = reverted >= 0 ? compute_fences(ctx, self, reverted, offset) : 0;
   rollback_processes(ctx, self, reverted, trace);
 
@@ -1949,6 +1956,13 @@ uint64_t txp_engine_page_token(txp_engine *_self, fz_display_list *list)
   if (_self->_class != &_class) return 0;
   SELF;
   return incdvi_display_list_token(self->dvi, list);
+}
+
+int txp_engine_completed_page_count(txp_engine *_self)
+{
+  if (_self->_class != &_class) return -1;
+  SELF;
+  return self->completed_page_count;
 }
 
 txp_pass_status txp_engine_pass_status(txp_engine *_self)
@@ -1997,6 +2011,7 @@ txp_engine *txp_create_tex_engine(fz_context *ctx,
 {
   struct tex_engine *self = fz_malloc_struct(ctx, struct tex_engine);
   self->_class = &_class;
+  self->completed_page_count = -1;
 
   self->name = fz_strdup(ctx, tex_name);
   self->engine_path = fz_strdup(ctx, engine_path);

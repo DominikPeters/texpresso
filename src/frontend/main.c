@@ -1776,17 +1776,19 @@ bool texpresso_main(struct persistent_state *ps)
       if (ps->headless && !ui->prepare.held)
       {
         bool terminated = send(get_status, ui->eng) == DOC_TERMINATED;
-        bool complete = document_complete(ui->eng);
+        int completed_count = txp_engine_completed_page_count(ui->eng);
+        bool complete = completed_count >= 0 || document_complete(ui->eng);
+        int preview_count = completed_count >= 0 ? completed_count : after_page_count;
         if (terminated && (ui->source_request > 0 || synctex_has_target(send(synctex, ui->eng, NULL)))) cancel_source(ui);
-        if (complete && ui->page >= after_page_count && after_page_count > 0)
+        if (complete && ui->page >= preview_count && preview_count > 0)
         {
-          ui->page = after_page_count - 1;
+          ui->page = preview_count - 1;
           // Keep the requested page immutable so a missing page terminates
           // with an error instead of returning the last page under its ID.
           ui->preview.valid = false;
           schedule_event(RELOAD_EVENT);
         }
-        txp_preview_state(&ui->preview, after_page_count,
+        txp_preview_state(&ui->preview, preview_count,
                           ui->preview.background ? ui->preview.foreground_page : ui->page, complete);
         // Reject obsolete revision/sequence requests before reporting a real
         // no-page failure. Rapid edits can invalidate a request during rollback.
