@@ -27,6 +27,8 @@
 #include <mupdf/fitz.h>
 #include "logo.h"
 #include "driver.h"
+#include "preview.h"
+#include <errno.h>
 
 #ifdef __APPLE__
 #include <sys/syslimits.h>
@@ -127,7 +129,8 @@ static void usage(void)
           " -stream   Skip filesystem lookups; files are pushed via editor commands\n");
   fprintf(stderr,
           " -headless Export preview images over stdout (requires -json)\n"
-          " -capabilities Print supported preview features as JSON and exit\n");
+          " -capabilities Print supported preview features as JSON and exit\n"
+          " -preview-max-pixels N Set PNG area budget (1..16000000; default 4000000)\n");
 }
 
 int main(int argc, const char **argv)
@@ -163,6 +166,7 @@ int main(int argc, const char **argv)
   bool stream_mode = 0;
   bool headless = 0;
   bool capabilities = 0;
+  int preview_max_pixels = TXP_PREVIEW_DEFAULT_PIXELS;
 
   int inclusion_path_size = 1;
   for (int i = 1; i < argc; i++)
@@ -179,6 +183,17 @@ int main(int argc, const char **argv)
         headless = 1;
       else if (strcmp(arg, "-capabilities") == 0)
         capabilities = 1;
+      else if (strcmp(arg, "-preview-max-pixels") == 0)
+      {
+        char *end = NULL;
+        errno = 0;
+        long pixels = ++i < argc ? strtol(argv[i], &end, 10) : 0;
+        if (errno || !end || end == argv[i] || *end || pixels < 1 || pixels > TXP_PREVIEW_MAX_PIXELS) {
+          fprintf(stderr, "[error] -preview-max-pixels expects an integer in 1..%d\n", TXP_PREVIEW_MAX_PIXELS);
+          return 1;
+        }
+        preview_max_pixels = (int)pixels;
+      }
       else if (strcmp(arg, "-I") == 0)
       {
         i += 1;
@@ -234,7 +249,7 @@ int main(int argc, const char **argv)
 
   if (capabilities)
   {
-    puts("{\"previewProtocol\":1,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true}");
+    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true}\n", TXP_PREVIEW_MAX_PIXELS);
     return 0;
   }
   if (headless && protocol != EDITOR_JSON)
@@ -377,6 +392,7 @@ int main(int argc, const char **argv)
       .initialize_only = initialize_only,
       .stream_mode = stream_mode,
       .headless = headless,
+      .preview_max_pixels = preview_max_pixels,
       // In stream mode, start paused: editor primes the VFS before (resume).
       .paused = stream_mode,
       .rerun_enabled = false,

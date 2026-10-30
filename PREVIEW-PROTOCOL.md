@@ -14,7 +14,14 @@ Headless input additions are positional JSON arrays:
 * `["preview-render", requestId, page, pixelWidth, revision, sequence]`:
   request the zero-based page at the expected revision/source sequence. The
   newest pending request replaces an older one. Width is 1–4096; actual output
-  is reduced to at most 4,000,000 pixels and 8192 pixels on either axis.
+  is reduced to the session pixel budget and 8192 pixels on either axis.
+  The default remains 4,000,000 pixels. Engines advertising `maxPreviewPixels`
+  accept the launch option `-preview-max-pixels N` (1 through the advertised
+  maximum, currently 16,000,000). Clients must opt in and accept the larger
+  dimension/PNG-body bounds before requesting this. Requested width is already
+  in device pixels: apply the display pixel ratio in the client, once.
+  Width is preserved exactly when it fits the area/dimension budget; integer
+  raster bounds replace the old unconditional 0.1% scale reduction.
 * `["preview-png", requestId, page, pixelWidth, revision, sequence, baseRasterId]`:
   opt into PNG deltas after checking `pngPatches`. Request IDs must be positive.
   Pass the last successfully displayed `rasterId`, or 0 to force a full frame.
@@ -117,7 +124,11 @@ The image covers `bounds` in page space, top-left origin, with an opaque page
 background. The native frontend serializes header/body writes on its main
 thread; stderr remains independent text. A receiver must parse arbitrary byte
 chunks and must not attach a text decoder/readline reader to stdout in this
-mode. Image bodies are limited to 16 MiB. A partial frame is a terminal protocol
+mode. Image bodies are limited to 16 MiB by default. Sessions opting into more
+than 4,000,000 pixels allow PNG bodies up to 64 MiB (enough for a worst-case
+16-megapixel RGB image); SVG keeps the 16 MiB limit. Native reusable export
+entries remain bounded by 32 MiB, retaining encoded bytes without a large raw
+pixmap when necessary. A partial frame is a terminal protocol
 error; searching image bytes for a subsequent newline cannot resynchronize it.
 
 Receivers should allow only bounded outstanding image requests and always drain

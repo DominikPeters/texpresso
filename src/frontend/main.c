@@ -1569,6 +1569,7 @@ bool texpresso_main(struct persistent_state *ps)
 
   ui_state raw_ui = {0}, *ui = &raw_ui;
   txp_preview_init(&ui->preview);
+  ui->preview.max_pixels = ps->preview_max_pixels;
 
   ui->window = ps->window;
 
