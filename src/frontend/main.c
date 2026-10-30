@@ -1749,6 +1749,13 @@ bool texpresso_main(struct persistent_state *ps)
       // Consume successful EOF mappings before convergence can restore a live
       // prefix. Failed passes still cannot resolve nearest-line fallbacks.
       resolve_forward(ps, ui);
+      // Convergence may replace a successful EOF with a fresh worker before
+      // the normal state publication below. Publish that pass's total first,
+      // so clients can retain it while auxiliary references settle.
+      if (ps->headless && !ui->prepare.held && send(is_finishing, ui->eng)
+          && document_complete(ui->eng))
+        txp_preview_state(&ui->preview, send(page_count, ui->eng),
+                          ui->preview.background ? ui->preview.foreground_page : ui->page, true);
       if (!ui->prepare.held) send(finish_convergence, ui->eng, ps->ctx);
       resolve_forward(ps, ui);
       int after_page_count = send(page_count, ui->eng);
