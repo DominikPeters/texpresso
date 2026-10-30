@@ -71,6 +71,7 @@ struct persistent_state {
 
   bool line_output, use_tectonic, use_texlive, initialize_only, stream_mode, headless;
   bool paused;
+  int preview_max_pixels;
   bool rerun_enabled;
   bool rerun_once_pending;
 };

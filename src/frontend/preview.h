@@ -5,6 +5,10 @@
 #include <stdbool.h>
 #include "renderer.h"
 
+#define TXP_PREVIEW_DEFAULT_PIXELS 4000000
+#define TXP_PREVIEW_MAX_PIXELS 16000000
+#define TXP_PREVIEW_PNG_BYTES (64u * 1024u * 1024u)
+
 typedef struct txp_preview_cache txp_preview_cache;
 
 /* One current display-list snapshot and one replaceable render request. */
@@ -24,13 +28,14 @@ typedef struct {
   fz_rect previous_bounds;
   int previous_page, previous_id, patch_base;
   int vector_limit;
-  int request, page, width, expected_revision, expected_sequence;
+  int request, page, width, max_pixels, expected_revision, expected_sequence;
   int last_count, last_page, last_revision, last_sequence, last_complete;
   int stopped_revision, stopped_sequence;
 } txp_preview;
 
 bool txp_preview_dirty_rect(fz_context *ctx, fz_pixmap *before, fz_pixmap *after, fz_irect *rect);
 fz_buffer *txp_preview_png(fz_context *ctx, fz_pixmap *pix);
+fz_irect txp_preview_raster_size(float width, float height, int requested_width, int max_pixels);
 /* Full-page text geometry, excluding paths/images; empty if there is no text. */
 fz_rect txp_preview_text_bounds(fz_context *ctx, fz_display_list *list);
 void txp_preview_init(txp_preview *p);

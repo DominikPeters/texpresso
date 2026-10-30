@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <zlib.h>
+#include <math.h>
 #include "preview.h"
 
 static uint32_t be32(const unsigned char *p)
@@ -29,6 +30,20 @@ int main(void)
 {
   fz_context *ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
   assert(ctx);
+  /* Standard pages preserve the requested physical-pixel width; large zooms
+   * and extreme page aspect ratios always respect both hard bounds. */
+  for (int budget = 4000000; budget <= 16000000; budget *= 2) {
+    const float pages[][2] = {{595.276f,841.89f}, {612,792}, {841.89f,595.276f}, {.01f,9999999}, {9999999,.01f}};
+    for (int p = 0; p < 5; p++) for (int width = 1; width <= 4096; width += 37) {
+      fz_irect size = txp_preview_raster_size(pages[p][0], pages[p][1], width, budget);
+      assert(size.x0 == 0 && size.y0 == 0 && size.x1 > 0 && size.y1 > 0);
+      assert(size.x1 <= 8192 && size.y1 <= 8192 && (double)size.x1 * size.y1 <= budget);
+      if (p < 3 && (double)width * ceil((double)pages[p][1] * width / pages[p][0]) <= budget)
+        assert(size.x1 == width);
+    }
+  }
+  fz_irect retina = txp_preview_raster_size(595.276f, 841.89f, 2240, 16000000);
+  assert(retina.x1 == 2240 && retina.y1 == 3168);
   uint32_t random = 42;
   const int sizes[][2] = {{1,1}, {17,31}, {251,263}, {1600,2262}};
   for (int mode = 0; mode < 4; mode++) for (int i = 0; i < 4; i++) {
@@ -52,6 +67,22 @@ int main(void)
     fz_drop_pixmap(ctx, decoded); fz_drop_image(ctx, image);
     fz_drop_buffer(ctx, png); fz_drop_pixmap(ctx, original);
   }
+  /* A high-entropy Retina raster can exceed the old 16 MiB wire limit. */
+  fz_pixmap *large = fz_new_pixmap(ctx, fz_device_rgb(ctx), 2240, 3168, NULL, 0);
+  for (size_t i = 0; i < (size_t)large->stride * large->h; i++) {
+    random ^= random << 13; random ^= random >> 17; random ^= random << 5;
+    large->samples[i] = random;
+  }
+  fz_buffer *large_png = txp_preview_png(ctx, large);
+  assert(large_png->len > 16u * 1024u * 1024u && large_png->len < TXP_PREVIEW_PNG_BYTES);
+  check_chunks(large_png);
+  fz_image *large_image = fz_new_image_from_buffer(ctx, large_png);
+  fz_pixmap *large_decoded = fz_get_unscaled_pixmap_from_image(ctx, large_image);
+  assert(large_decoded->w == large->w && large_decoded->h == large->h && large_decoded->n == 3);
+  for (int y = 0; y < large->h; y++)
+    assert(!memcmp(large->samples + y * large->stride, large_decoded->samples + y * large_decoded->stride, large->w * 3));
+  fz_drop_pixmap(ctx, large_decoded); fz_drop_image(ctx, large_image);
+  fz_drop_buffer(ctx, large_png); fz_drop_pixmap(ctx, large);
   /* Padded rows occur for pixmap views; padding must not enter the stream. */
   unsigned char padded[23 * 128];
   memset(padded, 238, sizeof padded);

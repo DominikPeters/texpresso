@@ -164,6 +164,10 @@ build/test-preview-png: test/test_preview_png.c build/frontend/preview.o build/f
 	$(CC) -Isrc/frontend -Isrc/dvi -c -o build/test-preview-png.o test/test_preview_png.c
 	$(LDCC) -o $@ build/test-preview-png.o build/frontend/preview.o build/frontend/renderer.o $(LIBS)
 
+.PHONY: test-preview-limits
+test-preview-limits: texpresso
+	python3 test/test-preview-limits.py build/texpresso
+
 .PHONY: test-dvi-strokes
 test-dvi-strokes: texpresso
 	$(MAKE) -f Makefile.config -f Makefile build/test-dvi-strokes

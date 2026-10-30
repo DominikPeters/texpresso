@@ -163,7 +163,7 @@ fz_buffer *txp_preview_png(fz_context *ctx, fz_pixmap *pix)
   int started = 0;
   fz_var(buffer); fz_var(row); fz_var(started); fz_var(stream);
   fz_try(ctx) {
-    if (w < 1 || h < 1 || w > 8192 || h > 8192 || (double)w * h > 4000000 || stride < 0 || (size_t)stride < source_row_size)
+    if (w < 1 || h < 1 || w > 8192 || h > 8192 || (double)w * h > TXP_PREVIEW_MAX_PIXELS || stride < 0 || (size_t)stride < source_row_size)
       fz_throw(ctx, FZ_ERROR_GENERIC, "Invalid preview PNG dimensions");
     const unsigned char *samples = fz_pixmap_samples(ctx, pix);
     int grayscale = 1;
@@ -212,7 +212,7 @@ fz_buffer *txp_preview_png(fz_context *ctx, fz_pixmap *pix)
 }
 
 /* Exact RGB comparison, including white pixels that erase old text. One
- * retained raster is bounded by the existing four-megapixel page budget. */
+ * retained raster is bounded by the selected preview pixel budget. */
 bool txp_preview_dirty_rect(fz_context *ctx, fz_pixmap *before, fz_pixmap *after, fz_irect *rect)
 {
   if (!before || !after || before->w != after->w || before->h != after->h ||
@@ -313,6 +313,10 @@ static void export_remember(fz_context *ctx, txp_preview *p, fz_rect bounds, txp
 {
   if (!p->content_token || p->region) return;
   size_t charge=sizeof(export_entry)+(bytes?bytes->len:0)+(pixels?(size_t)pixels->stride*pixels->h:0);
+  // Large Retina rasters may exceed the unchanged 32 MiB native cache. Keep
+  // their encoded bytes when possible, without retaining the oversized pixmap.
+  if (charge > EXPORT_CACHE_BYTES && pixels) { pixels = NULL; charge = sizeof(export_entry) + (bytes ? bytes->len : 0); }
+  if (!bytes && !pixels) return;
   if (charge>EXPORT_CACHE_BYTES) return;
   if (!p->export_cache) p->export_cache=fz_malloc_struct(ctx,txp_preview_cache);
   txp_preview_cache *cache=p->export_cache;
@@ -344,6 +348,7 @@ void txp_preview_init(txp_preview *p)
 {
   memset(p, 0, sizeof *p);
   p->revision = 1;
+  p->max_pixels = TXP_PREVIEW_DEFAULT_PIXELS;
   p->last_count = p->last_page = p->last_revision = p->last_sequence = p->last_complete = -1;
   p->stopped_revision = p->stopped_sequence = -1;
 }
@@ -377,6 +382,25 @@ void txp_preview_stopped(txp_preview *p, int count)
   printf("[\"preview-stopped\",%d,%d,%d]\n", p->revision, p->sequence, count);
   p->stopped_revision = p->revision;
   p->stopped_sequence = p->sequence;
+}
+
+/* Allocate exact integer bounds: shrinking every image by 0.1% caused needless
+ * resampling even below the area cap. The requested width is already in device
+ * pixels. Keep the dimension/area guards for large zooms and unusual page sizes. */
+fz_irect txp_preview_raster_size(float w, float h, int requested_width, int max_pixels)
+{
+  max_pixels = fz_clampi(max_pixels, 1, TXP_PREVIEW_MAX_PIXELS);
+  double scale = fmin((double)requested_width / w, sqrt((double)max_pixels / ((double)w * h)));
+  scale = fmin(scale, 8192.0 / fmax(w, h));
+  int width = fz_clampi((int)floor(w * scale + 1e-6), 1, 8192);
+  int height = fz_maxi(1, (int)fmin(8192.0, ceil((double)h * width / w)));
+  while ((double)width * height > max_pixels) {
+    if (width > 1) {
+      width--;
+      height = fz_maxi(1, (int)fmin(8192.0, ceil((double)h * width / w)));
+    } else height = max_pixels;
+  }
+  return (fz_irect){0, 0, width, height};
 }
 
 void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, int page, txp_renderer *renderer)
@@ -473,15 +497,12 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     if (p->automatic) fallback = NULL; /* PNG is an ordinary Auto choice. */
     if (!svg)
     {
-      if (!pix) {
+      if (!pix && !png) {
       double draw_start = txp_profile_now();
-      float scale = fminf(p->width / w, sqrtf(4000000.0f / (w * h)));
-      scale = fminf(scale, 8192.0f / fmaxf(w, h));
-      /* Leave room for outward rounding of the raster bounds. */
-      scale *= 0.999f;
+      fz_irect bbox = txp_preview_raster_size(w, h, p->width, p->max_pixels);
+      float scale = fminf((float)bbox.x1 / w, (float)bbox.y1 / h);
       fz_matrix ctm = fz_concat(fz_translate(-b.x0, -b.y0), fz_scale(scale, scale));
       /* Allocate only the clipped region, never a full page at loupe resolution. */
-      fz_irect bbox = fz_round_rect(fz_transform_rect(b, ctm));
       pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), bbox, NULL, 0);
       fz_clear_pixmap_with_value(ctx, pix, 255);
       dev = fz_new_draw_device(ctx, fz_identity, pix);
@@ -492,9 +513,9 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
       txp_renderer_colorize_rgb(ctx, renderer, pix);
       txp_profile_record("png-color", color_start, p->request, page, 0);
       }
-      image_width = fz_pixmap_width(ctx, pix); image_height = fz_pixmap_height(ctx, pix);
+      if (pix) { image_width = fz_pixmap_width(ctx, pix); image_height = fz_pixmap_height(ctx, pix); }
       double compare_start = txp_profile_now();
-      patch = p->patches && !p->background && !p->region && p->patch_base > 0 && p->patch_base == p->previous_id &&
+      patch = pix && p->patches && !p->background && !p->region && p->patch_base > 0 && p->patch_base == p->previous_id &&
         page == p->previous_page && b.x0 == p->previous_bounds.x0 && b.y0 == p->previous_bounds.y0 &&
         b.x1 == p->previous_bounds.x1 && b.y1 == p->previous_bounds.y1 &&
         txp_preview_dirty_rect(ctx, p->previous_png, pix, &dirty) &&
@@ -522,7 +543,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     else if (!patch && !cached->bytes) export_remember(ctx,p,b,config,png,pix,svg,svg_eligible,vector_cost,fallback,image_width,image_height);
     unsigned char *data;
     size_t len = fz_buffer_storage(ctx, png, &data);
-    if (len > 16 * 1024 * 1024)
+    if (len > (svg || p->max_pixels <= TXP_PREVIEW_DEFAULT_PIXELS ? 16u * 1024u * 1024u : TXP_PREVIEW_PNG_BYTES))
       fz_throw(ctx, FZ_ERROR_GENERIC, "Preview image exceeds the transfer budget");
     fz_rect text_bounds = fz_empty_rect;
     if (!p->region) {
