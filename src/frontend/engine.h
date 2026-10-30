@@ -61,9 +61,10 @@ void txp_engine_cancel_prepare(txp_engine *self);
 
 // Only an explicit worker result completes a TeX pass. Socket closure alone
 // may mean an error, crash, or edit cancellation and must not promote aux data.
+// RECOVERED establishes final pagination but must not promote auxiliary output.
 typedef enum txp_pass_status {
   TXP_PASS_UNKNOWN, TXP_PASS_RUNNING, TXP_PASS_SUCCEEDED,
-  TXP_PASS_FAILED, TXP_PASS_CANCELLED
+  TXP_PASS_FAILED, TXP_PASS_CANCELLED, TXP_PASS_RECOVERED
 } txp_pass_status;
 txp_pass_status txp_engine_pass_status(txp_engine *self);
 // True while a TeX root greeting or failed-start cleanup needs event-loop progress.

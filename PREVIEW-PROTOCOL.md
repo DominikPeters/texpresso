@@ -86,8 +86,11 @@ notifications describe availability and navigation:
 Successful auxiliary convergence retains its exact physical page total before
 restoring a live compiler checkpoint for editing. `preview-state.complete` and
 its count remain exact during that restoration and cursor prewarming. A real
-source invalidation or new finishing pass clears the retained total. A failed
-pass never sets `complete:true`.
+source invalidation or new finishing pass clears the retained total. A pass
+that reaches final output with recoverable TeX errors also sets
+`complete:true`: its physical page total is known, while compiler diagnostics
+remain visible and auxiliary output is not promoted. Fatal, truncated, crashed
+or cancelled passes never establish a completed total.
 
 The revision is deliberately conservative: edits, rescans, reruns, and detected
 dependency changes invalidate the current display-list snapshot. Keep any old

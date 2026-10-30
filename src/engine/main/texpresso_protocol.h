@@ -91,7 +91,7 @@ bool txp_gpic(txp_client *client, const char *path, int typ, int page, float *bo
 void txp_spic(txp_client *client, const char *path, int typ, int page, const float *bounds);
 
 // Report a completed compiler pass after all output writes.
-void txp_finish(txp_client *client, bool success);
+void txp_finish(txp_client *client, bool success, bool completed);
 
 // Fork the client
 pid_t txp_fork(txp_client *client);

@@ -12,11 +12,11 @@ Implementations:
 
 ## Communication
 
-First, the client writes `TEXPRESSOC02` and the server writes `TEXPRESSOS02`.
+First, the client writes `TEXPRESSOC03` and the server writes `TEXPRESSOS03`.
 
-Then the server reads `TEXPRESSOC02` and the client reads `TEXPRESSOS02`. If any of these fails, the client aborts or is killed by the server.
+Then the server reads `TEXPRESSOC03` and the client reads `TEXPRESSOS03`. If any of these fails, the client aborts or is killed by the server.
 
-Version 02 requires an explicit `FINI` result after each compiler pass. A frontend and worker with different handshake versions reject each other; install or rebuild both executables together. This internal version is independent of the extension-facing `previewProtocol` capability.
+Version 03 distinguishes final output with recoverable TeX errors from a fatal or interrupted pass using the `FINI` result. A frontend and worker with different handshake versions reject each other; install or rebuild both executables together. This internal version is independent of the extension-facing `previewProtocol` capability.
 
 After that, the protocol is a serie of questions and answers mostly driven by the client with occasional requests from the server. 
 
@@ -72,8 +72,8 @@ Client queries:
   "Get pic [boundaries]". If the file as path has not changed and is queried for a type and page that was previously stored using `SPIC`, the previous boundaries should be returned; it is always safe to `PASS`, but that can affect the performance.
   
 
-- `FINI(SUCCESS: INT) -> DONE`
-  Sent after all pass output. `SUCCESS` is 1 for spotless execution or warnings, and 0 for TeX errors or fatal failure. EOF without `FINI` is not successful completion. Only a successful pass may promote auxiliary output for subsequent passes; cancellation retains the last completed input.
+- `FINI(RESULT: INT) -> DONE`
+  Sent after all pass output. `RESULT` is 1 for spotless execution or warnings, 2 for completed output with recoverable TeX errors, and 0 for fatal failure. Results 1 and 2 establish the final physical page count; only result 1 is successful auxiliary output. EOF without `FINI` is not successful completion. Only a successful pass may promote auxiliary output for subsequent passes; cancellation retains the last completed input.
 
 Server queries:
 

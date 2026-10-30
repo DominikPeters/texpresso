@@ -167,7 +167,7 @@ static bool document_complete(txp_engine *engine)
 {
   enum txp_pass_status pass = txp_engine_pass_status(engine);
   return send(get_status, engine) == DOC_TERMINATED &&
-    (pass == TXP_PASS_SUCCEEDED || pass == TXP_PASS_UNKNOWN);
+    (pass == TXP_PASS_SUCCEEDED || pass == TXP_PASS_RECOVERED || pass == TXP_PASS_UNKNOWN);
 }
 
 
