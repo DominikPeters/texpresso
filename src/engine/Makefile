@@ -70,14 +70,16 @@ distclean:
 $(BUILD)/$(XETEX_BIN): $(OBJECTS) $(BUILD)/common/libcommon.a
 	$(_LD) -o $@ $^ $(LDFLAGS)
 
+$(OBJECTS): engine/xetex_format.h engine/xetex_bindings.h engine/xetex-constants.h
+
 $(BUILD)/%.o: %.c | $(BUILD_DIRS)
-	$(_CC) $(CFLAGS) -I../include -c -o $@ $^
+	$(_CC) $(CFLAGS) -I../include -c -o $@ $<
 
 $(BUILD)/%.o: %.cpp | $(BUILD_DIRS)
-	$(_CXX) $(CXXFLAGS) -I../include -c -o $@ $^
+	$(_CXX) $(CXXFLAGS) -I../include -c -o $@ $<
 
 $(BUILD)/%.o: %.mm | $(BUILD_DIRS)
-	$(_CXX) $(CXXFLAGS) -I../include -c -o $@ $^
+	$(_CXX) $(CXXFLAGS) -I../include -c -o $@ $<
 
 $(BUILD)/common/libcommon.a:
 	$(MAKE) -C ../common

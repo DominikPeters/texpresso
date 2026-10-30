@@ -2023,6 +2023,15 @@ void print_param(int32_t n)
         print_esc_cstr("errorcontextlines");
         break;
     /* Tectonic: MLTeX char_sub* params permanently removed */
+    case INT_PAR__partoken_context:
+        print_esc_cstr("partokencontext");
+        break;
+    case INT_PAR__show_stream:
+        print_esc_cstr("showstream");
+        break;
+    case INT_PAR__ignore_primitive_error:
+        print_esc_cstr("ignoreprimitiveerror");
+        break;
     case INT_PAR__tracing_stack_levels:
         print_esc_cstr("tracingstacklevels");
         break;
@@ -3584,6 +3593,9 @@ print_cmd_chr(uint16_t cmd, int32_t chr_code)
 
     case EXTENSION:
         switch (chr_code) {
+        case PARTOKEN_NAME_CODE:
+            print_esc_cstr("partokenname");
+            break;
         case OPEN_NODE:
             print_esc_cstr("openout");
             break;
@@ -3822,7 +3834,7 @@ int32_t prim_lookup(str_number s)
 
     while (true) {
         if (prim[p].s1 > 65536L) {
-            if (length(prim[p].s1) - 1 == l) {
+            if (length(prim[p].s1 - 1) == l) {
                     if (str_eq_str(prim[p].s1 - 1, s))
                         goto found;
             }
@@ -13069,7 +13081,7 @@ done:
 void init_span(int32_t p)
 {
     push_nest();
-    if (cur_list.mode == -104)
+    if (cur_list.mode == -HMODE)
         cur_list.aux.b32.s0 = 1000;
     else {
 
@@ -13082,8 +13094,8 @@ void init_span(int32_t p)
 void init_row(void)
 {
     push_nest();
-    cur_list.mode = (-105) - cur_list.mode;
-    if (cur_list.mode == -104)
+    cur_list.mode = -(HMODE + VMODE) - cur_list.mode;
+    if (cur_list.mode == -HMODE)
         cur_list.aux.b32.s0 = 0;
     else
         cur_list.aux.b32.s1 = 0;
@@ -13179,7 +13191,7 @@ bool fin_col(void)
         unsave();
         new_save_level(ALIGN_GROUP);
         {
-            if (cur_list.mode == -104) {
+            if (cur_list.mode == -HMODE) {
                 adjust_tail = cur_tail;
                 pre_adjust_tail = cur_pre_tail;
                 u = hpack(mem[cur_list.head].b32.s1, 0, ADDITIONAL);
@@ -13264,7 +13276,7 @@ void fin_row(void)
 {
     int32_t p;
 
-    if (cur_list.mode == -104) {
+    if (cur_list.mode == -HMODE) {
         p = hpack(mem[cur_list.head].b32.s1, 0, ADDITIONAL);
         pop_nest();
         if (cur_pre_head != cur_pre_tail) {
@@ -13960,16 +13972,24 @@ update_heights: /*1011: */
             active_width[2 + mem[q].b16.s1] = active_width[2 + mem[q].b16.s1] + mem[q + 2].b32.s1;
             active_width[6] = active_width[6] + mem[q + 3].b32.s1;
             if ((mem[q].b16.s0 != NORMAL) && (mem[q + 3].b32.s1 != 0)) {
-                error_here_with_diagnostic("Infinite glue shrinkage found in box being split");
-                capture_to_diagnostic(NULL);
-                {
-                    help_ptr = 4;
-                    help_line[3] = "The box you are \\vsplitting contains some infinitely";
-                    help_line[2] = "shrinkable glue, e.g., `\\vss' or `\\vskip 0pt minus 1fil'.";
-                    help_line[1] = "Such glue doesn't belong there; but you can safely proceed,";
-                    help_line[0] = "since the offensive shrinkability has been made finite.";
+                if (INTPAR(ignore_primitive_error) & 1) {
+                    const int saved_selector = selector;
+                    selector = SELECTOR_LOG_ONLY;
+                    print_ln();
+                    print_cstr("ignored: Infinite glue shrinkage found in box being split");
+                    selector = saved_selector;
+                } else {
+                    error_here_with_diagnostic("Infinite glue shrinkage found in box being split");
+                    capture_to_diagnostic(NULL);
+                    {
+                        help_ptr = 4;
+                        help_line[3] = "The box you are \\vsplitting contains some infinitely";
+                        help_line[2] = "shrinkable glue, e.g., `\\vss' or `\\vskip 0pt minus 1fil'.";
+                        help_line[1] = "Such glue doesn't belong there; but you can safely proceed,";
+                        help_line[0] = "since the offensive shrinkability has been made finite.";
+                    }
+                    error();
                 }
-                error();
                 r = new_spec(q);
                 GLUE_SPEC_shrink_order(r) = NORMAL;
                 delete_glue_ref(q);
@@ -14725,7 +14745,7 @@ void package(small_number c)
     save_ptr = save_ptr - 3;
     v = INTPAR(xetex_upwards);
     INTPAR(xetex_upwards) = u;
-    if (cur_list.mode == -104)
+    if (cur_list.mode == -HMODE)
         cur_box = hpack(mem[cur_list.head].b32.s1, save_stack[save_ptr + 2].b32.s1, save_stack[save_ptr + 1].b32.s1);
     else {
 
@@ -15148,7 +15168,7 @@ void append_discretionary(void)
         new_save_level(DISC_GROUP);
         scan_left_brace();
         push_nest();
-        cur_list.mode = -104;
+        cur_list.mode = -HMODE;
         cur_list.aux.b32.s0 = 1000;
     }
 }
@@ -15254,7 +15274,7 @@ done:
     new_save_level(DISC_GROUP);
     scan_left_brace();
     push_nest();
-    cur_list.mode = -104;
+    cur_list.mode = -HMODE;
     cur_list.aux.b32.s0 = 1000;
 }
 
@@ -15440,7 +15460,7 @@ void cs_error(void)
 void push_math(group_code c)
 {
     push_nest();
-    cur_list.mode = -207;
+    cur_list.mode = -MMODE;
     cur_list.aux.b32.s1 = TEX_NULL;
     new_save_level(c);
 }
@@ -16246,6 +16266,17 @@ shift_case(void)
 }
 
 
+static bool show_stream_open(void)
+{
+    return INTPAR(show_stream) >= 0 && INTPAR(show_stream) < SELECTOR_NO_PRINT
+        && write_open[INTPAR(show_stream)];
+}
+
+static void select_show_stream(void)
+{
+    if (show_stream_open()) selector = INTPAR(show_stream);
+}
+
 void show_whatever(void)
 {
     int32_t p;
@@ -16254,12 +16285,13 @@ void show_whatever(void)
     int32_t l;
     int32_t n;
 
-    // In all cases we eventually call error().
-    diagnostic_begin_capture_warning_here();
+    const bool redirected = show_stream_open();
+    if (!redirected) diagnostic_begin_capture_warning_here();
 
     switch (cur_chr) {
     case 3:
         {
+            select_show_stream();
             begin_diagnostic();
             show_activities();
         }
@@ -16277,6 +16309,7 @@ void show_whatever(void)
                 else
                     p = mem[cur_ptr + 1].b32.s1;
             }
+            select_show_stream();
             begin_diagnostic();
             print_nl_cstr("> \\box");
             print_int(cur_val);
@@ -16290,6 +16323,7 @@ void show_whatever(void)
     case 0:
         {
             get_token();
+            select_show_stream();
             print_nl_cstr("> ");
             if (cur_cs != 0) {
                 sprint_cs(cur_cs);
@@ -16301,12 +16335,14 @@ void show_whatever(void)
         break;
     case 4:
         {
+            select_show_stream();
             begin_diagnostic();
             show_save_groups();
         }
         break;
     case 6:
         {
+            select_show_stream();
             begin_diagnostic();
             print_nl_cstr("");
             print_ln();
@@ -16348,6 +16384,7 @@ void show_whatever(void)
     default:
         {
             p = the_toks();
+            select_show_stream();
             print_nl_cstr("> ");
             token_show(TEMP_HEAD);
             flush_list(mem[TEMP_HEAD].b32.s1);
@@ -16374,6 +16411,12 @@ void show_whatever(void)
     }
 
 common_ending:
+    if (redirected) {
+        print_ln();
+        selector = log_opened ? SELECTOR_TERM_AND_LOG : SELECTOR_TERM_ONLY;
+        if (interaction == BATCH_MODE) selector--;
+        return;
+    }
     capture_to_diagnostic(NULL); // calling with null twice is fine
     if (interaction < ERROR_STOP_MODE) {
         help_ptr = 0;
@@ -16427,6 +16470,14 @@ void do_extension(void)
     int32_t p;
 
     switch (cur_chr) {
+    case PARTOKEN_NAME_CODE:
+        get_token();
+        if (cur_cs > 0) {
+            /* Web2C specifies a global setting, including control symbols. */
+            par_loc = cur_cs;
+            par_token = cur_tok;
+        }
+        break;
     case OPEN_NODE:
         {
             new_write_whatsit(OPEN_NODE_SIZE);
@@ -16699,6 +16750,20 @@ tt_insert_special(const char *ascii_text)
     begin_token_list(toklist_start, INSERTED);
 }
 
+/* Web2C partoken.ch: emit the configurable paragraph hook before closing
+ * selected vertical contexts, rather than ending the paragraph directly. */
+static bool
+insert_par_token(int threshold)
+{
+    if (INTPAR(partoken_context) <= threshold || cur_list.mode != HMODE)
+        return false;
+    back_input();
+    cur_tok = par_token;
+    back_input();
+    cur_input.index = INSERTED;
+    return true;
+}
+
 void
 handle_right_brace(void)
 {
@@ -16737,16 +16802,19 @@ handle_right_brace(void)
         break;
 
     case VBOX_GROUP:
+        if (insert_par_token(0)) break;
         end_graf();
         package(0);
         break;
 
     case VTOP_GROUP:
+        if (insert_par_token(0)) break;
         end_graf();
         package(VTOP_CODE);
         break;
 
     case INSERT_GROUP:
+        if (insert_par_token(1)) break;
         end_graf();
         q = GLUEPAR(split_top_skip);
         GLUE_SPEC_ref_count(q)++;
@@ -16782,6 +16850,7 @@ handle_right_brace(void)
         break;
 
     case OUTPUT_GROUP: /*1062:*/
+        if (insert_par_token(1)) break;
         if (cur_input.loc != TEX_NULL || (cur_input.index != OUTPUT_TEXT && cur_input.index != BACKED_UP)) {
             error_here_with_diagnostic("Unbalanced output routine");
             capture_to_diagnostic(NULL);
@@ -16853,12 +16922,14 @@ handle_right_brace(void)
         break;
 
     case NO_ALIGN_GROUP:
+        if (insert_par_token(1)) break;
         end_graf();
         unsave();
         align_peek();
         break;
 
     case VCENTER_GROUP:
+        if (insert_par_token(0)) break;
         end_graf();
         unsave();
         save_ptr = save_ptr - 2;
@@ -17273,6 +17344,7 @@ reswitch:
 
     case VMODE + ENDV:
     case HMODE + ENDV:
+        if (insert_par_token(1)) break;
         do_endv();
         break;
 
