@@ -310,7 +310,8 @@ print_cstr(const char* str)
 void
 print_nl(str_number s)
 {
-    if (((term_offset > 0) && (odd(selector))) || ((file_offset > 0) && (selector >= SELECTOR_LOG_ONLY)))
+    if (selector < SELECTOR_NO_PRINT || ((term_offset > 0) && odd(selector))
+        || ((file_offset > 0) && selector >= SELECTOR_LOG_ONLY))
         print_ln();
     print(s);
 }
@@ -318,7 +319,8 @@ print_nl(str_number s)
 void
 print_nl_cstr(const char* str)
 {
-    if (((term_offset > 0) && (odd(selector))) || ((file_offset > 0) && (selector >= SELECTOR_LOG_ONLY)))
+    if (selector < SELECTOR_NO_PRINT || ((term_offset > 0) && odd(selector))
+        || ((file_offset > 0) && selector >= SELECTOR_LOG_ONLY))
         print_ln();
     print_cstr(str);
 }

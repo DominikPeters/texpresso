@@ -1,5 +1,12 @@
 # NEXT
 
+- Port Web2C paragraph-token hooks (`partokenname`, `partokencontext`),
+  `showstream`, and XeTeX's bit-1 `ignoreprimitiveerror` handling for `vsplit`.
+- Fix primitive-name lookup, including `ifprimitive` and `primitive` queries.
+- Use TeXpresso format serial 1001 with versioned cache names; existing format
+  caches regenerate automatically without replacing another engine's cache.
+- Add behavior comparisons against installed XeLaTeX (`make test-engine-compat`).
+
 - fix TeX build date to use SOURCE_DATE_EPOCH if set, otherwise falling back to
   the current date (previously hardcoded to Feb 8, 2025).
 - fix zealous JSON escaping

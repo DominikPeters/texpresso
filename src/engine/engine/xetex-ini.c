@@ -15,6 +15,9 @@
 #include "xetex-synctex.h"
 #include "dpx-pdfobj.h" /* pdf_files_{init,close} */
 #include "xetex_bindings.h" /* FORMAT_SERIAL */
+#if FORMAT_SERIAL != TECTONIC_FORMAT_VERSION
+#error "Engine format layout and serialized format version must match"
+#endif
 
 /* All the following variables are declared in xetex-xetexd.h */
 bool shell_escape_enabled = false;
@@ -2670,7 +2673,7 @@ load_fmt_file(void)
         undump_things(eqtb[EQTB_SIZE + 1], hash_high);
 
     undump_int(x);
-    if (x < HASH_BASE || x > hash_top)
+    if (x < ACTIVE_BASE || x > hash_top)
         goto bad_fmt;
     else
         par_loc = x;
@@ -3352,6 +3355,7 @@ initialize_more_initex_variables(void)
         DEL_CODE(k) = -1;
 
     DEL_CODE(46 /* '.' */) = 0;
+    INTPAR(show_stream) = -1;
 
     for (k = DIMEN_BASE; k <= EQTB_SIZE; k++)
         eqtb[k].b32.s1 = 0;

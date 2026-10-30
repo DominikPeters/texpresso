@@ -17,6 +17,7 @@
 #include "texpresso_protocol.h"
 #include "common.h"
 #include "../engine/xetex-xetexd.h"
+#include "../engine/xetex_bindings.h"
 #define LOG 0
 
 /**
@@ -873,7 +874,8 @@ static void usage(char *argv0)
 
 static const char *format_path(const char *ext)
 {
-  const char *prefix = use_texlive ? "texlive-" : "tectonic-";
+  char prefix[64];
+  snprintf(prefix, sizeof prefix, "%s-v%d-", use_texlive ? "texlive" : "tectonic", FORMAT_SERIAL);
   if (!ext || (*ext == '.' || *ext == '-'))
     return cache_path("format", prefix, format_name, ext);
   else

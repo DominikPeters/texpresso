@@ -322,7 +322,7 @@
 #define RADICALDISPLAYSTYLEVERTICALGAP 50
 #define RADICALRULETHICKNESS 51
 #define COND_MATH_GLUE 98
-#define MAX_COMMAND 102
+/* MAX_COMMAND is defined by the format layout in xetex_format.h. */
 #define DIMEN_VAL_LIMIT 128
 #define BIGGEST_LANG 255
 #define MU_VAL_LIMIT 256

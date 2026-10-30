@@ -98,3 +98,35 @@ To detect version changes, requests can be recorded:
   engine
 
 ## Generation of Formats
+
+
+## Engine compatibility and format caches
+
+The provider supplies packages and fonts, while the compiler is the embedded
+XeTeX fork. Updating TeX Live does not update its built-in primitives.
+
+The core includes the Web2C `partoken.ch` behavior (public domain, Petr Olsak,
+2021): `partokenname` globally selects the automatically inserted paragraph
+control sequence, and the scoped integer `partokencontext` controls insertion
+at ordinary boundaries (0), vertical boxes/centers (1), and insertion/output/
+alignment contexts (2). It also includes `showstream.ch` behavior (public domain,
+Marcel Krüger, 2021) for redirecting show diagnostics to an open write stream.
+As in XeTeX 0.999998, bit 1 of `ignoreprimitiveerror` suppresses the recoverable
+infinite-shrinkage error in `vsplit`, recording an `ignored:` line only in the
+log. Other primitive errors retain their normal handling.
+
+`xetex_format.h` began as the generated Tectonic format-33 header. TeXpresso now
+maintains its own layout: three appended integer parameters shift the following
+equivalence-table regions. The derived bases are expressions so that storage,
+scoping, and serialization agree. `partokenname` uses a non-node extension opcode
+internally, preserving the original command and mode numbering. The format serial
+is 1001, checked against `xetex_bindings.h`; bump it when changing stored layout.
+Cache filenames contain this serial, so an old format is neither reused nor
+replaced during migration. Incremental builds track the layout headers.
+
+Run `python3 test/test-engine-compat.py --worker build/texpresso-xetex
+--reference /path/to/xelatex`, optionally adding `--old-worker /path/to/old/worker`
+to check cache migration. The tests use temporary documents and private caches,
+compare all paragraph contexts and redirected diagnostics against XeLaTeX, and
+cover scoping, control-symbol paragraph names, primitive identity/redefinition,
+error suppression, `microtype` titles/footnotes, and repeated format loads.
