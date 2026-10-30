@@ -136,7 +136,7 @@ typedef struct {
       int fd;
       int pid;
     } chld;
-    struct { int success; } fini;
+    struct { int result; } fini;
     struct {
       char *path;
       int type, page;

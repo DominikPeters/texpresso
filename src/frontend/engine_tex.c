@@ -407,7 +407,8 @@ static bool read_query(struct tex_engine *self, channel_t *t, query_t *q)
   {
     if (p->pass_status == TXP_PASS_RUNNING)
       p->pass_status = TXP_PASS_FAILED;
-    fprintf(stderr, "[pass] %s\n", p->pass_status == TXP_PASS_SUCCEEDED ? "succeeded" : "failed");
+    fprintf(stderr, "[pass] %s\n", p->pass_status == TXP_PASS_SUCCEEDED ? "succeeded"
+                    : p->pass_status == TXP_PASS_RECOVERED ? "completed with errors" : "failed");
     fprintf(stderr, "[process] terminating process\n");
     if (self->prepare.retained_fence) {
       self->fence_pos = -1;
@@ -1125,7 +1126,8 @@ static void answer_query_impl(fz_context *ctx, struct tex_engine *self, query_t 
     }
 
     case Q_FINI:
-      p->pass_status = q->fini.success ? TXP_PASS_SUCCEEDED : TXP_PASS_FAILED;
+      p->pass_status = q->fini.result == 1 ? TXP_PASS_SUCCEEDED
+                     : q->fini.result == 2 ? TXP_PASS_RECOVERED : TXP_PASS_FAILED;
       a.tag = A_DONE;
       channel_write_answer(self->c, p->fd, &a);
       break;
