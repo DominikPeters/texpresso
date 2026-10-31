@@ -113,6 +113,7 @@ static float engine_scale_factor(txp_engine *_self)
 
 static synctex_t *engine_synctex(txp_engine *_self, fz_buffer **buf)
 {
+  if (buf) *buf = NULL;
   return NULL;
 }
 

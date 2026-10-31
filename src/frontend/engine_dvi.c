@@ -53,7 +53,7 @@ static fz_display_list *engine_render_page(txp_engine *_self,
 {
   SELF;
   float width, height;
-  incdvi_page_dim(self->dvi, self->buffer, index, &width, &height, NULL);
+  incdvi_page_dim(ctx, self->dvi, self->buffer, index, &width, &height, NULL);
   fz_rect box = fz_make_rect(0, 0, width, height);
   fz_display_list *dl = fz_new_display_list(ctx, box);
   fz_device *dev = fz_new_list_device(ctx, dl);
@@ -103,6 +103,7 @@ static float engine_scale_factor(txp_engine *_self)
 
 static synctex_t *engine_synctex(txp_engine *_self, fz_buffer **buf)
 {
+  if (buf) *buf = NULL;
   return NULL;
 }
 

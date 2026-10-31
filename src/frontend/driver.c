@@ -28,7 +28,9 @@
 #include "logo.h"
 #include "driver.h"
 #include "preview.h"
+#include "txp_error.h"
 #include <errno.h>
+#include <stdint.h>
 
 #ifdef __APPLE__
 #include <sys/syslimits.h>
@@ -104,6 +106,17 @@ static bool should_reload_binary(void)
   return 0;
 }
 
+static void report_engine_failure(fz_context *ctx, bool headless)
+{
+  const char *message = txp_take_error(ctx);
+  fprintf(stderr, "[fatal] TeXpresso engine failure: %s\n", message);
+  if (!headless) return;
+  // Reporting must also work when the original error was allocation failure.
+  fputs("[\"engine-error\",", stdout);
+  txp_write_json_string(stdout, message);
+  fputs("]\n", stdout); fflush(stdout);
+}
+
 static void usage(void)
 {
   fprintf(stderr,
@@ -143,7 +156,7 @@ int main(int argc, const char **argv)
   if (!getcwd(work_dir, PATH_MAX))
   {
     perror("get working directory");
-    abort();
+    return 1;
   }
 
   fprintf(stderr, "[info] working directory: %s\n", work_dir);
@@ -153,7 +166,7 @@ int main(int argc, const char **argv)
   if (!get_executable_path(exe_path) && !realpath(argv[0], exe_path))
   {
     perror("finding executable path");
-    abort();
+    return 1;
   }
   fprintf(stderr, "[info] executable path: %s\n", exe_path);
 
@@ -168,7 +181,7 @@ int main(int argc, const char **argv)
   bool capabilities = 0;
   int preview_max_pixels = TXP_PREVIEW_DEFAULT_PIXELS;
 
-  int inclusion_path_size = 1;
+  size_t inclusion_path_size = 1;
   for (int i = 1; i < argc; i++)
   {
     const char *arg = argv[i];
@@ -203,7 +216,12 @@ int main(int argc, const char **argv)
           usage();
           exit(1);
         }
-        inclusion_path_size += 1 + strlen(argv[i]);
+        size_t length = strlen(argv[i]);
+        if (length > SIZE_MAX - inclusion_path_size - 1) {
+          fprintf(stderr, "[error] Include path list is too large\n");
+          return 1;
+        }
+        inclusion_path_size += 1 + length;
       }
       else if (strcmp(arg, "-lines") == 0)
       {
@@ -272,7 +290,10 @@ int main(int argc, const char **argv)
   }
 
   char *inclusion_path = malloc(inclusion_path_size);
-  if (!inclusion_path) abort();
+  if (!inclusion_path) {
+    fprintf(stderr, "[error] Could not allocate include path list\n");
+    return 1;
+  }
 
   char *p = inclusion_path;
   for (int i = 1; i < argc; i++)
@@ -301,13 +322,22 @@ int main(int argc, const char **argv)
     else
     {
       perror("finding document path");
-      abort();
+      free(inclusion_path);
+      return 1;
     }
   }
 
   char *doc_name = last_index(doc_path, '/');
-  if (doc_path == doc_name) abort();
-  doc_name[-1] = '\x00';
+  if (doc_path == doc_name) {
+    fprintf(stderr, "[error] Document path has no parent directory: %s\n", doc_path);
+    free(inclusion_path);
+    return 1;
+  }
+  char doc_name_buffer[PATH_MAX];
+  snprintf(doc_name_buffer, sizeof doc_name_buffer, "%s", doc_name);
+  if (doc_name == doc_path + 1) doc_path[1] = '\x00';
+  else doc_name[-1] = '\x00';
+  doc_name = doc_name_buffer;
 
   fprintf(stderr, "[info] document path: %s\n", doc_path);
   fprintf(stderr, "[info] document name: %s\n", doc_name);
@@ -315,11 +345,22 @@ int main(int argc, const char **argv)
   if (chdir(doc_path) == -1)
   {
     perror("chdir to document path");
-    abort();
+    free(inclusion_path);
+    return 1;
   }
 
   fz_context *ctx = fz_new_context(NULL, NULL, FZ_STORE_DEFAULT);
-  fz_register_document_handlers(ctx);
+  if (!ctx) {
+    fprintf(stderr, "[error] Could not create MuPDF context\n");
+    free(inclusion_path);
+    return 1;
+  }
+  fz_try(ctx) { fz_register_document_handlers(ctx); }
+  fz_catch(ctx) {
+    report_engine_failure(ctx, headless);
+    fz_drop_context(ctx); free(inclusion_path);
+    return 1;
+  }
 
   bool init = 0;
 
@@ -327,15 +368,21 @@ int main(int argc, const char **argv)
   if (init == 0 && SDL_Init(headless ? (SDL_INIT_EVENTS | SDL_INIT_TIMER) : SDL_INIT_VIDEO) < 0)
   {
     fprintf(stderr, "SDL could not initialize! SDL_Error: %s\n", SDL_GetError());
-    abort();
+    fz_drop_context(ctx); free(inclusion_path);
+    return 1;
   }
 
   custom_event = SDL_RegisterEvents(1);
+  if (custom_event == (Uint32)-1) {
+    fprintf(stderr, "[error] Could not register SDL engine event: %s\n", SDL_GetError());
+    SDL_Quit(); fz_drop_context(ctx); free(inclusion_path);
+    return 1;
+  }
   signal(SIGUSR1, signal_usr1);
 
   //Create window
-  char window_title[128] = "TeXpresso ";
-  strcat(window_title, doc_name);
+  char window_title[128];
+  snprintf(window_title, sizeof window_title, "TeXpresso %.116s", doc_name);
 
 #if SDL_VERSION_ATLEAST(2, 0, 8)
   SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
@@ -354,7 +401,8 @@ int main(int argc, const char **argv)
     if (window == NULL)
     {
       fprintf(stderr, "Window could not be created! SDL_Error: %s\n", SDL_GetError() );
-      abort();
+      SDL_Quit(); fz_drop_context(ctx); free(inclusion_path);
+      return 1;
     }
 
     SDL_Surface *logo = texpresso_logo();
@@ -369,7 +417,11 @@ int main(int argc, const char **argv)
     SDL_FreeSurface(logo);
 
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE);
-    if (!renderer) { fprintf(stderr, "SDL renderer: %s\n", SDL_GetError()); return 1; }
+    if (!renderer) {
+      fprintf(stderr, "SDL renderer: %s\n", SDL_GetError());
+      SDL_DestroyWindow(window); SDL_Quit(); fz_drop_context(ctx); free(inclusion_path);
+      return 1;
+    }
   }
 
   struct persistent_state pstate = {
@@ -401,6 +453,8 @@ int main(int argc, const char **argv)
 
   int exit_code = 0;
 
+  fz_var(exit_code);
+  fz_try(ctx) {
   if (initialize_only)
   {
     exit_code = texpresso_main(&pstate);
@@ -411,11 +465,19 @@ int main(int argc, const char **argv)
     while (texpresso_main(&pstate))
       ;
   }
+  }
+  fz_catch(ctx) {
+    // A known library/input error must not become an uncaught-exception abort.
+    // Stop this session: compiler/VFS mutations may already have taken place.
+    report_engine_failure(ctx, headless);
+    exit_code = 1;
+  }
 
   if (renderer) SDL_DestroyRenderer(renderer);
   if (window) SDL_DestroyWindow(window);
   SDL_Quit();
   fz_drop_context(ctx);
+  free(inclusion_path);
 
   return exit_code;
 }

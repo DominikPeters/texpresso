@@ -138,7 +138,8 @@ void incdvi_update(fz_context *ctx, incdvi_t *d, fz_buffer *buf)
 
   if (d->offset == 0)
   {
-    if (d->page_len != 0) abort();
+    if (d->page_len != 0)
+      fz_throw(ctx, FZ_ERROR_GENERIC, "Inconsistent DVI page index");
     int plen = dvi_preamble_size(buf->data, len);
     if (plen > 0)
     {
@@ -161,9 +162,9 @@ void incdvi_update(fz_context *ctx, incdvi_t *d, fz_buffer *buf)
         break;
       if (buf->data[d->offset] == BOP || buf->data[d->offset] == EOP)
       {
+        if (!(d->page_len & 1) != (buf->data[d->offset] == BOP))
+          fz_throw(ctx, FZ_ERROR_GENERIC, "Unexpected DVI page boundary at byte %d", d->offset);
         int page = add_page(ctx, d);
-        if (!(page & 1) != (buf->data[d->offset] == BOP))
-          abort();
         d->pages[page] = d->offset;
       }
       int op = buf->data[d->offset];
@@ -205,7 +206,8 @@ int incdvi_page_count(incdvi_t *d)
 
 static void incdvi_parse_fontdef(fz_context *ctx, incdvi_t *restrict d, fz_buffer *buf, int offset)
 {
-  if (offset > buf->len) abort();
+  if (!buf || offset < 0 || offset > buf->len)
+    fz_throw(ctx, FZ_ERROR_GENERIC, "DVI font definitions are outside the available output");
   enum dvi_version version = dvi_context_state(d->dc)->version;
   while (d->fontdef_offset < offset)
   {
@@ -214,7 +216,7 @@ static void incdvi_parse_fontdef(fz_context *ctx, incdvi_t *restrict d, fz_buffe
         offset - d->fontdef_offset,
         version
         );
-    if (ilen <= 0)
+    if (ilen <= 0 || ilen > offset - d->fontdef_offset)
       break;
     if (buf->data[d->fontdef_offset] >= XXX1 && buf->data[d->fontdef_offset] <= XXX4)
       dvi_interp_init(ctx, d->dc, buf->data + d->fontdef_offset, offset - d->fontdef_offset);
@@ -226,15 +228,18 @@ static void incdvi_parse_fontdef(fz_context *ctx, incdvi_t *restrict d, fz_buffe
   }
 }
 
-void incdvi_page_dim(incdvi_t *d, fz_buffer *buf, int page, float *width, float *height, bool *landscape)
+void incdvi_page_dim(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int page, float *width, float *height, bool *landscape)
 {
   bool _landscape;
   if (!landscape) landscape = &_landscape;
   *landscape = 0;
-  if (page < 0 || page >= incdvi_page_count(d)) abort();
+  if (!buf || page < 0 || page >= incdvi_page_count(d))
+    fz_throw(ctx, FZ_ERROR_GENERIC, "DVI page %d is not available", page + 1);
   int bop = d->pages[page * 2];
+  if (bop < 0 || bop >= buf->len)
+    fz_throw(ctx, FZ_ERROR_GENERIC, "DVI page %d was truncated", page + 1);
   if (dvi_interp_bop(buf->data + bop, buf->len - bop, width, height, landscape) <= 0)
-    abort();
+    fz_throw(ctx, FZ_ERROR_GENERIC, "Invalid DVI page header on page %d", page + 1);
   if (*landscape)
   {
     float tmp = *width;
@@ -245,23 +250,29 @@ void incdvi_page_dim(incdvi_t *d, fz_buffer *buf, int page, float *width, float 
 
 void incdvi_render_page(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int page, fz_device *dev)
 {
-  if (page < 0 || page >= incdvi_page_count(d)) abort();
+  if (!buf || page < 0 || page >= incdvi_page_count(d))
+    fz_throw(ctx, FZ_ERROR_GENERIC, "DVI page %d is not available", page + 1);
   fz_drop_buffer(ctx, d->cache_annotations); d->cache_annotations = NULL;
   int offset = d->pages[page * 2];
   int eop = d->pages[page * 2 + 1];
+  if (offset < 0 || eop < offset || eop >= buf->len)
+    fz_throw(ctx, FZ_ERROR_GENERIC, "DVI page %d was truncated", page + 1);
   incdvi_parse_fontdef(ctx, d, buf, offset);
 
   dvi_context *dc = d->dc;
   enum dvi_version version = dvi_context_state(dc)->version;
-  dvi_context_begin_frame(ctx, d->dc, dev);
-  while (offset < eop)
-  {
-    int ilen = dvi_instr_size(buf->data + offset, eop - offset, version);
-    if (ilen <= 0) abort();
-    dvi_interp(ctx, dc, buf->data + offset);
-    offset += ilen;
+  fz_try(ctx) {
+    dvi_context_begin_frame(ctx, d->dc, dev);
+    while (offset < eop) {
+      int ilen = dvi_instr_size(buf->data + offset, eop - offset, version);
+      if (ilen <= 0 || ilen > eop - offset)
+        fz_throw(ctx, FZ_ERROR_GENERIC, "Invalid DVI instruction on page %d", page + 1);
+      dvi_interp(ctx, dc, buf->data + offset);
+      offset += ilen;
+    }
+    dvi_context_end_frame(ctx, dc);
   }
-  dvi_context_end_frame(ctx, dc);
+  fz_catch(ctx) { dvi_context_abort_frame(ctx, dc); fz_rethrow(ctx); }
 }
 
 float incdvi_tex_scale_factor(incdvi_t *d)
@@ -410,7 +421,7 @@ fz_display_list *incdvi_display_list(fz_context *ctx, incdvi_t *d, fz_buffer *bu
 {
   double start=txp_profile_now();
   float w,h;
-  incdvi_page_dim(d,buf,page,&w,&h,NULL);
+  incdvi_page_dim(ctx,d,buf,page,&w,&h,NULL);
   fz_rect bounds=fz_make_rect(0,0,w,h);
   incdvi_parse_fontdef(ctx,d,buf,d->pages[page*2]);
   fz_buffer *key=NULL;

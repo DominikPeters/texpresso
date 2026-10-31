@@ -299,7 +299,7 @@ yy11:
 yy12:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 64) {
+	if (yych >= 0 && (yybm[0+yych] & 64)) {
 		goto yy15;
 	}
 	goto yy4;
@@ -316,7 +316,7 @@ yy14:
 yy15:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 64) {
+	if (yych >= 0 && (yybm[0+yych] & 64)) {
 		goto yy15;
 	}
 	if (yych == '-') {
@@ -368,14 +368,14 @@ yy17:
 yy18:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 128) {
+	if (yych >= 0 && (yybm[0+yych] & 128)) {
 		goto yy19;
 	}
 	goto yy4;
 yy19:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 128) {
+	if (yych >= 0 && (yybm[0+yych] & 128)) {
 		goto yy19;
 	}
 	if (yych == ' ') goto yy25;
@@ -746,7 +746,7 @@ yy53:
 yy54:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 64) {
+	if (yych >= 0 && (yybm[0+yych] & 64)) {
 		goto yy56;
 	}
 yy55:
@@ -755,7 +755,7 @@ yy55:
 yy56:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 128) {
+	if (yych >= 0 && (yybm[0+yych] & 128)) {
 		goto yy57;
 	}
 	if (yych == '.') goto yy58;
@@ -765,7 +765,7 @@ yy56:
 yy57:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 128) {
+	if (yych >= 0 && (yybm[0+yych] & 128)) {
 		goto yy57;
 	}
 	if (yych <= '9') {
@@ -788,7 +788,7 @@ yy57:
 yy58:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 128) {
+	if (yych >= 0 && (yybm[0+yych] & 128)) {
 		goto yy57;
 	}
 	if (yych <= '/') goto yy55;
@@ -1475,7 +1475,7 @@ yy115:
 yy116:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 64) {
+	if (yych >= 0 && (yybm[0+yych] & 64)) {
 		goto yy127;
 	}
 	goto yy83;
@@ -1533,7 +1533,7 @@ yy126:
 yy127:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 64) {
+	if (yych >= 0 && (yybm[0+yych] & 64)) {
 		goto yy127;
 	}
 	if (yych == '-') {
@@ -1622,14 +1622,14 @@ yy138:
 yy139:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 128) {
+	if (yych >= 0 && (yybm[0+yych] & 128)) {
 		goto yy140;
 	}
 	goto yy83;
 yy140:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 128) {
+	if (yych >= 0 && (yybm[0+yych] & 128)) {
 		goto yy140;
 	}
 	if (yych == ' ') goto yy155;
@@ -3441,7 +3441,7 @@ yy289:
 	++cur;
 	yych = cur < lim ? *cur : -1;
 yy290:
-	if (yybm[0+yych] & 32) {
+	if (yych >= 0 && (yybm[0+yych] & 32)) {
 		goto yy289;
 	}
 	if (yych <= '/') {
@@ -3457,14 +3457,14 @@ yy290:
 	}
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 64) {
+	if (yych >= 0 && (yybm[0+yych] & 64)) {
 		goto yy291;
 	}
 	goto yy272;
 yy291:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 64) {
+	if (yych >= 0 && (yybm[0+yych] & 64)) {
 		goto yy291;
 	}
 	if (yych == '.') goto yy305;
@@ -3934,7 +3934,7 @@ yy350:
 yy351:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 128) {
+	if (yych >= 0 && (yybm[0+yych] & 128)) {
 		goto yy351;
 	}
 	if (yych <= ',') {
@@ -4593,7 +4593,7 @@ yy427:
 yy428:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 64) {
+	if (yych >= 0 && (yybm[0+yych] & 64)) {
 		goto yy428;
 	}
 #line 1270 "dvi_special.re2c.c"
@@ -4741,7 +4741,7 @@ yy452:
 yy453:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 128) {
+	if (yych >= 0 && (yybm[0+yych] & 128)) {
 		goto yy453;
 	}
 	if (yych == ' ') goto yy455;
@@ -5041,14 +5041,14 @@ yy485:
 	if (yych != 't') goto yy484;
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 64) {
+	if (yych >= 0 && (yybm[0+yych] & 64)) {
 		goto yy486;
 	}
 	goto yy484;
 yy486:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 64) {
+	if (yych >= 0 && (yybm[0+yych] & 64)) {
 		goto yy486;
 	}
 	if (yych <= '/') goto yy484;
@@ -5057,7 +5057,7 @@ yy486:
 yy487:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 128) {
+	if (yych >= 0 && (yybm[0+yych] & 128)) {
 		goto yy487;
 	}
 	if (yych != ' ') goto yy484;
@@ -5211,7 +5211,7 @@ yy500:
 yy501:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 64) {
+	if (yych >= 0 && (yybm[0+yych] & 64)) {
 		goto yy501;
 	}
 	if (yych == 'p') goto yy503;
@@ -5369,14 +5369,14 @@ yy525:
 yy526:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 128) {
+	if (yych >= 0 && (yybm[0+yych] & 128)) {
 		goto yy527;
 	}
 	goto yy494;
 yy527:
 	++cur;
 	yych = cur < lim ? *cur : -1;
-	if (yybm[0+yych] & 128) {
+	if (yych >= 0 && (yybm[0+yych] & 128)) {
 		goto yy527;
 	}
 	if (yych <= 'i') {

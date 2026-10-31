@@ -39,19 +39,19 @@ static uint32_t decode_u24(const uint8_t *buf)
 { return (buf[0] << 16) | (buf[1] << 8) | (buf[2]); }
 
 static uint32_t decode_u32(const uint8_t *buf)
-{ return (buf[0] << 24) | (buf[1] << 16) | (buf[2] << 8) | (buf[3]); }
+{ return ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) | ((uint32_t)buf[2] << 8) | buf[3]; }
 
 static int8_t decode_s8(const uint8_t *buf)
 { return ((int8_t*)buf)[0]; }
 
 static int16_t decode_s16(const uint8_t *buf)
-{ return (decode_s8(buf) << 8) | (buf[1]); }
+{ return (int16_t)decode_u16(buf); }
 
 static int32_t decode_s24(const uint8_t *buf)
-{ return (decode_s8(buf) << 16) | (buf[1] << 8) | (buf[2]); }
+{ return decode_s8(buf) * 65536 + (buf[1] << 8) + buf[2]; }
 
 static int32_t decode_s32(const uint8_t *buf)
-{ return (decode_s8(buf) << 24) | (buf[1] << 16) | (buf[2] << 8) | (buf[3]); }
+{ return (int32_t)decode_u32(buf); }
 
 static fixed_t decode_fixed(const uint8_t *buf)
 { return fixed_make(decode_s32(buf)); }

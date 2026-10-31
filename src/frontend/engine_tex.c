@@ -41,6 +41,7 @@
 #include "editor.h"
 #include "profile.h"
 #include "checkpoint_selection.h"
+#include "include_path.h"
 
 typedef struct
 {
@@ -469,54 +470,6 @@ static void engine_destroy(txp_engine *_self, fz_context *ctx)
   fz_free(ctx, self);
 }
 
-static const char *expand_path(const char **inclusion_path, const char *name, char buffer[1024])
-{
-  if (!*inclusion_path || !(*inclusion_path)[0])
-    return NULL;
-
-  if (name[0] == '/')
-    return NULL;
-
-  if (name[0] == '.' && name[1] == '/')
-  {
-    name += 2;
-    while (*name == '/')
-      name += 1;
-  }
-
-  char *p = buffer;
-  const char *i = *inclusion_path;
-
-  while (*i)
-  {
-    if (p > buffer + 1024) mabort();
-    *p = *i;
-    p += 1;
-    i += 1;
-  }
-  *inclusion_path = i+1;
-
-  if (p[-1] != '/')
-  {
-    if (p > buffer + 1024) mabort();
-    p[0] = '/';
-    p += 1;
-  }
-
-  while (*name)
-  {
-    if (p > buffer + 1024) mabort();
-    *p = *name;
-    p += 1;
-    name += 1;
-  }
-
-  if (p > buffer + 1024) mabort();
-  *p = '\0';
-
-  return buffer;
-}
-
 static void check_fid(file_id fid)
 {
   if (fid < 0 || fid >= MAX_FILES)
@@ -590,7 +543,7 @@ lookup_path(struct tex_engine *self, const char *path, char buf[1024], struct st
     if (stat(fs_path, st) != -1)
       break;
   }
-  while ((fs_path = expand_path(&inclusion_path, path, buf)));
+  while ((fs_path = txp_expand_path(&inclusion_path, path, buf, 1024)));
 
   return fs_path;
 }
@@ -1395,6 +1348,8 @@ static int engine_page_count(txp_engine *_self)
 static fz_display_list *engine_render_page(txp_engine *_self, fz_context *ctx, int page)
 {
   SELF;
+  if (!self->st.document.entry || !self->st.document.entry->saved.data)
+    fz_throw(ctx, FZ_ERROR_GENERIC, "Page output is not available yet");
   return incdvi_display_list(ctx, self->dvi, self->st.document.entry->saved.data, page);
 }
 

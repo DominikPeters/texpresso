@@ -149,6 +149,14 @@ build/test-texlive-provider: test/test_texlive_provider.c src/common/texlive_pro
 	$(CC) -Isrc/include -o $@ test/test_texlive_provider.c
 
 .PHONY: test-preview-destinations
+.PHONY: test-preview-safety
+test-preview-safety: texpresso
+	$(MAKE) -f Makefile.config -f Makefile build/test-preview-safety
+	build/test-preview-safety
+build/test-preview-safety: test/test_preview_safety.c build/frontend/incdvi.o build/frontend/libmydvi.a build/common/libcommon.a
+	$(CC) -Isrc/include -Isrc/frontend -Isrc/dvi -c -o build/test-preview-safety.o test/test_preview_safety.c
+	$(LDCC) -o $@ build/test-preview-safety.o build/frontend/incdvi.o build/frontend/libmydvi.a build/common/libcommon.a $(LIBS)
+
 test-preview-destinations: texpresso
 	python3 test/test-preview-destinations.py build/texpresso
 

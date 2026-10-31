@@ -37,7 +37,7 @@ void incdvi_reset(incdvi_t *d);
 void incdvi_update(fz_context *ctx, incdvi_t *d, fz_buffer *buf);
 bool incdvi_output_started(incdvi_t *d);
 int incdvi_page_count(incdvi_t *d);
-void incdvi_page_dim(incdvi_t *d, fz_buffer *buf, int page, float *width, float *height, bool *landscape);
+void incdvi_page_dim(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int page, float *width, float *height, bool *landscape);
 fz_buffer *incdvi_annotations(fz_context *ctx, incdvi_t *d);
 int incdvi_destination_page(fz_context *ctx, incdvi_t *d, const char *name);
 uint64_t incdvi_display_list_token(incdvi_t *d, fz_display_list *list);
