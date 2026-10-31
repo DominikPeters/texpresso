@@ -18,6 +18,7 @@ int main(void)
 {
   fz_context *ctx=fz_new_context(NULL,NULL,FZ_STORE_DEFAULT);assert(ctx);
   incdvi_t *d=incdvi_new(ctx,(dvi_reshooks){0});
+  assert(incdvi_destination_page(ctx,d,"unread")==-1);
   fz_buffer *empty=incdvi_annotations(ctx,d);
   const char *empty_json="{\"links\":[],\"destinations\":[]}";
   assert(empty->len==strlen(empty_json) && !memcmp(empty->data,empty_json,empty->len));
@@ -32,13 +33,13 @@ int main(void)
     fz_append_byte(ctx,partial,full->data[i]);incdvi_update(ctx,d,partial);
     assert(incdvi_page_count(d)==(i+1==full->len ? 1:0));
   }
-  assert(incdvi_destination_page(ctx,d,partial,"old")==0);
+  assert(incdvi_destination_page(ctx,d,"old")==0);
   partial->len=15;incdvi_update(ctx,d,partial);
-  assert(incdvi_destination_page(ctx,d,partial,"old")==-1);
+  assert(incdvi_destination_page(ctx,d,"old")==-1);
   fz_buffer *next=page(ctx,"new");
   fz_append_data(ctx,partial,next->data+15,next->len-15);incdvi_update(ctx,d,partial);
-  assert(incdvi_destination_page(ctx,d,partial,"new")==0);
-  assert(incdvi_destination_page(ctx,d,partial,"old")==-1);
+  assert(incdvi_destination_page(ctx,d,"new")==0);
+  assert(incdvi_destination_page(ctx,d,"old")==-1);
   /* Exercise the initial allocation and two capacity increases. */
   incdvi_free(ctx,d); d=incdvi_new(ctx,(dvi_reshooks){0});
   full->len--; /* insert destinations before EOP */
@@ -49,10 +50,10 @@ int main(void)
   fz_append_byte(ctx,full,140);incdvi_update(ctx,d,full);
   for (int i=0;i<80;i++) {
     char name[32];snprintf(name,sizeof name,"target-%d",i);
-    assert(incdvi_destination_page(ctx,d,full,name)==0);
+    assert(incdvi_destination_page(ctx,d,name)==0);
   }
   full->len=15;incdvi_update(ctx,d,full);
-  assert(incdvi_destination_page(ctx,d,full,"target-79")==-1);
+  assert(incdvi_destination_page(ctx,d,"target-79")==-1);
   incdvi_free(ctx,d);fz_drop_buffer(ctx,full);fz_drop_buffer(ctx,partial);fz_drop_buffer(ctx,next);fz_drop_context(ctx);
   puts("PASS: partial DVI special bodies and rollback keep destination metadata valid");
 }
