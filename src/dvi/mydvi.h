@@ -356,6 +356,7 @@ bool dvi_state_enter_vf(dvi_context *dc, dvi_state *vfst, const dvi_state *st, d
 void dvi_context_flush_text(fz_context *ctx, dvi_context *dc, dvi_state *st);
 void dvi_context_begin_frame(fz_context *ctx, dvi_context *dc, fz_device *dev);
 void dvi_context_end_frame(fz_context *ctx, dvi_context *dc);
+void dvi_context_abort_frame(fz_context *ctx, dvi_context *dc);
 
 #define inlined static inline __attribute__((unused))
 

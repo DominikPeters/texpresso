@@ -51,8 +51,7 @@ dvi_fontdef *dvi_fonttable_get(fz_context *ctx, dvi_fonttable *ft, int f)
 {
   if (f < 0 || f > 9999)
   {
-    fprintf(stderr, "dvi_fonttable_get(_, %d)\n", f);
-    abort();
+    fz_throw(ctx, FZ_ERROR_GENERIC, "Invalid DVI font number %d (expected 0..9999)", f);
   }
   if (f >= ft->capacity)
   {

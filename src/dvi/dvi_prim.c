@@ -88,10 +88,9 @@ void dvi_exec_char(fz_context *ctx, dvi_context *dc, dvi_state *st, uint32_t c, 
   // fprintf(stderr, "%s_char: %C = %u\n", set ? "set" : "put", c, c);
 
   dvi_fontdef *def = dvi_current_font(ctx, st);
-  if (def->kind != TEX_FONT)
+  if (def->kind != TEX_FONT || !def->tex_font.font)
   {
-    fprintf(stderr, "dvi_exec_char: expecting TeX font\n");
-    abort();
+    fz_throw(ctx, FZ_ERROR_GENERIC, "DVI character uses an undefined or non-TeX font");
   }
 
   dvi_font *font = def->tex_font.font;
@@ -329,10 +328,9 @@ void dvi_exec_xdvglyphs(fz_context *ctx, dvi_context *dc, dvi_state *st, fixed_t
 {
   //fprintf(stderr, "dvi_exec_xdvglyphs: width:%d, chars:%d, glyphs:%d\n", width.value, char_count, num_glyphs);
   dvi_fontdef *def = dvi_current_font(ctx, st);
-  if (def->kind != XDV_FONT)
+  if (def->kind != XDV_FONT || !def->xdv_font.font)
   {
-    fprintf(stderr, "dvi_exec_xdvglyphs: expecting XDV font\n");
-    abort();
+    fz_throw(ctx, FZ_ERROR_GENERIC, "XDV glyphs use an undefined or non-XDV font");
   }
   fz_font *font = def->xdv_font.font;
   fixed_t size = def->xdv_font.spec.size;

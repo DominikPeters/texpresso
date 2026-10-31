@@ -67,6 +67,16 @@ void dvi_context_free(fz_context *ctx, dvi_context *dc)
   fz_free(ctx, dc);
 }
 
+void dvi_context_abort_frame(fz_context *ctx, dvi_context *dc)
+{
+  // Discard unfinished drawing; flushing could repeat the original exception.
+  fz_drop_text(ctx, dc->text); dc->text = NULL;
+  fz_drop_path(ctx, dc->path); dc->path = NULL;
+  dc->annotation_uri = NULL;
+  dvi_scratch_clear(ctx, &dc->scratch);
+  dvi_context_set_device(ctx, dc, NULL);
+}
+
 void dvi_context_begin_frame(fz_context *ctx, dvi_context *dc, fz_device *dev)
 {
   fz_drop_buffer(ctx, dc->annotation_links); fz_drop_buffer(ctx, dc->annotation_destinations);

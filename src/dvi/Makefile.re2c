@@ -4,6 +4,7 @@ TARGETS = $(patsubst %.re2c.c,%.c,$(SOURCES))
 all: $(TARGETS)
 
 %.c: %.re2c.c
-	re2c $< -o $@ --tags --bit-vectors
+	# Bit vectors index by YYPEEK and cannot represent the -1 EOF sentinel.
+	re2c $< -o $@ --tags
 
 .PHONY: all

@@ -26,6 +26,7 @@
 #include "mydvi_interp.h"
 #include "mydvi_opcodes.h"
 #include "intcodec.h"
+#include <limits.h>
 
 #define case4(I, n) case I##1: case I##2: case I##3: case I##4: n = op - I##1 + 1;
 #define PRINTF_DEBUG 0
@@ -94,13 +95,16 @@ int dvi_instr_size(const uint8_t *buf, int len, enum dvi_version version)
 
     case XXX4:
     CHECK_LEN(4);
-    return 5 + decode_u32(buf + 1);
+    {
+      uint32_t size = decode_u32(buf + 1);
+      return size > INT_MAX - 5 ? 0 : 5 + (int)size;
+    }
 
     case FNT_DEF1: case FNT_DEF2: case FNT_DEF3: case FNT_DEF4:
     {
       int offset = 14 + op - FNT_DEF1;
       CHECK_LEN(offset + 1);
-      return 2 + offset + decode_u16(buf + offset);
+      return 2 + offset + buf[offset] + buf[offset + 1];
     }
 
     case PRE:
@@ -528,10 +532,8 @@ bool dvi_interp(fz_context *ctx, dvi_context *dc, const uint8_t *buf)
 
 int dvi_interp_bop(const uint8_t *buf, int len, float *width, float *height, bool *landscape)
 {
-  if (len == 0)
-    return -1;
-  if (*buf != BOP)
-    abort();
+  if (len < 45) return -45;
+  if (*buf != BOP) return 0;
 
   *width = 612;
   *height = 792;
@@ -551,14 +553,14 @@ int dvi_interp_bop(const uint8_t *buf, int len, float *width, float *height, boo
       continue;
     }
     int n = (buf[pos] - XXX1) + 1;
-    CHECK_LEN(pos + 1 + n);
+    if (len - pos < 1 + n) return -1;
     pos += 1;
-    int size = decode_uB(buf+pos, n);
+    uint32_t size = decode_uB(buf+pos, n);
     pos += n;
-    CHECK_LEN(pos + size);
+    if (size > (uint32_t)(len - pos)) return -1;
     const char * ptr = (const char *)buf + pos;
-    dvi_prescan_special(ptr, ptr + len, width, height, landscape);
-    pos += size;
+    dvi_prescan_special(ptr, ptr + size, width, height, landscape);
+    pos += (int)size;
   }
 
   return pos;

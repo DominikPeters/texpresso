@@ -41,6 +41,7 @@
 #include "editor.h"
 #include "base64.h"
 #include "preview.h"
+#include "txp_error.h"
 #include "profile.h"
 
 struct persistent_state *pstate;
@@ -972,20 +973,41 @@ static void preempt_background(struct persistent_state *ps, ui_state *ui, int pa
 
 static void display_page(struct persistent_state *ps, ui_state *ui)
 {
+  fz_display_list *dl = NULL;
+  fz_buffer *annotations = NULL;
+  fz_var(dl); fz_var(annotations);
+  fz_try(ps->ctx) {
   double list_start = txp_profile_now();
-  fz_display_list *dl = send(render_page, ui->eng, ps->ctx, ui->page);
+  dl = send(render_page, ui->eng, ps->ctx, ui->page);
   txp_profile_record("dvi-display-list", list_start, ui->preview.request, ui->page, 0);
   double annotation_start = txp_profile_now();
-  fz_drop_buffer(ps->ctx, ui->preview.annotations);
-  ui->preview.annotations = send(page_annotations, ui->eng, ps->ctx);
+  annotations = send(page_annotations, ui->eng, ps->ctx);
   txp_profile_record("annotations", annotation_start, ui->preview.request, ui->page, 0);
   if (ui->preview.background) {
     fz_drop_display_list(ps->ctx, ui->preview.background_list);
     ui->preview.background_list = fz_keep_display_list(ps->ctx, dl);
   } else txp_renderer_set_contents(ps->ctx, ui->doc_renderer, dl);
-  fz_drop_display_list(ps->ctx, dl);
+  fz_drop_buffer(ps->ctx, ui->preview.annotations);
+  ui->preview.annotations = annotations; annotations = NULL;
   if (ps->headless) ui->preview.valid = true;
   schedule_event(RENDER_EVENT);
+  }
+  fz_always(ps->ctx) { fz_drop_display_list(ps->ctx, dl); fz_drop_buffer(ps->ctx, annotations); }
+  fz_catch(ps->ctx) {
+    // Allocation/syscall failures are not page-local; let the outer engine
+    // boundary report them and stop before potentially corrupted state is used.
+    if (fz_caught(ps->ctx) == FZ_ERROR_SYSTEM) fz_rethrow(ps->ctx);
+    const char *message = txp_take_error(ps->ctx);
+    fprintf(stderr, "[preview] Page %d: %s\n", ui->page + 1, message);
+    ui->preview.valid = false;
+    if (ps->headless && ui->preview.pending) {
+      fprintf(stdout, "[\"preview-error\",%d,", ui->preview.request);
+      txp_write_json_string(stdout, message);
+      fputs("]\n", stdout); fflush(stdout);
+      ui->preview.pending = false;
+    }
+    if (ui->preview.background) finish_background(ps, ui, ui->preview.foreground_page);
+  }
 }
 
 #if !SDL_VERSION_ATLEAST(2, 0, 16)
