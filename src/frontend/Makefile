@@ -39,6 +39,8 @@ re2c:
 $(DIR)/%.o: %.c | $(DIR)
 	$(CC) -c -o $@ -I../dvi/ -I../include $<
 
+$(DIR)/preview.o $(DIR)/driver.o: ../include/preview_compression.h ../../Makefile.config
+
 $(DIR)/libmydvi.a:
 	$(MAKE) -C ../dvi $(DIR)/libmydvi.a
 

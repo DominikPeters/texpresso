@@ -28,6 +28,7 @@
 #include "logo.h"
 #include "driver.h"
 #include "preview.h"
+#include "preview_compression.h"
 #include "txp_error.h"
 #include <errno.h>
 #include <stdint.h>
@@ -267,7 +268,7 @@ int main(int argc, const char **argv)
 
   if (capabilities)
   {
-    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true}\n", TXP_PREVIEW_MAX_PIXELS);
+    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true,\"pngCompression\":%s}\n", TXP_PREVIEW_MAX_PIXELS, TXP_PNG_COMPRESSION);
     return 0;
   }
   if (headless && protocol != EDITOR_JSON)

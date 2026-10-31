@@ -3,7 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
-#include <zlib.h>
+#include "preview_compression.h"
 
 /* Measure text without rasterizing figures or segmenting words. The viewer only
  * needs the horizontal extent, in the original display-list coordinate space. */
@@ -135,7 +135,8 @@ const char *txp_preview_svg_fallback(fz_context *ctx, fz_display_list *list)
 
 /* Interactive RGB PNGs: one scanline and a bounded deflate buffer instead of
  * MuPDF's whole-image filtered/compressed scratch allocations. Unfiltered
- * scanlines and level 1 won the local speed/size comparison with Sub/Up/RLE.
+ * scanlines use streaming zlib-ng level 2 in bundled builds (system zlib level
+ * 1 in standalone builds). The native API avoids interposing other zlib users.
  * Exact grayscale pages use one PNG channel after checking every RGB pixel.
  * Rendering/color conversion is unchanged, and the format remains lossless. */
 static void png_chunk(fz_context *ctx, fz_buffer *buffer, const char *tag,
@@ -144,8 +145,8 @@ static void png_chunk(fz_context *ctx, fz_buffer *buffer, const char *tag,
   fz_append_int32_be(ctx, buffer, (int32_t)size);
   fz_append_data(ctx, buffer, tag, 4);
   if (size) fz_append_data(ctx, buffer, data, size);
-  uLong checksum = crc32(0, (const Bytef *)tag, 4);
-  if (size) checksum = crc32(checksum, data, (uInt)size);
+  uint32_t checksum = txp_crc32(0, (const unsigned char *)tag, 4);
+  if (size) checksum = txp_crc32(checksum, data, (unsigned int)size);
   fz_append_int32_be(ctx, buffer, (int32_t)checksum);
 }
 
@@ -159,7 +160,7 @@ fz_buffer *txp_preview_png(fz_context *ctx, fz_pixmap *pix)
   fz_buffer *buffer = NULL;
   unsigned char *row = NULL;
   unsigned char compressed[65536];
-  z_stream stream = {0};
+  txp_zstream stream = {0};
   int started = 0;
   fz_var(buffer); fz_var(row); fz_var(started); fz_var(stream);
   fz_try(ctx) {
@@ -183,7 +184,7 @@ fz_buffer *txp_preview_png(fz_context *ctx, fz_pixmap *pix)
     xres = (int)(xres * 100 / 2.54f + 0.5f); yres = (int)(yres * 100 / 2.54f + 0.5f);
     unsigned char resolution[9] = {xres >> 24, xres >> 16, xres >> 8, xres, yres >> 24, yres >> 16, yres >> 8, yres, 1};
     png_chunk(ctx, buffer, "pHYs", resolution, 9);
-    if (deflateInit(&stream, Z_BEST_SPEED) != Z_OK)
+    if (txp_deflate_init(&stream) != Z_OK)
       fz_throw(ctx, FZ_ERROR_GENERIC, "Could not initialize preview PNG compression");
     started = 1; stream.next_out = compressed; stream.avail_out = sizeof compressed;
     for (int y = 0; y < h; y++) {
@@ -191,11 +192,11 @@ fz_buffer *txp_preview_png(fz_context *ctx, fz_pixmap *pix)
       row[0] = 0; /* Same unfiltered RGB scanlines as MuPDF's writer. */
       if (grayscale) { for (int x = 0; x < w; x++) row[x+1] = current[3*x]; }
       else memcpy(row + 1, current, row_size);
-      stream.next_in = row; stream.avail_in = (uInt)(row_size + 1);
+      stream.next_in = row; stream.avail_in = (unsigned int)(row_size + 1);
       int final = y == h - 1;
       int result;
       do {
-        result = deflate(&stream, final ? Z_FINISH : Z_NO_FLUSH);
+        result = txp_deflate(&stream, final ? Z_FINISH : Z_NO_FLUSH);
         if (result != Z_OK && result != Z_STREAM_END)
           fz_throw(ctx, FZ_ERROR_GENERIC, "Could not compress preview PNG");
         if (!stream.avail_out || result == Z_STREAM_END) {
@@ -206,7 +207,7 @@ fz_buffer *txp_preview_png(fz_context *ctx, fz_pixmap *pix)
     }
     png_chunk(ctx, buffer, "IEND", NULL, 0);
   }
-  fz_always(ctx) { if (started) deflateEnd(&stream); fz_free(ctx, row); }
+  fz_always(ctx) { if (started) txp_deflate_end(&stream); fz_free(ctx, row); }
   fz_catch(ctx) { fz_drop_buffer(ctx, buffer); fz_rethrow(ctx); }
   return buffer;
 }
