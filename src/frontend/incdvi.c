@@ -272,7 +272,7 @@ float incdvi_tex_scale_factor(incdvi_t *d)
 }
 
 fz_buffer *incdvi_annotations(fz_context *ctx, incdvi_t *d) { return d->cache_annotations ? fz_keep_buffer(ctx, d->cache_annotations) : dvi_annotations(ctx, d->dc); }
-int incdvi_destination_page(fz_context *ctx, incdvi_t *d, fz_buffer *buf, const char *name)
+int incdvi_destination_page(fz_context *ctx, incdvi_t *d, const char *name)
 {
   for (int i = 0; i < d->destination_count; i++)
     if (!strcmp(name, d->destinations[i].name) && d->destinations[i].page < incdvi_page_count(d))

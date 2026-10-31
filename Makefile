@@ -148,6 +148,10 @@ test-texlive-provider:
 build/test-texlive-provider: test/test_texlive_provider.c src/common/texlive_provider.c
 	$(CC) -Isrc/include -o $@ test/test_texlive_provider.c
 
+.PHONY: test-preview-destinations
+test-preview-destinations: texpresso
+	python3 test/test-preview-destinations.py build/texpresso
+
 .PHONY: test-dvi-annotations
 test-dvi-annotations: texpresso
 	$(MAKE) -f Makefile.config -f Makefile build/test-dvi-annotations

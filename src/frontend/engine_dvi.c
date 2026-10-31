@@ -156,5 +156,5 @@ static fz_buffer *engine_page_annotations(txp_engine *_self, fz_context *ctx)
 static int engine_destination_page(txp_engine *_self, fz_context *ctx, const char *name)
 {
   SELF;
-  return incdvi_destination_page(ctx, self->dvi, self->buffer, name);
+  return incdvi_destination_page(ctx, self->dvi, name);
 }

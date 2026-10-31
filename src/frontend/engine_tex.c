@@ -2019,5 +2019,7 @@ static fz_buffer *engine_page_annotations(txp_engine *_self, fz_context *ctx)
 static int engine_destination_page(txp_engine *_self, fz_context *ctx, const char *name)
 {
   SELF;
-  return incdvi_destination_page(ctx, self->dvi, self->st.document.entry->saved.data, name);
+  /* The index is maintained by incdvi_update/reset. A restored checkpoint can
+   * precede opening the output file; destination lookup must remain safe then. */
+  return incdvi_destination_page(ctx, self->dvi, name);
 }
