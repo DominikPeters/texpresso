@@ -22,8 +22,8 @@ void activity_test_worker(int fd)
   pid_t child=txp_fork(io);
   if(child==0) {
     usleep(80000); xetex_tokens=505; assert(txp_size(io,11)==7);
-    txp_finish(io,true); _exit(0);
+    txp_finish(io,true,true); _exit(0);
   }
   busy(15); xetex_tokens=606; assert(txp_size(io,11)==7);
-  txp_finish(io,true); _exit(0);
+  txp_finish(io,true,true); _exit(0);
 }
