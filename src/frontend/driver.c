@@ -35,6 +35,7 @@
 
 #ifdef __APPLE__
 #include <sys/syslimits.h>
+#include <mach-o/dyld.h>
 #else
 #include <linux/limits.h>
 #endif
