@@ -841,7 +841,8 @@ pdf_code(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t cur, cursor_t
         {
           float c[1];
           vstack_get_floats(ctx, stack, c, 1);
-          st->gs.line_join = c[0];
+          // Out-of-range float to enum conversion is undefined.
+          st->gs.line_join = c[0] >= 0 && c[0] <= 2 ? (int)c[0] : 0;
           break;
         }
 
@@ -849,7 +850,7 @@ pdf_code(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t cur, cursor_t
         {
           float c[1];
           vstack_get_floats(ctx, stack, c, 1);
-          st->gs.line_caps = c[0];
+          st->gs.line_caps = c[0] >= 0 && c[0] <= 2 ? (int)c[0] : 0;
           break;
         }
 

@@ -3978,7 +3978,8 @@ pdf_code(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t cur, cursor_t
         {
           float c[1];
           vstack_get_floats(ctx, stack, c, 1);
-          st->gs.line_join = c[0];
+          // Out-of-range float to enum conversion is undefined.
+          st->gs.line_join = c[0] >= 0 && c[0] <= 2 ? (int)c[0] : 0;
           break;
         }
 
@@ -3986,7 +3987,7 @@ pdf_code(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t cur, cursor_t
         {
           float c[1];
           vstack_get_floats(ctx, stack, c, 1);
-          st->gs.line_caps = c[0];
+          st->gs.line_caps = c[0] >= 0 && c[0] <= 2 ? (int)c[0] : 0;
           break;
         }
 
@@ -4282,7 +4283,7 @@ dvi_exec_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t cur, curs
   cursor_t mar, i, f0, f1, f2, f3, f4, f5, pxform = NULL, pstart, pend;
 
   
-#line 4286 "dvi_special.c"
+#line 4287 "dvi_special.c"
 {
 	int yych;
 	unsigned int yyaccept = 0;
@@ -4299,9 +4300,9 @@ dvi_exec_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t cur, curs
 		default: goto yy270;
 	}
 yy270:
-#line 1211 "dvi_special.re2c.c"
+#line 1212 "dvi_special.re2c.c"
 	{ return unhandled("pdf special", cur, lim, 0); }
-#line 4305 "dvi_special.c"
+#line 4306 "dvi_special.c"
 yy271:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -4373,9 +4374,9 @@ yy279:
 		default: goto yy298;
 	}
 yy280:
-#line 1175 "dvi_special.re2c.c"
+#line 1176 "dvi_special.re2c.c"
 	{ return pdf_btrans(dc, st, cur, lim); }
-#line 4379 "dvi_special.c"
+#line 4380 "dvi_special.c"
 yy281:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -4393,11 +4394,11 @@ yy282:
 		default: goto yy283;
 	}
 yy283:
-#line 1203 "dvi_special.re2c.c"
+#line 1204 "dvi_special.re2c.c"
 	{
     return colorstack_pop(ctx, dc, st, -1);
   }
-#line 4401 "dvi_special.c"
+#line 4402 "dvi_special.c"
 yy284:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -4415,9 +4416,9 @@ yy285:
 		default: goto yy286;
 	}
 yy286:
-#line 1178 "dvi_special.re2c.c"
+#line 1179 "dvi_special.re2c.c"
 	{ return pdf_etrans(dc, st); }
-#line 4421 "dvi_special.c"
+#line 4422 "dvi_special.c"
 yy287:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -4500,7 +4501,7 @@ yy293:
 	f1 = yyt3;
 	f2 = yyt4;
 	f3 = yyt5;
-#line 1190 "dvi_special.re2c.c"
+#line 1191 "dvi_special.re2c.c"
 	{
     if (!colorstack_push(ctx, dc, st, -1))
       return 0;
@@ -4512,7 +4513,7 @@ yy293:
       color_set_gray(st->gs.colors.fill, pfloat(f4 ? f4 : f0, lim));
     return 1;
   }
-#line 4516 "dvi_special.c"
+#line 4517 "dvi_special.c"
 yy294:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -4703,9 +4704,9 @@ yy312:
 	}
 yy313:
 	++cur;
-#line 1208 "dvi_special.re2c.c"
+#line 1209 "dvi_special.re2c.c"
 	{ return pdf_code(ctx, dc, st, cur, lim); }
-#line 4709 "dvi_special.c"
+#line 4710 "dvi_special.c"
 yy314:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -5073,7 +5074,7 @@ yy349:
 	pxform = yyt2;
 	pstart = cur;
 	pstart += -1;
-#line 1157 "dvi_special.re2c.c"
+#line 1158 "dvi_special.re2c.c"
 	{
     struct xform_spec xf = xform_spec();
     pxform = parse_xform_or_dim(&xf, pxform, pstart);
@@ -5090,7 +5091,7 @@ yy349:
     else
       return 1;
   }
-#line 5094 "dvi_special.c"
+#line 5095 "dvi_special.c"
 yy350:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -5249,14 +5250,14 @@ yy356:
 	f0 = cur;
 	f0 += -8;
 	f1 = cur;
-#line 1181 "dvi_special.re2c.c"
+#line 1182 "dvi_special.re2c.c"
 	{
     if (f1 != lim)
       fprintf(stderr, "unhandled pdf content: %.*s\n",
               (int)(lim - f0), f0);
     return 1;
   }
-#line 5260 "dvi_special.c"
+#line 5261 "dvi_special.c"
 yy357:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -5550,9 +5551,9 @@ yy386:
 	}
 yy387:
 	++cur;
-#line 1154 "dvi_special.re2c.c"
+#line 1155 "dvi_special.re2c.c"
 	{ return 1; }
-#line 5556 "dvi_special.c"
+#line 5557 "dvi_special.c"
 yy388:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -5834,9 +5835,9 @@ yy414:
 	++cur;
 	f0 = yyt1;
 	f1 = yyt2;
-#line 1151 "dvi_special.re2c.c"
+#line 1152 "dvi_special.re2c.c"
 	{ return 1; }
-#line 5840 "dvi_special.c"
+#line 5841 "dvi_special.c"
 yy415:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -5862,7 +5863,7 @@ yy417:
 		default: goto yy272;
 	}
 }
-#line 1213 "dvi_special.re2c.c"
+#line 1214 "dvi_special.re2c.c"
 
 }
 
@@ -5875,7 +5876,7 @@ bool dvi_exec_special(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t 
   for (;;)
   {
     
-#line 5879 "dvi_special.c"
+#line 5880 "dvi_special.c"
 {
 	int yych;
 	mar = cur;
@@ -5889,14 +5890,14 @@ bool dvi_exec_special(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t 
 		default: goto yy419;
 	}
 yy419:
-#line 1277 "dvi_special.re2c.c"
+#line 1278 "dvi_special.re2c.c"
 	{ return unhandled("special", cur, lim, 0); }
-#line 5895 "dvi_special.c"
+#line 5896 "dvi_special.c"
 yy420:
 	++cur;
-#line 1227 "dvi_special.re2c.c"
+#line 1228 "dvi_special.re2c.c"
 	{ continue; }
-#line 5900 "dvi_special.c"
+#line 5901 "dvi_special.c"
 yy421:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -5951,7 +5952,7 @@ yy428:
 	}
 yy429:
 	++cur;
-#line 1264 "dvi_special.re2c.c"
+#line 1265 "dvi_special.re2c.c"
 	{
       struct xform_spec xf = xform_spec();
       cur = parse_xform_or_dim(&xf, cur, lim);
@@ -5960,7 +5961,7 @@ yy429:
         return unhandled("pdf x", cur, lim, 0);
       return 1;
     }
-#line 5964 "dvi_special.c"
+#line 5965 "dvi_special.c"
 yy430:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -6005,9 +6006,9 @@ yy435:
 		default: goto yy436;
 	}
 yy436:
-#line 1274 "dvi_special.re2c.c"
+#line 1275 "dvi_special.re2c.c"
 	{ return dvi_exec_pdf(ctx, dc, st, cur, lim); }
-#line 6011 "dvi_special.c"
+#line 6012 "dvi_special.c"
 yy437:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -6110,9 +6111,9 @@ yy450:
 	}
 yy451:
 	++cur;
-#line 1255 "dvi_special.re2c.c"
+#line 1256 "dvi_special.re2c.c"
 	{ return colorstack_pop(ctx, dc, st, -1); }
-#line 6116 "dvi_special.c"
+#line 6117 "dvi_special.c"
 yy452:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -6122,9 +6123,9 @@ yy452:
 	}
 yy453:
 	++cur;
-#line 1230 "dvi_special.re2c.c"
+#line 1231 "dvi_special.re2c.c"
 	{ return 1; }
-#line 6128 "dvi_special.c"
+#line 6129 "dvi_special.c"
 yy454:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -6154,12 +6155,12 @@ yy457:
 		default: goto yy458;
 	}
 yy458:
-#line 1258 "dvi_special.re2c.c"
+#line 1259 "dvi_special.re2c.c"
 	{
       return colorstack_push(ctx, dc, st, -1) &&
              parse_color(&st->gs.colors, cur, lim);
     }
-#line 6163 "dvi_special.c"
+#line 6164 "dvi_special.c"
 yy459:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -6320,9 +6321,9 @@ yy475:
 yy476:
 	++cur;
 	i = yyt1;
-#line 1238 "dvi_special.re2c.c"
+#line 1239 "dvi_special.re2c.c"
 	{ return colorstack_pop(ctx, dc, st, pint(i, lim)); }
-#line 6326 "dvi_special.c"
+#line 6327 "dvi_special.c"
 yy477:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -6401,12 +6402,12 @@ yy485:
 yy486:
 	++cur;
 	i = yyt1;
-#line 1242 "dvi_special.re2c.c"
+#line 1243 "dvi_special.re2c.c"
 	{
       return colorstack_push(ctx, dc, st, pint(i, lim)) &&
              parse_pdfcolor(&st->gs.colors, cur, lim);
     }
-#line 6410 "dvi_special.c"
+#line 6411 "dvi_special.c"
 yy487:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -6417,9 +6418,9 @@ yy487:
 yy488:
 	++cur;
 	i = yyt1;
-#line 1234 "dvi_special.re2c.c"
+#line 1235 "dvi_special.re2c.c"
 	{ return pdfcolorstack_current(ctx, dc, st, pint(i, lim)); }
-#line 6423 "dvi_special.c"
+#line 6424 "dvi_special.c"
 yy489:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -6495,14 +6496,14 @@ yy498:
 yy499:
 	++cur;
 	i = yyt1;
-#line 1249 "dvi_special.re2c.c"
+#line 1250 "dvi_special.re2c.c"
 	{
       return colorstack_init(ctx, dc, st, pint(i, lim)) &&
              parse_pdfcolor(&st->gs.colors, cur, lim);
     }
-#line 6504 "dvi_special.c"
+#line 6505 "dvi_special.c"
 }
-#line 1279 "dvi_special.re2c.c"
+#line 1280 "dvi_special.re2c.c"
 
   }
 }
@@ -6512,7 +6513,7 @@ bool dvi_init_special(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t 
   cursor_t i, f0, f1, mar;
 
   
-#line 6516 "dvi_special.c"
+#line 6517 "dvi_special.c"
 {
 	int yych;
 	mar = cur;
@@ -6522,9 +6523,9 @@ bool dvi_init_special(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t 
 		default: goto yy501;
 	}
 yy501:
-#line 1297 "dvi_special.re2c.c"
+#line 1298 "dvi_special.re2c.c"
 	{ return 0; }
-#line 6528 "dvi_special.c"
+#line 6529 "dvi_special.c"
 yy502:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -6780,14 +6781,14 @@ yy534:
 yy535:
 	++cur;
 	i = yyt1;
-#line 1291 "dvi_special.re2c.c"
+#line 1292 "dvi_special.re2c.c"
 	{
     return colorstack_init(ctx, dc, st, pint(i, lim)) &&
            parse_pdfcolor(&st->gs.colors, cur, lim);
   }
-#line 6789 "dvi_special.c"
+#line 6790 "dvi_special.c"
 }
-#line 1299 "dvi_special.re2c.c"
+#line 1300 "dvi_special.re2c.c"
 
 }
 
@@ -6798,7 +6799,7 @@ void dvi_prescan_special(cursor_t cur, cursor_t lim, float *width, float *height
   // fprintf(stderr, "prescan: %.*s\n", (int)(lim - cur), cur);
 
   
-#line 6802 "dvi_special.c"
+#line 6803 "dvi_special.c"
 {
 	int yych;
 	mar = cur;
@@ -6809,9 +6810,9 @@ void dvi_prescan_special(cursor_t cur, cursor_t lim, float *width, float *height
 		default: goto yy537;
 	}
 yy537:
-#line 1328 "dvi_special.re2c.c"
+#line 1329 "dvi_special.re2c.c"
 	{ return; }
-#line 6815 "dvi_special.c"
+#line 6816 "dvi_special.c"
 yy538:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -6930,12 +6931,12 @@ yy554:
 	}
 yy555:
 	++cur;
-#line 1311 "dvi_special.re2c.c"
+#line 1312 "dvi_special.re2c.c"
 	{
     *landscape = 1;
     return;
   }
-#line 6939 "dvi_special.c"
+#line 6940 "dvi_special.c"
 yy556:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -7074,9 +7075,9 @@ yy572:
 	}
 yy573:
 	++cur;
-#line 1325 "dvi_special.re2c.c"
+#line 1326 "dvi_special.re2c.c"
 	{ *width = 612; *height = 792; return; }
-#line 7080 "dvi_special.c"
+#line 7081 "dvi_special.c"
 yy574:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -7358,13 +7359,13 @@ yy600:
 	++cur;
 	f0 = yyt1;
 	f1 = yyt2;
-#line 1318 "dvi_special.re2c.c"
+#line 1319 "dvi_special.re2c.c"
 	{
     *width = pdim(f0, lim);
     *height = pdim(f1, lim);
     return;
   }
-#line 7368 "dvi_special.c"
+#line 7369 "dvi_special.c"
 yy601:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -7390,6 +7391,6 @@ yy603:
 		default: goto yy539;
 	}
 }
-#line 1330 "dvi_special.re2c.c"
+#line 1331 "dvi_special.re2c.c"
 
 }
