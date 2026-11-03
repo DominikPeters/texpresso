@@ -1,8 +1,26 @@
 #ifndef TXP_PROFILE_H
 #define TXP_PROFILE_H
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
+/* stderr is shared with compiler workers. A bounded write keeps a complete
+ * JSON record atomic on a pipe, including POSIX's minimum 512-byte PIPE_BUF. */
+static inline void txp_profile_printf(const char *format, ...)
+  __attribute__((format(printf, 1, 2)));
+static inline void txp_profile_printf(const char *format, ...)
+{
+  char line[512];
+  va_list args;
+  va_start(args, format);
+  int length = vsnprintf(line, sizeof(line), format, args);
+  va_end(args);
+  if (length > 0 && (size_t)length < sizeof(line)) {
+    ssize_t written = write(STDERR_FILENO, line, (size_t)length);
+    (void)written; /* Diagnostic output must never affect compilation. */
+  }
+}
 /* Monotonic wall time also drives cooperative budgets when profiling is off. */
 static double txp_monotonic_ms(void)
 {
@@ -22,7 +40,7 @@ static void txp_profile_record(const char *stage, double start, int request, int
 {
   if (!start) return;
   double now = txp_profile_now();
-  fprintf(stderr, "[profile] {\"stage\":\"%s\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":%d,\"page\":%d,\"bytes\":%zu}\n",
+  txp_profile_printf("[profile] {\"stage\":\"%s\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":%d,\"page\":%d,\"bytes\":%zu}\n",
           stage, now - start, now, request, page, bytes);
 }
 #endif

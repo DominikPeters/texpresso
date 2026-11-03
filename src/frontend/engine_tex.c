@@ -273,7 +273,7 @@ static void prepare_process(fz_context *ctx, struct tex_engine *self, const char
     p->pid = exec_xelatex(self->engine_path, self->use_texlive, self->name, &p->fd);
     if (spawn_start) {
       double now = txp_profile_now();
-      fprintf(stderr, "[profile] {\"stage\":\"compiler-spawn\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"pid\":%d,\"reason\":\"%s\"}\n", now-spawn_start, now, p->pid, reason);
+      txp_profile_printf("[profile] {\"stage\":\"compiler-spawn\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"pid\":%d,\"reason\":\"%s\"}\n", now-spawn_start, now, p->pid, reason);
     }
     self->root_children[self->root_child_count].pid = p->pid;
     self->root_children[self->root_child_count++].closed = false;
@@ -350,7 +350,7 @@ void txp_engine_poll_startup(txp_engine *_self)
   if (result == CHANNEL_HANDSHAKE_PENDING) return;
   p->starting = false;
   if (txp_profile_now())
-    fprintf(stderr, "[profile] {\"stage\":\"compiler-handshake\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"pid\":%d,\"reason\":\"%s\",\"outcome\":\"%s\"}\n",
+    txp_profile_printf("[profile] {\"stage\":\"compiler-handshake\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"pid\":%d,\"reason\":\"%s\",\"outcome\":\"%s\"}\n",
       now-p->handshake_started, now, p->pid, p->startup_reason, result == CHANNEL_HANDSHAKE_READY ? "ready" : "failed");
   if (result == CHANNEL_HANDSHAKE_FAILED) {
     fprintf(stderr, "[process] Compiler startup %s. Check that texpresso-xetex matches this frontend and that the TeX distribution is available.\n",
@@ -439,7 +439,7 @@ static void decimate_processes(struct tex_engine *self)
     for (int i = 0; i < self->process_count; ++i) {
       retained += keep[i]; kept_anchors += keep[i] && self->processes[i].anchor != 0;
     }
-    fprintf(stderr, "[profile] {\"stage\":\"compiler-decimation\",\"ms\":0,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"before\":%d,\"after\":%d,\"taggedAnchors\":%d,\"reservedAnchors\":%d,\"evictedAnchors\":%d}\n",
+    txp_profile_printf("[profile] {\"stage\":\"compiler-decimation\",\"ms\":0,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"before\":%d,\"after\":%d,\"taggedAnchors\":%d,\"reservedAnchors\":%d,\"evictedAnchors\":%d}\n",
             txp_profile_now(), self->process_count, retained, kept_anchors, reserved_anchors, anchor_count-kept_anchors);
   }
 
@@ -857,7 +857,7 @@ static void answer_query_impl(fz_context *ctx, struct tex_engine *self, query_t 
       }
       bool periodic = !fork && need_snapshot(ctx, self, q->time);
       if ((fork || periodic) && txp_profile_now())
-        fprintf(stderr, "[profile] {\"stage\":\"compiler-checkpoint\",\"ms\":0,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"trace\":%d,\"offset\":%d,\"checkpoints\":%d,\"fence\":%s}\n",
+        txp_profile_printf("[profile] {\"stage\":\"compiler-checkpoint\",\"ms\":0,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"trace\":%d,\"offset\":%d,\"checkpoints\":%d,\"fence\":%s}\n",
                 txp_profile_now(), q->time, p->trace_len, q->read.pos, self->process_count - 1, fork ? "true" : "false");
       if (fork || periodic)
       {
@@ -1117,7 +1117,7 @@ static void answer_query_impl(fz_context *ctx, struct tex_engine *self, query_t 
       channel_write_answer(self->c, p->fd, &a);
       if (self->fork_started) {
         double now = txp_profile_now();
-        fprintf(stderr, "[profile] {\"stage\":\"compiler-fork\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"parentPid\":%d,\"pid\":%d,\"tokens\":%d,\"checkpoints\":%d}\n",
+        txp_profile_printf("[profile] {\"stage\":\"compiler-fork\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"parentPid\":%d,\"pid\":%d,\"tokens\":%d,\"checkpoints\":%d}\n",
                 now-self->fork_started, now, self->fork_parent_pid, p2->pid, q->time, self->process_count-1);
         self->fork_started = 0;
       }
@@ -1216,7 +1216,7 @@ static void rollback_processes(fz_context *ctx, struct tex_engine *self, int rev
 
   int trace_len = self->process_count == 0 ? 0 : get_process(self)->trace_len;
   if (profile_start)
-    fprintf(stderr, "[profile] {\"stage\":\"compiler-rollback\",\"ms\":%.4f,\"nativeAt\":%.4f,\"pid\":%d,\"workerPid\":%d,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"resumeTokens\":%d,\"changedTrace\":%d,\"resumeTrace\":%d,\"checkpoints\":%d}\n",
+    txp_profile_printf("[profile] {\"stage\":\"compiler-rollback\",\"ms\":%.4f,\"nativeAt\":%.4f,\"pid\":%d,\"workerPid\":%d,\"request\":-1,\"page\":-1,\"bytes\":0,\"tokens\":%d,\"resumeTokens\":%d,\"changedTrace\":%d,\"resumeTrace\":%d,\"checkpoints\":%d}\n",
             txp_profile_now() - profile_start, txp_profile_now(), (int)getpid(), self->process_count?get_process(self)->pid:0, tokens_before,
             self->process_count ? get_process(self)->tokens : 0,
             reverted, trace_len, self->process_count ? self->process_count - 1 : 0);
@@ -1634,7 +1634,7 @@ static void rollback_add_change(fz_context *ctx, struct tex_engine *self, fileen
     if (get_process(self)->fd < 0)
       self->rollback.flush = 1; // A genuinely dead root still needs replacement.
     else if (txp_profile_now())
-      fprintf(stderr, "[profile] {\"stage\":\"compiler-unread-edit\",\"ms\":0,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"offset\":%d,\"trace\":%d}\n", txp_profile_now(), changed, get_process(self)->trace_len);
+      txp_profile_printf("[profile] {\"stage\":\"compiler-unread-edit\",\"ms\":0,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"offset\":%d,\"trace\":%d}\n", txp_profile_now(), changed, get_process(self)->trace_len);
     return;
   }
 
@@ -1739,7 +1739,7 @@ static void profile_convergence(struct tex_engine *self, double start, int old_p
 {
   if (!start) return;
   double now = txp_profile_now();
-  fprintf(stderr, "[profile] {\"stage\":\"compiler-convergence\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":%zu,\"oldProcesses\":%d,\"processes\":%d,\"outcome\":\"%s\",\"respawn\":%s}\n",
+  txp_profile_printf("[profile] {\"stage\":\"compiler-convergence\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":%zu,\"oldProcesses\":%d,\"processes\":%d,\"outcome\":\"%s\",\"respawn\":%s}\n",
           now-start, now, bytes, old_processes, self->process_count, outcome, respawn ? "true" : "false");
 }
 

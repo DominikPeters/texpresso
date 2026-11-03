@@ -104,6 +104,10 @@ test-texpresso-tectonic:
 test-stream:
 	bash test/test_stream.sh
 
+.PHONY: test-profile
+test-profile:
+	python3 test/test_profile.py
+
 test-register:
 	bash test/test-register.sh
 

@@ -236,7 +236,7 @@ static bool advance_engine(fz_context *ctx, ui_state *ui)
   // not flood profiling with zero-work spins while the editor supplies it.
   if (txp_profile_now() && (steps || txp_monotonic_ms() - start >= 5)) {
     double now = txp_monotonic_ms();
-    fprintf(stderr, "[profile] {\"stage\":\"compiler-burst\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":%d,\"page\":%d,\"bytes\":0,\"steps\":%d,\"reason\":\"%s\",\"workerPid\":%d}\n",
+    txp_profile_printf("[profile] {\"stage\":\"compiler-burst\",\"ms\":%.4f,\"nativeAt\":%.4f,\"request\":%d,\"page\":%d,\"bytes\":0,\"steps\":%d,\"reason\":\"%s\",\"workerPid\":%d}\n",
             now - start, now, ui->preview.request, ui->page, steps, reason, txp_engine_worker_pid(ui->eng));
   }
   return need;
