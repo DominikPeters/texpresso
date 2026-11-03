@@ -1749,7 +1749,8 @@ bool texpresso_main(struct persistent_state *ps)
       // A visible page can stop demand before auxiliary outputs close. An
       // explicit rerun must finish that source pass even when aux_dirty is
       // still false; lack of page demand does not mean convergence is done.
-      bool unfinished_source = txp_engine_completed_page_count(ui->eng) < 0
+      bool unfinished_source = !send(is_finishing, ui->eng)
+                               && txp_engine_completed_page_count(ui->eng) < 0
                                && send(get_status, ui->eng) == DOC_RUNNING;
       if (ps->rerun_once_pending && (aux_ready || unfinished_source))
       {

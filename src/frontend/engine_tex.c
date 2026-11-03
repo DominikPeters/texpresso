@@ -1609,6 +1609,10 @@ static bool process_pending_messages(fz_context *ctx, struct tex_engine *self)
 
 static void rollback_add_change(fz_context *ctx, struct tex_engine *self, fileentry_t *e, int changed)
 {
+  // Convergence describes the whole source generation, including bytes the
+  // retained worker has not read yet. Such edits need no rollback, but must
+  // still invalidate the completed pagination and auxiliary-stability proof.
+  self->completed_page_count = -1;
   int trace_len = self->rollback.trace_len;
   if (self->prepare.retained_fence &&
       (self->fences[0].entry != e || changed < self->fences[0].position))
