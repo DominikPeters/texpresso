@@ -88,6 +88,13 @@ void dvi_context_begin_frame(fz_context *ctx, dvi_context *dc, fz_device *dev)
   dc->annotation_links = fz_new_buffer(ctx, 256); dc->annotation_destinations = fz_new_buffer(ctx, 256);
   dc->annotation_link_count = dc->annotation_destination_count = 0; dc->annotation_uri = NULL;
   dvi_context_set_device(ctx, dc, dev);
+  // A PDF path left unfinished by a page's specials must not leak into the
+  // next frame, or a page would render differently the second time.
+  if (dc->path)
+  {
+    fz_drop_path(ctx, dc->path);
+    dc->path = NULL;
+  }
   dvi_state *st = &dc->root;
   // DVI pages select their own font; do not let a page drawn before select
   // its font depend on which page was rendered last.
