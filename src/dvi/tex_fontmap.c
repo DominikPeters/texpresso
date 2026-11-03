@@ -208,6 +208,9 @@ seek_next_line:
 #undef seek
 #undef fail_if
 
+    // An empty or unparsable map still needs a valid power-of-two table.
+    if (capacity < 16)
+      capacity = 16;
     if (count + count / 4 > capacity)
       capacity *= 2;
 
