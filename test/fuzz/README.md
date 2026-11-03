@@ -20,10 +20,42 @@ Homebrew's (`brew install llvm`) automatically, or set `FUZZ_CC`/`FUZZ_CXX`.
 | Harness | Input | Oracle beyond "no crash, no leak" |
 |---|---|---|
 | `dvi` | one DVI/XDV output, indexed and rendered | |
-| `incremental` | a sequence of output edits: chunked appends, cuts inside instructions, rollbacks, same-length compiler restarts, renders | after every step the incremental index agrees with a fresh index of the same bytes (pages, destinations, rendered pixels or failure) |
+| `incremental` | a sequence of output edits: chunked appends, cuts inside instructions, rollbacks, same-length compiler restarts, renders | after every step the incremental index agrees with a fresh index of the same bytes on pages and destinations; for font-conforming output (strict mode) also on rendered pixels or failure |
 | `special` | NUL-separated `\special` strings placed between drawing operations over several pages | |
 | `channel` | socket writes from a worker, some carrying descriptors like CHLD, then reads, peeks and resets | every passed descriptor is returned or closed |
 | `editor` | raw JSON/S-expression protocol text, or synthesized change commands with hostile numbers, split at arbitrary read boundaries | resolved spans stay inside the file; on valid UTF-8, `change-range` matches a model of LSP UTF-16 positions |
+
+## Editing stress test
+
+The libFuzzer harnesses cannot reach the frontend's process, checkpoint and
+rollback management, where edits race against compiler workers that fork,
+read, write, die or hang. `stress.py` covers that end to end. It launches a
+sanitizer build of the whole frontend (`build/fuzz/stress/texpresso`, built
+by `fuzz.py build`) exactly as the VS Code extension does (`-json -headless
+-stream`) and plays a fast, random editor: opens, typing bursts, line inserts
+and deletions, UTF-16 ranges and byte spans, whole-file reopens, renders,
+pauses, reruns and barriers, with random timing.
+
+```sh
+make fuzz-stress                                   # fake worker, 100 sessions
+python3 test/fuzz/stress.py --iterations 1000 --seed 7
+python3 test/fuzz/stress.py --worker real --iterations 20   # needs TeX Live
+python3 test/fuzz/stress.py --replay build/fuzz/stress-failures/<case>/actions.json
+```
+
+Oracles: the frontend never dies and never reports a sanitizer error, and once
+edits stop and auxiliary reruns go quiet, its pages (rendered PNGs) and
+destinations equal those of a fresh session on the same final files.
+
+By default the worker is [fake_worker.c](fake_worker.c): it speaks the real
+worker protocol (so checkpoints really fork and pass descriptors) and reads its
+input like XeTeX, but interprets a tiny line language instead of TeX, so it is
+fast, deterministic, and documents can make it crash, exit or hang mid-pass.
+`--worker real` uses `build/texpresso-xetex` on generated LaTeX instead.
+Failures are saved with their action log and stderr under
+`build/fuzz/stress-failures/`.
+
+## Notes
 
 Every input runs in a fresh MuPDF context whose allocations are counted, so
 leaks are findings even without LeakSanitizer (unavailable on macOS). No file

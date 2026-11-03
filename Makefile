@@ -150,7 +150,7 @@ build/test-texlive-provider: test/test_texlive_provider.c src/common/texlive_pro
 
 .PHONY: test-preview-destinations
 .PHONY: test-preview-safety
-.PHONY: test-editing-lifecycle fuzz fuzz-run fuzz-replay
+.PHONY: test-editing-lifecycle fuzz fuzz-run fuzz-replay fuzz-stress
 test-editing-lifecycle: | Makefile.config
 	python3 test/fuzz/fuzz.py editing-tests
 
@@ -162,6 +162,8 @@ fuzz-run: fuzz
 	python3 test/fuzz/fuzz.py run --seconds $(FUZZ_SECONDS)
 fuzz-replay: fuzz
 	python3 test/fuzz/fuzz.py replay
+fuzz-stress: fuzz
+	python3 test/fuzz/stress.py --iterations 100
 
 test-preview-safety: texpresso
 	$(MAKE) -f Makefile.config -f Makefile build/test-preview-safety
