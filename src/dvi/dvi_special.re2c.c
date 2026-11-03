@@ -24,6 +24,7 @@
 
 #include <mupdf/pdf.h>
 #include <string.h>
+#include <limits.h>
 #include "fz_util.h"
 #include "mydvi.h"
 #include "mydvi_interp.h"
@@ -76,9 +77,10 @@ unhandled(const char *kind, cursor_t cur, cursor_t lim, int ignored)
 
 static int pnat(cursor_t ptr, cursor_t lim)
 {
+  // Saturate: an out-of-range stack index or count must not overflow.
   int result = 0;
   for (; ptr < lim && *ptr >= '0' && *ptr <= '9'; ptr += 1)
-    result = result * 10 + (*ptr - '0');
+    result = result > (INT_MAX - 9) / 10 ? INT_MAX : result * 10 + (*ptr - '0');
   return result;
 }
 
