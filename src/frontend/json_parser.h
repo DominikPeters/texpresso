@@ -60,6 +60,8 @@ enum json_parser_state
 typedef struct
 {
   enum json_parser_state state;
+  // A \uD800-\uDBFF escape waiting for the low half of its surrogate pair.
+  int high_surrogate;
   union
   {
     int codepoint;

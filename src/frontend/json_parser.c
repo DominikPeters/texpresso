@@ -84,16 +84,10 @@ static bool json_pop_context(json_parser *cp, vstack *stack)
 #define POP_CONTEXT(input) \
   if (!json_pop_context(cp, stack)) return (input);
 
-static char extract_bits(int *c, int count)
-{
-  int result = *c & ((1 << count) - 1);
-  *c = *c >> count;
-  return result;
-}
-
 static void push_codepoint(fz_context *ctx, vstack *stack, int cp)
 {
-  char bytes[4], count = 0; 
+  char bytes[4];
+  int count;
   if (cp < 0x80)
   {
     count = 1;
@@ -102,25 +96,57 @@ static void push_codepoint(fz_context *ctx, vstack *stack, int cp)
   else if (cp < 0x800)
   {
     count = 2;
-    bytes[0] = 0xC0 | extract_bits(&cp, 5);
-    bytes[1] = 0x80 | cp;
+    bytes[0] = 0xC0 | (cp >> 6);
+    bytes[1] = 0x80 | (cp & 0x3F);
   }
   else if (cp < 0x10000)
   {
     count = 3;
-    bytes[0] = 0xE0 | extract_bits(&cp, 4);
-    bytes[1] = 0x80 | extract_bits(&cp, 6);
-    bytes[2] = 0x80 | cp;
+    bytes[0] = 0xE0 | (cp >> 12);
+    bytes[1] = 0x80 | ((cp >> 6) & 0x3F);
+    bytes[2] = 0x80 | (cp & 0x3F);
   }
   else
   {
     count = 4;
-    bytes[0] = 0xF0 | extract_bits(&cp, 3);
-    bytes[1] = 0x80 | extract_bits(&cp, 6);
-    bytes[2] = 0x80 | extract_bits(&cp, 6);
-    bytes[3] = 0x80 | cp;
+    bytes[0] = 0xF0 | (cp >> 18);
+    bytes[1] = 0x80 | ((cp >> 12) & 0x3F);
+    bytes[2] = 0x80 | ((cp >> 6) & 0x3F);
+    bytes[3] = 0x80 | (cp & 0x3F);
   }
   vstack_push_chars(ctx, stack, bytes, count);
+}
+
+// An unpaired surrogate escape decodes to U+FFFD, as UTF-8 cannot encode it.
+static void flush_surrogate(fz_context *ctx, json_parser *cp, vstack *stack)
+{
+  if (cp->high_surrogate)
+  {
+    push_codepoint(ctx, stack, 0xFFFD);
+    cp->high_surrogate = 0;
+  }
+}
+
+static void push_escaped_codepoint(fz_context *ctx, json_parser *cp, vstack *stack, int c)
+{
+  if (c >= 0xD800 && c < 0xDC00)
+  {
+    flush_surrogate(ctx, cp, stack);
+    cp->high_surrogate = c;
+  }
+  else if (c >= 0xDC00 && c < 0xE000)
+  {
+    if (cp->high_surrogate)
+      push_codepoint(ctx, stack, 0x10000 + ((cp->high_surrogate - 0xD800) << 10) + (c - 0xDC00));
+    else
+      push_codepoint(ctx, stack, 0xFFFD);
+    cp->high_surrogate = 0;
+  }
+  else
+  {
+    flush_surrogate(ctx, cp, stack);
+    push_codepoint(ctx, stack, c);
+  }
 }
 
 
@@ -155,6 +181,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
             continue;
           case '"':
             vstack_begin_string(ctx, stack);
+            cp->high_surrogate = 0;
             cp->state = P_JSON_STRING;
             break;
           case '{':
@@ -192,6 +219,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
 
             case '"':
               input += 1;
+              flush_surrogate(ctx, cp, stack);
               if (vstack_in_name(stack))
               {
                 vstack_end_name(ctx, stack);
@@ -210,6 +238,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
               do {
                 input += 1;
               } while (input < limit && *input != '\\' && *input != '"');
+              flush_surrogate(ctx, cp, stack);
               vstack_push_chars(ctx, stack, begin, input - begin);
               break;
             }
@@ -218,6 +247,8 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
         break;
 
       case P_JSON_STRING_ESCAPE:
+        if (*input != 'u')
+          flush_surrogate(ctx, cp, stack);
         switch (*input)
         {
           case '"': case '\\': case '/':
@@ -255,7 +286,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
           input++;
           if (cp->state == P_JSON_STRING_U4)
           {
-            push_codepoint(ctx, stack, cp->codepoint);
+            push_escaped_codepoint(ctx, cp, stack, cp->codepoint);
             cp->state = P_JSON_STRING;
             break;
           }

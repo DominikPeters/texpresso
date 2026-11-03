@@ -65,8 +65,14 @@ static int model_position(const unsigned char *p, int len, int line, int charact
   return units == character ? i : -1;
 }
 
+static bool synthesized;
+
 static void apply(fz_context *ctx, struct editor_change *op)
 {
+  // Synthesized commands only contain valid UTF-8 and escapes, including
+  // surrogate pairs and lone surrogates; they must decode to valid UTF-8.
+  if (synthesized)
+    fuzz_check(valid_utf8((const unsigned char *)op->data, op->length));
   int offset, remove;
   bool ok = editor_change_span(file->data, file->len, op, &offset, &remove);
 
@@ -150,14 +156,17 @@ static void append_number(fz_context *ctx, fz_buffer *out, fuzz_input *in)
 
 static void append_string(fz_context *ctx, fz_buffer *out, fuzz_input *in, bool json)
 {
-  static const char *pieces[] = { "x", "\\n", "\xc3\xa9", "\xf0\x9f\x98\x80", "}", "\\\\", "\xe2\x82\xac" };
+  static const char *pieces[] = {
+    "x", "\\n", "\xc3\xa9", "\xf0\x9f\x98\x80", "}", "\\\\", "\xe2\x82\xac",
+    "\\u00e9", "\\ud83d\\ude00", "\\u20ac", "\\ud83d", "\\ude00",
+  };
   fz_append_byte(ctx, out, '"');
   int n = fuzz_u8(in) % 6;
   for (int i = 0; i < n; i++)
   {
-    const char *piece = pieces[fuzz_u8(in) % 7];
-    if (!json && piece[0] == '\\' && piece[1] == 'n')
-      piece = "\n";
+    const char *piece = pieces[fuzz_u8(in) % 12];
+    if (!json && piece[0] == '\\')
+      piece = piece[1] == 'n' ? "\n" : "x";
     fz_append_string(ctx, out, piece);
   }
   fz_append_byte(ctx, out, '"');
@@ -201,6 +210,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 
   // Read sizes are taken from the input itself, so that every byte boundary
   // of a command is eventually tried.
+  synthesized = !raw;
   if (raw)
   {
     fuzz_input chunking = { data, size, 0 };
