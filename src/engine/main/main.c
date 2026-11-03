@@ -63,6 +63,15 @@ NORETURN PRINTF_FUNC(1, 2) int _tt_abort(const char *format, ...)
   vfprintf(stderr, format, ap);
   va_end(ap);
   fprintf(stderr, "\n");
+  if (texpresso)
+  {
+    // A fatal TeX error (runaway argument, missing \end, input stack
+    // overflow...) ends the pass; documents being edited reach one all the
+    // time. It is not a crash: send pending output and exit without abort(),
+    // which on macOS also runs ReportCrash and files a crash report.
+    txp_flush(texpresso);
+    _exit(EXIT_FAILURE);
+  }
   do_abort();
 }
 
