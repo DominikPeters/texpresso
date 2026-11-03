@@ -203,3 +203,7 @@ test-checkpoint-selection: | Makefile.config
 build/test-checkpoint-selection: test/test_checkpoint_selection.c src/frontend/checkpoint_selection.h
 	mkdir -p build
 	$(CC) -o $@ test/test_checkpoint_selection.c
+
+.PHONY: test-parent-watch
+test-parent-watch:
+	python3 test/test-parent-watch.py

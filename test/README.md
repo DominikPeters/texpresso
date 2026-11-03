@@ -14,3 +14,17 @@ configuration and again with `-DTXP_ZLIB_NG`, the generated native zlib-ng
 include path and `libz-ng.a` added to `Makefile.config`. That backend streams
 standard PNG at level 2 and uses distinct `zng_` symbols so other zlib users
 keep their system ABI. `-capabilities` reports the chosen backend and level.
+
+`make test-parent-watch` builds a small fixture around the production parent
+watcher. It verifies isolated-group enforcement and cleanup after frontend
+crashes, stdin EOF, and a launcher crash. It creates only disposable processes
+and does not require TeX Live or MuPDF.
+
+Headless clients can opt into `-watch-parent` when `parentWatch` is advertised.
+The launcher must create an isolated process group with the engine as its
+leader (for example, `setsid` before exec). A small pre-initialization supervisor
+keeps that PID/group alive while the actual frontend and checkpoint workers run.
+If the launcher disappears or the frontend exits, the supervisor releases its
+entire group, including itself. Consequently the supervised process reports a
+signal exit; clients must already distinguish requested shutdown from failures.
+Unwatched commands, including capability probes, retain their existing behavior.

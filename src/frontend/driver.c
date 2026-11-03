@@ -30,6 +30,7 @@
 #include "preview.h"
 #include "preview_compression.h"
 #include "txp_error.h"
+#include "parent_watch.h"
 #include <errno.h>
 #include <stdint.h>
 
@@ -143,6 +144,7 @@ static void usage(void)
           " -stream   Skip filesystem lookups; files are pushed via editor commands\n");
   fprintf(stderr,
           " -headless Export preview images over stdout (requires -json)\n"
+          " -watch-parent Release isolated compiler group when its editor exits (headless only)\n"
           " -capabilities Print supported preview features as JSON and exit\n"
           " -preview-max-pixels N Set PNG area budget (1..16000000; default 4000000)\n");
 }
@@ -180,6 +182,7 @@ int main(int argc, const char **argv)
   bool stream_mode = 0;
   bool headless = 0;
   bool capabilities = 0;
+  bool watch_parent = 0;
   int preview_max_pixels = TXP_PREVIEW_DEFAULT_PIXELS;
 
   size_t inclusion_path_size = 1;
@@ -195,6 +198,8 @@ int main(int argc, const char **argv)
       }
       else if (strcmp(arg, "-headless") == 0)
         headless = 1;
+      else if (strcmp(arg, "-watch-parent") == 0)
+        watch_parent = 1;
       else if (strcmp(arg, "-capabilities") == 0)
         capabilities = 1;
       else if (strcmp(arg, "-preview-max-pixels") == 0)
@@ -268,7 +273,7 @@ int main(int argc, const char **argv)
 
   if (capabilities)
   {
-    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true,\"pngCompression\":%s}\n", TXP_PREVIEW_MAX_PIXELS, TXP_PNG_COMPRESSION);
+    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true,\"parentWatch\":true,\"pngCompression\":%s}\n", TXP_PREVIEW_MAX_PIXELS, TXP_PNG_COMPRESSION);
     return 0;
   }
   if (headless && protocol != EDITOR_JSON)
@@ -288,6 +293,15 @@ int main(int argc, const char **argv)
     fprintf(stderr, "[error] -texlive and -tectonic are mutually exclusive.\n");
     usage();
     exit(1);
+  }
+
+  if (watch_parent) {
+    if (!headless) {
+      fprintf(stderr, "[error] -watch-parent requires -headless\n");
+      return 1;
+    }
+    const int result = txp_watch_parent();
+    if (result >= 0) return result;
   }
 
   char *inclusion_path = malloc(inclusion_path_size);
