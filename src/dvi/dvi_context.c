@@ -58,10 +58,15 @@ dvi_context_set_device(fz_context *ctx, dvi_context *dc, fz_device *dev)
 
 void dvi_context_free(fz_context *ctx, dvi_context *dc)
 {
-  dvi_context_set_device(ctx, dc, NULL);
+  dvi_context_abort_frame(ctx, dc);
+  fz_free(ctx, dc->colorstack.base);
+  for (int i = 0; i < dc->pdfcolorstacks.capacity; i++)
+    fz_free(ctx, dc->pdfcolorstacks.stacks[i].base);
+  fz_free(ctx, dc->pdfcolorstacks.stacks);
   fz_drop_buffer(ctx, dc->annotation_links);
   fz_drop_buffer(ctx, dc->annotation_destinations);
   pdf_drop_document(ctx, dc->annotation_pdf);
+  dvi_fonttable_free(ctx, dc->root.fonts);
   dvi_resmanager_free(ctx, dc->resmanager);
   dvi_scratch_release(ctx, &dc->scratch);
   fz_free(ctx, dc);

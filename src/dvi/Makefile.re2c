@@ -5,6 +5,6 @@ all: $(TARGETS)
 
 %.c: %.re2c.c
 	# Bit vectors index by YYPEEK and cannot represent the -1 EOF sentinel.
-	re2c $< -o $@ --tags
+	re2c $< -o $@ --tags --no-generation-date
 
 .PHONY: all

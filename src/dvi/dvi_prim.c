@@ -25,6 +25,7 @@
 #include <string.h>
 #include "mydvi.h"
 #include "mydvi_interp.h"
+#include "dvi_coord.h"
 #include "fz_util.h"
 
 #define color_params fz_default_color_params
@@ -35,7 +36,7 @@ static void output_fill_rect(fz_context *ctx, dvi_context *dc, dvi_state *st, in
   {
     float s = dc->scale;
     fz_path *path = fz_new_path(ctx);
-    fz_rectto(ctx, path, x0 * s, - y0 * s, x1 * s, - y1 * s);
+    fz_rectto(ctx, path, x0 * s, -(float)y0 * s, x1 * s, -(float)y1 * s);
     if (dc->annotation_uri) dvi_annotation_bounds(ctx, dc, fz_bound_path(ctx, path, NULL, st->gs.ctm));
     fz_fill_path(ctx, dc->dev, path, 0, st->gs.ctm, fz_device_rgb(ctx),
                  st->gs.colors.fill, 1.0, color_params);
@@ -48,7 +49,7 @@ static void output_debug_rect(fz_context *ctx, dvi_context *dc, dvi_state *st, i
   if (ctx && dc->dev)
   {
     fz_path *path = fz_new_path(ctx);
-    fz_rectto(ctx, path, x0 * dc->scale, - y0 * dc->scale, x1 * dc->scale, - y1 * dc->scale);
+    fz_rectto(ctx, path, x0 * dc->scale, -(float)y0 * dc->scale, x1 * dc->scale, -(float)y1 * dc->scale);
     fz_stroke_path(ctx, dc->dev, path, &fz_default_stroke_state, st->gs.ctm,
                    fz_device_rgb(ctx), st->gs.colors.line, 0.8, color_params);
     fz_drop_path(ctx, path);
@@ -168,7 +169,7 @@ void dvi_exec_char(fz_context *ctx, dvi_context *dc, dvi_state *st, uint32_t c, 
         fprintf(stderr, "VirtualFont: cannot enter state (vfc: %p)\n", vfc);
       if (vfc && set)
       {
-        st->registers.h += fixed_mul(vfc->width, scale_factor).value;
+        st->registers.h = dvi_coord(ctx, (int64_t)st->registers.h + fixed_mul(vfc->width, scale_factor).value);
         return;
       }
     }
@@ -199,7 +200,7 @@ void dvi_exec_char(fz_context *ctx, dvi_context *dc, dvi_state *st, uint32_t c, 
         }
       }
       if (set)
-        st->registers.h += w.value;
+        st->registers.h = dvi_coord(ctx, (int64_t)st->registers.h + w.value);
     }
   }
 }
@@ -232,13 +233,14 @@ void dvi_exec_fnt_num(fz_context *ctx, dvi_context *dc, dvi_state *st, uint32_t 
   st->f = f;
 }
 
-void dvi_exec_rule(fz_context *ctx, dvi_context *dc, dvi_state *st, uint32_t w, uint32_t h)
+void dvi_exec_rule(fz_context *ctx, dvi_context *dc, dvi_state *st, int32_t w, int32_t h)
 {
-  int32_t x = st->registers.h - st->gs.h;
-  int32_t y = st->registers.v - st->gs.v;
+  if (w <= 0 || h <= 0) return;
+  int32_t x = dvi_coord(ctx, (int64_t)st->registers.h - st->gs.h);
+  int32_t y = dvi_coord(ctx, (int64_t)st->registers.v - st->gs.v);
 
   //fprintf(stderr, "rule: (%fpt, %fpt, %fpt, %fpt)\n", fx, fy, fw, fh);
-  output_fill_rect(ctx, dc, st, x, y, x + w, y - h);
+  output_fill_rect(ctx, dc, st, x, y, dvi_coord(ctx, (int64_t)x + w), dvi_coord(ctx, (int64_t)y - h));
 }
 
 bool dvi_exec_fnt_def(fz_context *ctx, dvi_context *dc, dvi_state *st,
@@ -340,15 +342,15 @@ void dvi_exec_xdvglyphs(fz_context *ctx, dvi_context *dc, dvi_state *st, fixed_t
     float ds = dc->scale;
     float fs = size.value * ds;
 
-    int32_t sh = st->registers.h - st->gs.h;
-    int32_t sv = st->registers.v + dy0.value - st->gs.v;
+    int32_t sh = dvi_coord(ctx, (int64_t)st->registers.h - st->gs.h);
+    int32_t sv = dvi_coord(ctx, (int64_t)st->registers.v + dy0.value - st->gs.v);
     if (dc->dev)
     {
       fz_text *text = get_text(ctx, dc);
       for (int i = 0; i < num_glyphs; ++i)
       {
-        int32_t h = sh + dx[i].value;
-        int32_t v = dy ? sv + dy[i].value : sv;
+        int32_t h = dvi_coord(ctx, (int64_t)sh + dx[i].value);
+        int32_t v = dy ? dvi_coord(ctx, (int64_t)sv + dy[i].value) : sv;
         fz_matrix ctm =
             fz_pre_scale(fz_pre_translate(st->gs.ctm, h * ds, -v * ds), fs, fs);
         /* XDV supplies glyph IDs, not Unicode. Preserve recoverable text for
@@ -363,5 +365,5 @@ void dvi_exec_xdvglyphs(fz_context *ctx, dvi_context *dc, dvi_state *st, fixed_t
   }
   else
     fprintf(stderr, "dvi_exec_xdvglyphs: font not found\n");
-  st->registers.h += width.value;
+  st->registers.h = dvi_coord(ctx, (int64_t)st->registers.h + width.value);
 }

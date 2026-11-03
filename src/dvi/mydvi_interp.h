@@ -47,7 +47,7 @@ void dvi_exec_char(fz_context *ctx, dvi_context *dc, dvi_state *st, uint32_t c, 
 bool dvi_exec_push(fz_context *ctx, dvi_context *dc, dvi_state *st);
 bool dvi_exec_pop(fz_context *ctx, dvi_context *dc, dvi_state *st);
 void dvi_exec_fnt_num(fz_context *ctx, dvi_context *dc, dvi_state *st, uint32_t f);
-void dvi_exec_rule(fz_context *ctx, dvi_context *dc, dvi_state *st, uint32_t w, uint32_t h);
+void dvi_exec_rule(fz_context *ctx, dvi_context *dc, dvi_state *st, int32_t w, int32_t h);
 bool dvi_exec_fnt_def(fz_context *ctx, dvi_context *dc, dvi_state *st,
                  uint32_t f, uint32_t c, uint32_t s, uint32_t d,
                  const char *path, size_t pathlen, const char *name, size_t namelen);

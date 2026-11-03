@@ -24,6 +24,7 @@
 
 #include "mydvi.h"
 #include "mydvi_interp.h"
+#include "dvi_coord.h"
 #include "mydvi_opcodes.h"
 #include "intcodec.h"
 #include <limits.h>
@@ -276,25 +277,25 @@ bool dvi_interp_sub(fz_context *ctx, dvi_context *dc, dvi_state *st, const uint8
 
     case4(RIGHT, n)
     {
-      st->registers.h += decode_sB(buf, n);
+      st->registers.h = dvi_coord(ctx, (int64_t)st->registers.h + decode_sB(buf, n));
       return 1;
     }
 
     case W0:
-    st->registers.h += st->registers.w;
+    st->registers.h = dvi_coord(ctx, (int64_t)st->registers.h + st->registers.w);
     return 1;
 
     case4(W, n)
     {
       int32_t a = decode_sB(buf, n);
       st->registers.w = a;
-      st->registers.h += a;
+      st->registers.h = dvi_coord(ctx, (int64_t)st->registers.h + a);
       return 1;
     }
 
     case X0:
     {
-      st->registers.h += st->registers.x;
+      st->registers.h = dvi_coord(ctx, (int64_t)st->registers.h + st->registers.x);
       return 1;
     }
 
@@ -302,20 +303,20 @@ bool dvi_interp_sub(fz_context *ctx, dvi_context *dc, dvi_state *st, const uint8
     {
       int32_t a = decode_sB(buf, n);
       st->registers.x = a;
-      st->registers.h += a;
+      st->registers.h = dvi_coord(ctx, (int64_t)st->registers.h + a);
       return 1;
     }
 
     case4(DOWN, n)
     {
       int32_t d = decode_sB(buf, n);
-      st->registers.v += d;
+      st->registers.v = dvi_coord(ctx, (int64_t)st->registers.v + d);
       return 1;
     }
 
     case Y0:
     {
-      st->registers.v += st->registers.y;
+      st->registers.v = dvi_coord(ctx, (int64_t)st->registers.v + st->registers.y);
       return 1;
     }
 
@@ -323,19 +324,19 @@ bool dvi_interp_sub(fz_context *ctx, dvi_context *dc, dvi_state *st, const uint8
     {
       int32_t a = decode_sB(buf, n);
       st->registers.y = a;
-      st->registers.v += a;
+      st->registers.v = dvi_coord(ctx, (int64_t)st->registers.v + a);
       return 1;
     }
 
     case Z0:
-    st->registers.v += st->registers.z;
+    st->registers.v = dvi_coord(ctx, (int64_t)st->registers.v + st->registers.z);
     return 1;
 
     case4(Z, n)
     {
       int32_t a = decode_sB(buf, n);
       st->registers.z = a;
-      st->registers.v += a;
+      st->registers.v = dvi_coord(ctx, (int64_t)st->registers.v + a);
     }
     return 1;
 
@@ -347,11 +348,11 @@ bool dvi_interp_sub(fz_context *ctx, dvi_context *dc, dvi_state *st, const uint8
 
     case SET_RULE: case PUT_RULE:
     {
-      uint32_t h = decode_u32(buf);
-      uint32_t w = decode_u32(buf + 4);
+      int32_t h = decode_s32(buf);
+      int32_t w = decode_s32(buf + 4);
       dvi_exec_rule(ctx, dc, st, w, h);
       if (op == SET_RULE)
-        st->registers.h += w;
+        st->registers.h = dvi_coord(ctx, (int64_t)st->registers.h + w);
       return 1;
     }
 
