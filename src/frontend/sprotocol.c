@@ -44,6 +44,8 @@ struct channel_s
     int pos;
   } output;
   int passed_fd;
+  // Set when the peer closed the socket in the middle of a message.
+  bool truncated;
   txp_activity activity;
   struct {int pid,tag,tokens;uint64_t query;} profile;
   struct { char answer[12]; int sent, received; } handshake;
@@ -102,12 +104,18 @@ static ssize_t read_(channel_t *t, int fd, void *data, size_t len)
     int *fds0 = (int*)CMSG_DATA(cm);
     int nfds = (cm->cmsg_len - CMSG_LEN(0)) / sizeof(int);
 
-    if (nfds != 1)
-      abort();
-
+    // Only CHLD carries a descriptor, and the worker waits for DONE after each
+    // one. A descriptor that is still pending belongs to a CHLD that was never
+    // parsed; closing it releases that orphaned checkpoint.
+    for (int i = 1; i < nfds; i++)
+      close(fds0[i]);
+    if (nfds < 1)
+      return recvd;
     if (t->passed_fd != -1)
-      abort();
-      //close(t->passed_fd);
+    {
+      fprintf(stderr, "sprotocol: dropping unclaimed checkpoint descriptor\n");
+      close(t->passed_fd);
+    }
     t->passed_fd = fds0[0];
   }
 
@@ -199,6 +207,7 @@ static bool refill_at_least(channel_t *c, int fd, int at_least)
     if (n == 0)
     {
       c->input.len = avail;
+      if (avail > 0) c->truncated = 1;
       return 0;
     }
     avail += n;
@@ -314,6 +323,7 @@ channel_t *channel_new(void)
 void channel_free(channel_t *c)
 {
   channel_profile_finish(c);
+  if (c->passed_fd != -1) close(c->passed_fd);
   free(c->buf);
   free(c);
 }
@@ -334,7 +344,10 @@ static int cgetc(channel_t *t, int fd)
 {
   if (t->input.pos == t->input.len)
     if (!refill_at_least(t, fd, 1))
+    {
+      t->truncated = 1;
       return 0;
+    }
   return t->input.buffer[t->input.pos++];
 }
 
@@ -369,7 +382,10 @@ static bool read_bytes(channel_t *t, int fd, int pos, int size)
   pos += isize;
   size -= isize;
   t->input.pos = t->input.len = 0;
-  return read_all(t, fd, &t->buf[pos], size);
+  if (read_all(t, fd, &t->buf[pos], size))
+    return 1;
+  t->truncated = 1;
+  return 0;
 }
 
 static void write_bytes(channel_t *t, int fd, void *buf, int size)
@@ -403,10 +419,11 @@ static bool try_read_u32(channel_t *t, int fd, uint32_t *tag)
 
 static uint32_t read_u32(channel_t *t, int fd)
 {
-  int avail = t->input.len - t->input.pos;
-
   if (!refill_at_least(t, fd, 4))
+  {
+    t->truncated = 1;
     return 0;
+  }
 
   uint32_t tag;
   memcpy(&tag, t->input.buffer + t->input.pos, 4);
@@ -423,7 +440,10 @@ static void write_u32(channel_t *t, int fd, uint32_t u)
 static float read_f32(channel_t *t, int fd)
 {
   if (!refill_at_least(t, fd, 4))
+  {
+    t->truncated = 1;
     return 0;
+  }
 
   float f;
   memcpy(&f, t->input.buffer + t->input.pos, 4);
@@ -513,10 +533,13 @@ bool channel_has_pending_query(channel_t *t, int fd, int timeout)
 
 enum query channel_peek_query(channel_t *t, int fd)
 {
-  uint32_t result = read_u32(t, fd);
-  if (result == 0)
-    abort();
-  t->input.pos -= 4;
+  // A worker that exited (e.g. after a TeX fatal error) leaves EOF pending,
+  // which poll reports as readable. Report "no query" and let the next read
+  // close the process.
+  if (!refill_at_least(t, fd, 4))
+    return 0;
+  uint32_t result;
+  memcpy(&result, t->input.buffer + t->input.pos, 4);
   return result;
 }
 
@@ -524,6 +547,7 @@ bool channel_read_query(channel_t *t, int fd, query_t *r)
 {
   uint32_t tag;
 
+  t->truncated = 0;
   if (!try_read_u32(t, fd, &tag))
     return 0;
   r->tag = tag;
@@ -552,6 +576,11 @@ bool channel_read_query(channel_t *t, int fd, query_t *r)
       {
         r->apnd.fid = read_u32(t, fd);
         r->apnd.size = read_u32(t, fd);
+        if (r->apnd.size < 0 || r->apnd.size > (1 << 30))
+        {
+          fprintf(stderr, "sprotocol: invalid APND size %d\n", r->apnd.size);
+          return 0;
+        }
         if (!read_bytes(t, fd, 0, r->apnd.size))
           return 0;
         r->apnd.buf = t->buf;
@@ -605,7 +634,10 @@ bool channel_read_query(channel_t *t, int fd, query_t *r)
       {
         r->chld.pid = read_u32(t, fd);
         if (t->passed_fd == -1)
-          abort();
+        {
+          fprintf(stderr, "sprotocol: CHLD without a descriptor\n");
+          return 0;
+        }
         r->chld.fd = t->passed_fd;
         t->passed_fd = -1;
         break;
@@ -614,8 +646,14 @@ bool channel_read_query(channel_t *t, int fd, query_t *r)
     {
       fprintf(stderr, "unexpected tag: %c%c%c%c\n",
               tag & 0xFF, (tag >> 8) & 0xFF, (tag >> 16) & 0xFF, (tag >> 24) & 0xFF);
-      mabort();
+      return 0;
     }
+  }
+  if (t->truncated)
+  {
+    fprintf(stderr, "sprotocol: worker closed the channel inside a %s query\n",
+            query_to_string(tag));
+    return 0;
   }
   if (LOG)
   {
@@ -687,6 +725,14 @@ void channel_reset(channel_t *t)
 {
   t->input.pos = t->input.len = 0;
   t->output.pos = 0;
+  // A descriptor received with discarded input belongs to a CHLD that will
+  // never be parsed. Keeping it would make the next CHLD look like a protocol
+  // violation and would leak the checkpoint process it connects to.
+  if (t->passed_fd != -1)
+  {
+    close(t->passed_fd);
+    t->passed_fd = -1;
+  }
 }
 
 void *channel_get_buffer(channel_t *t, size_t n)

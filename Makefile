@@ -150,6 +150,10 @@ build/test-texlive-provider: test/test_texlive_provider.c src/common/texlive_pro
 
 .PHONY: test-preview-destinations
 .PHONY: test-preview-safety
+.PHONY: test-editing-lifecycle
+test-editing-lifecycle:
+	python3 test/fuzz/build.py --editing-tests --run
+
 test-preview-safety: texpresso
 	$(MAKE) -f Makefile.config -f Makefile build/test-preview-safety
 	build/test-preview-safety
@@ -203,6 +207,14 @@ test-checkpoint-selection: | Makefile.config
 build/test-checkpoint-selection: test/test_checkpoint_selection.c src/frontend/checkpoint_selection.h
 	mkdir -p build
 	$(CC) -o $@ test/test_checkpoint_selection.c
+
+.PHONY: test-sprotocol
+test-sprotocol: | Makefile.config
+	$(MAKE) -f Makefile.config -f Makefile build/test-sprotocol
+	build/test-sprotocol
+build/test-sprotocol: test/test_sprotocol.c src/frontend/sprotocol.c src/frontend/sprotocol.h src/frontend/myabort.c
+	mkdir -p build
+	$(CC) -fsanitize=address,undefined -o $@ test/test_sprotocol.c src/frontend/sprotocol.c src/frontend/myabort.c
 
 .PHONY: test-activity
 test-activity: | Makefile.config

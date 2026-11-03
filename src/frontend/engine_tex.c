@@ -1417,12 +1417,9 @@ static bool engine_step(txp_engine *_self, fz_context *ctx, bool restart_if_need
     if(txp_activity_enabled()) channel_profile_context(self->c,get_process(self)->pid,get_process(self)->profile_query+1,0,0);
     if (!channel_has_pending_query(self->c, fd, 10))
       return 0;
+    // On failure read_query has already closed the process.
     if (!read_query(self, self->c, &q))
-    {
-      close(fd);
-      get_process(self)->fd = -1;
       return 0;
-    }
     answer_query(ctx, self, &q);
     channel_flush(self->c, fd);
     return 1;
@@ -1596,11 +1593,7 @@ static bool process_pending_messages(fz_context *ctx, struct tex_engine *self)
         {
           query_t q;
           if (!read_query(self, self->c, &q))
-          {
-            close(p->fd);
-            p->fd = -1;
             break;
-          }
           answer_query(ctx, self, &q);
           nothing_seen = 0;
           continue;
