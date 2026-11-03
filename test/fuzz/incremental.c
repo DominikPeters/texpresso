@@ -7,9 +7,12 @@
  * incdvi_reset.
  *
  * Oracle: after every operation, the incrementally maintained index must
- * agree with a fresh index of the same bytes on page count, destinations and
- * rendered output (or failure to render), for arbitrary bytes, not just valid
- * documents. */
+ * agree with a fresh index of the same bytes on page count and destinations,
+ * for arbitrary bytes. In strict mode (first input bit), the output also
+ * follows TeX's rule that fonts are defined and selected before use; then
+ * rendered pages (or failures to render) must agree too. Without that rule a
+ * page that draws before defining its font legitimately depends on whether
+ * later pages, whose definitions are global, were interpreted first. */
 #include "common.h"
 
 #define MAX_OUTPUT 65536
@@ -48,6 +51,8 @@ static const char *special_dictionary[] = {
 };
 #define SPECIALS (sizeof special_dictionary / sizeof *special_dictionary)
 
+static bool strict;
+
 static void append_signed(fz_context *ctx, fz_buffer *b, fuzz_input *in, int base_op)
 {
   int n = fuzz_u8(in) % 4;
@@ -60,7 +65,7 @@ static void append_signed(fz_context *ctx, fz_buffer *b, fuzz_input *in, int bas
 /* One instruction, mostly well formed so that interpretation gets deep. */
 static void append_instruction(fz_context *ctx, fz_buffer *b, fuzz_input *in)
 {
-  switch (fuzz_u8(in) % 13)
+  switch (fuzz_u8(in) % (strict ? 9 : 13))
   {
     case 0: // rule: signed extents, possibly huge or negative
       fz_append_byte(ctx, b, fuzz_u8(in) & 1 ? 132 : 137);
@@ -191,7 +196,7 @@ static void compare_with_fresh(fz_context *ctx, incdvi_t *d, fz_buffer *b)
       fuzz_check(incdvi_destination_page(ctx, d, name) ==
                  incdvi_destination_page(ctx, fresh, name));
     }
-    for (int page = 0; page < pages && page < CHECKED_PAGES; page++)
+    for (int page = 0; strict && page < pages && page < CHECKED_PAGES; page++)
     {
       uint64_t expected = 0, actual = 0, again = 0;
       bool ok = try_render(ctx, fresh, b, page, &expected);
@@ -208,7 +213,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
   if (size > 65536)
     return 0;
-  fuzz_input in = { data, size, 0 };
+  if (size < 1)
+    return 0;
+  strict = data[0] & 1;
+  fuzz_input in = { data + 1, size - 1, 0 };
   fz_context *ctx = fuzz_context();
   incdvi_t *d = incdvi_new(ctx, (dvi_reshooks){0});
   fz_buffer *b = dvi_baseline(ctx);
@@ -224,7 +232,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         {
           const uint8_t *raw;
           size_t n = fuzz_bytes(&in, fuzz_u8(&in), &raw);
-          if (b->len + n <= MAX_OUTPUT)
+          if (!strict && b->len + n <= MAX_OUTPUT)
             fz_append_data(ctx, b, raw, n);
           break;
         }

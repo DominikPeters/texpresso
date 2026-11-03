@@ -59,7 +59,8 @@ for i, b in enumerate([b'\x03\x05\x00\x07\x01\x03\x04\x02',
                        b'\x04\x10\x05\x05\x05\x06\x06\x00\x40\x03\x02\x00\x01',
                        b'\x02\x03\x03\x07\x00\x05\x02\x05\x06\x02',
                        b'\x03\x04\x0c\xf7\x0c\x00\x01\x00\x10\x03\x01\x01']):
-    save('incremental', f'sequence-{i}', b)
+    save('incremental', f'strict-{i}', b'\x01' + b)
+    save('incremental', f'lax-{i}', b'\x00' + b)
 
 # special: NUL-separated specials.
 save('special', 'all', '\0'.join(SPECIALS))

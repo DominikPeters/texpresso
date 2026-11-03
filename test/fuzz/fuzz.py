@@ -114,8 +114,8 @@ def compile_flags(fuzzer):
             '-fsanitize=' + sanitizers, '-UNDEBUG', '-w']
 
 
-def build(out, targets, fuzzer=True):
-    """targets: {binary name: harness source}."""
+def build(out, programs, fuzzer=True, extra_libs=()):
+    """programs: {binary name: [sources]}; engine sources are always linked."""
     out.mkdir(parents=True, exist_ok=True)
     cc, cxx = find_compilers()
     cflags, libs = library_flags()
@@ -128,20 +128,48 @@ def build(out, targets, fuzzer=True):
         subprocess.run(command, check=True)
         return command, obj
 
-    sources = engine_sources() + list(targets.values())
+    sources = list(dict.fromkeys(engine_sources() + [s for srcs in programs.values() for s in srcs]))
     with concurrent.futures.ThreadPoolExecutor(os.cpu_count()) as pool:
         compiled = dict(zip(sources, pool.map(compile_one, sources)))
     commands += [c for c, _ in compiled.values()]
     engine_objects = [str(compiled[s][1]) for s in engine_sources()]
     link_sanitizers = 'address,undefined' + (',fuzzer' if fuzzer else '')
-    for name, source in targets.items():
-        link = cxx + ['-fsanitize=' + link_sanitizers, str(compiled[source][1])]
-        link += engine_objects + libs + ['-o', str(out / name)]
+    for name, srcs in programs.items():
+        link = cxx + ['-fsanitize=' + link_sanitizers] + [str(compiled[s][1]) for s in srcs]
+        link += engine_objects + libs + list(extra_libs) + ['-o', str(out / name)]
         subprocess.run(link, check=True)
         commands.append(link)
         print(f'built {out / name}')
     revision = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     (out / 'build.json').write_text(json.dumps({'revision': revision, 'commands': commands}, indent=2) + '\n')
+
+
+def provide_sdl3(directory):
+    """Homebrew's SDL2 is sdl2-compat, which looks for libSDL3.dylib beside the
+    executable (among other places) and otherwise blocks on a modal error
+    dialog. Make it find Homebrew's SDL3."""
+    for prefix in ['/opt/homebrew/opt/sdl3', '/usr/local/opt/sdl3']:
+        lib = Path(prefix, 'lib/libSDL3.dylib')
+        if lib.exists():
+            link = directory / 'libSDL3.dylib'
+            if link.is_symlink() or link.exists():
+                link.unlink()
+            link.symlink_to(lib)
+            return
+
+
+def build_stress():
+    """Sanitizer builds of the whole frontend and of the fake worker, for
+    stress.py. The frontend finds the worker as texpresso-xetex beside it."""
+    frontend = [ROOT / f'src/frontend/{name}.c' for name in
+                ['driver', 'main', 'logo', 'state', 'fs', 'renderer', 'engine_tex',
+                 'engine_pdf', 'engine_dvi', 'synctex', 'preview']]
+    build(OUT / 'stress', {'texpresso': frontend}, fuzzer=False, extra_libs=['-lSDL2'])
+    provide_sdl3(OUT / 'stress')
+    worker = [FUZZ / 'fake_worker.c', ROOT / 'src/engine/main/texpresso_protocol.c',
+              ROOT / 'src/engine/main/fork.c']
+    build(OUT / 'stress-worker', {'texpresso-xetex': worker}, fuzzer=False)
+    shutil.copy2(OUT / 'stress-worker/texpresso-xetex', OUT / 'stress/texpresso-xetex')
 
 
 def selected(names):
@@ -158,7 +186,8 @@ def inputs(name):
 
 
 def command_build(args):
-    build(OUT, {f'fuzz-{name}': FUZZ / f'{name}.c' for name in HARNESSES})
+    build(OUT, {f'fuzz-{name}': [FUZZ / f'{name}.c'] for name in HARNESSES})
+    build_stress()
 
 
 def command_run(args):
@@ -172,7 +201,10 @@ def command_run(args):
         corpus.mkdir(parents=True, exist_ok=True)
         findings.mkdir(parents=True, exist_ok=True)
         command = [str(binary), f'-max_total_time={args.seconds}', f'-artifact_prefix={findings}/',
-                   '-print_final_stats=1', f'-timeout={args.timeout}', '-rss_limit_mb=4096']
+                   '-print_final_stats=1', f'-timeout={args.timeout}', '-rss_limit_mb=4096',
+                   # The engine logs to stderr on every malformed input, which
+                   # slows fuzzing down. Replay a finding to see its report.
+                   '-close_fd_mask=2']
         if args.jobs > 1:
             command += [f'-fork={args.jobs}', '-ignore_crashes=1', '-ignore_ooms=1', '-ignore_timeouts=1']
         dictionary = FUZZ / 'dicts' / f'{name}.dict'
@@ -215,7 +247,7 @@ def command_replay(args):
 
 def command_editing_tests(args):
     out = ROOT / 'build/editing-tests'
-    build(out, {'test-editing-lifecycle': ROOT / 'test/test_editing_lifecycle.c'}, fuzzer=False)
+    build(out, {'test-editing-lifecycle': [ROOT / 'test/test_editing_lifecycle.c']}, fuzzer=False)
     log = out / 'test-editing-lifecycle.stderr.log'
     print(f'running editing tests (60s timeout); diagnostics: {log}', flush=True)
     with log.open('w') as f:
