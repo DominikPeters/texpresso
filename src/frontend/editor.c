@@ -142,6 +142,19 @@ bool editor_change_span(const unsigned char *p, size_t size,
   return true;
 }
 
+// Numbers are doubles on the wire; converting one outside the int range is
+// undefined behavior, so reject those and fractions.
+static bool int_arg(fz_context *ctx, val v, int *out)
+{
+  if (!val_is_number(v))
+    return false;
+  double n = val_number(ctx, v);
+  if (!isfinite(n) || n < INT_MIN || n > INT_MAX || floor(n) != n)
+    return false;
+  *out = n;
+  return true;
+}
+
 bool editor_parse(fz_context *ctx,
                   vstack *stack,
                   val command,
@@ -215,9 +228,10 @@ bool editor_parse(fz_context *ctx,
     val offset = val_array_get(ctx, stack, command, 2);
     val length = val_array_get(ctx, stack, command, 3);
     val data = val_array_get(ctx, stack, command, 4);
+    int ioffset, ilength;
     if (!val_is_string(path) ||
-        !val_is_number(offset) ||
-        !val_is_number(length) ||
+        !int_arg(ctx, offset, &ioffset) ||
+        !int_arg(ctx, length, &ilength) ||
         !val_is_string(data))
       goto arguments;
     *out = (struct editor_command){
@@ -230,8 +244,8 @@ bool editor_parse(fz_context *ctx,
                 .base = BASE_BYTE,
                 .span =
                     {
-                        .offset = val_number(ctx, offset),
-                        .remove = val_number(ctx, length),
+                        .offset = ioffset,
+                        .remove = ilength,
                     },
             },
     };
@@ -243,9 +257,10 @@ bool editor_parse(fz_context *ctx,
     val offset = val_array_get(ctx, stack, command, 2);
     val count = val_array_get(ctx, stack, command, 3);
     val data = val_array_get(ctx, stack, command, 4);
+    int ioffset, icount;
     if (!val_is_string(path) ||
-        !val_is_number(offset) ||
-        !val_is_number(count) ||
+        !int_arg(ctx, offset, &ioffset) ||
+        !int_arg(ctx, count, &icount) ||
         !val_is_string(data))
       goto arguments;
     *out = (struct editor_command){
@@ -258,8 +273,8 @@ bool editor_parse(fz_context *ctx,
                 .base = BASE_LINE,
                 .span =
                     {
-                        .offset = val_number(ctx, offset),
-                        .remove = val_number(ctx, count),
+                        .offset = ioffset,
+                        .remove = icount,
                     },
             },
     };
@@ -274,9 +289,10 @@ bool editor_parse(fz_context *ctx,
     val end_line = val_array_get(ctx, stack, command, 4);
     val end_char = val_array_get(ctx, stack, command, 5);
     val data = val_array_get(ctx, stack, command, 6);
-    if (!val_is_string(path) || !val_is_number(start_line) ||
-        !val_is_number(start_char) || !val_is_number(end_line) ||
-        !val_is_number(end_char) || !val_is_string(data))
+    int range[4];
+    if (!val_is_string(path) || !int_arg(ctx, start_line, &range[0]) ||
+        !int_arg(ctx, start_char, &range[1]) || !int_arg(ctx, end_line, &range[2]) ||
+        !int_arg(ctx, end_char, &range[3]) || !val_is_string(data))
       goto arguments;
     *out = (struct editor_command){
         .tag = EDIT_CHANGE,
@@ -288,10 +304,10 @@ bool editor_parse(fz_context *ctx,
                 .base = BASE_RANGE,
                 .range =
                     {
-                        .start_line = val_number(ctx, start_line),
-                        .start_char = val_number(ctx, start_char),
-                        .end_line = val_number(ctx, end_line),
-                        .end_char = val_number(ctx, end_char),
+                        .start_line = range[0],
+                        .start_char = range[1],
+                        .end_line = range[2],
+                        .end_char = range[3],
                     },
             },
     };
@@ -370,14 +386,15 @@ bool editor_parse(fz_context *ctx,
       goto arity;
     val path = val_array_get(ctx, stack, command, 1);
     val line = val_array_get(ctx, stack, command, 2);
-    if (!val_is_string(path) || !val_is_number(line))
+    int iline;
+    if (!val_is_string(path) || !int_arg(ctx, line, &iline))
       goto arguments;
     *out = (struct editor_command){
         .tag = EDIT_SYNCTEX_FORWARD,
         .synctex_forward =
             {
                 .path = val_string(ctx, stack, path),
-                .line = val_number(ctx, line),
+                .line = iline,
             },
     };
   }
