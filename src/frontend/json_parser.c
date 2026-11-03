@@ -25,7 +25,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
-#include "myabort.h"
 #include "json_parser.h"
 
 static int is_ws(int c)
@@ -125,6 +124,13 @@ static void push_codepoint(fz_context *ctx, vstack *stack, int cp)
 }
 
 
+// Malformed input is the editor's fault: report it and let the caller
+// resynchronize instead of taking the whole frontend down.
+static void json_error(fz_context *ctx, int c)
+{
+  fz_throw(ctx, FZ_ERROR_GENERIC, "json parser: unexpected character %C", c);
+}
+
 const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
                        char *input, const char *limit)
 {
@@ -161,7 +167,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
             break;
           case ']':
             if (!vstack_in_array(stack))
-              myabort();
+              json_error(ctx, *input);
             vstack_end_array(ctx, stack);
             POP_CONTEXT(input + 1);
             continue;
@@ -169,7 +175,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
           case 'f': cp->state = P_JSON_FALSE_F; break;
           case 'n': cp->state = P_JSON_NULL_N; break;
           default:
-            myabort();
+            json_error(ctx, *input);
         }
         input++;
         break;
@@ -231,7 +237,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
             continue;
 
           default:
-            myabort();
+            json_error(ctx, *input);
         }
         cp->state = P_JSON_STRING;
         input++;
@@ -244,7 +250,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
         do
         {
           int c = as_hex(*input);
-          if (c == -1) myabort();
+          if (c == -1) json_error(ctx, *input);
           cp->codepoint = (cp->codepoint << 4) | c;
           input++;
           if (cp->state == P_JSON_STRING_U4)
@@ -266,7 +272,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
             return NULL;
         }
         if (*input != ':')
-          myabort();
+          json_error(ctx, *input);
         input += 1;
         cp->state = P_JSON_ELEMENT;
         break;
@@ -286,7 +292,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
             else if (vstack_in_array(stack))
               cp->state = P_JSON_ELEMENT;
             else
-              myabort();
+              json_error(ctx, *input);
             break;
 
           case '}':
@@ -300,7 +306,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
             break;
 
           default:
-            myabort();
+            json_error(ctx, *input);
         }
         input++;
         break;
@@ -323,7 +329,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
             cp->state = P_JSON_STRING;
             break;
           default:
-            myabort();
+            json_error(ctx, *input);
         }
         input++;
         break;
@@ -411,7 +417,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
 
       case P_JSON_NULL_N:
         if (*input != 'u')
-          myabort();
+          json_error(ctx, *input);
         cp->state = P_JSON_NULL_NU;
         input++;
         if (!(input < limit))
@@ -419,7 +425,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
 
       case P_JSON_NULL_NU:
         if (*input != 'l')
-          myabort();
+          json_error(ctx, *input);
         cp->state = P_JSON_NULL_NUL;
         input++;
         if (!(input < limit))
@@ -427,7 +433,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
 
       case P_JSON_NULL_NUL:
         if (*input != 'l')
-          myabort();
+          json_error(ctx, *input);
         vstack_push_null(ctx, stack);
         input++;
         POP_CONTEXT(input);
@@ -435,7 +441,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
 
       case P_JSON_TRUE_T:
         if (*input != 'r')
-          myabort();
+          json_error(ctx, *input);
         cp->state = P_JSON_TRUE_TR;
         input++;
         if (!(input < limit))
@@ -443,7 +449,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
 
       case P_JSON_TRUE_TR:
         if (*input != 'u')
-          myabort();
+          json_error(ctx, *input);
         cp->state = P_JSON_TRUE_TRU;
         input++;
         if (!(input < limit))
@@ -451,7 +457,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
 
       case P_JSON_TRUE_TRU:
         if (*input != 'e')
-          myabort();
+          json_error(ctx, *input);
         vstack_push_bool(ctx, stack, 1);
         input++;
         POP_CONTEXT(input);
@@ -459,7 +465,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
 
       case P_JSON_FALSE_F:
         if (*input != 'a')
-          myabort();
+          json_error(ctx, *input);
         cp->state = P_JSON_FALSE_FA;
         input++;
         if (!(input < limit))
@@ -467,7 +473,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
 
       case P_JSON_FALSE_FA:
         if (*input != 'l')
-          myabort();
+          json_error(ctx, *input);
         cp->state = P_JSON_FALSE_FAL;
         input++;
         if (!(input < limit))
@@ -475,7 +481,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
 
       case P_JSON_FALSE_FAL:
         if (*input != 's')
-          myabort();
+          json_error(ctx, *input);
         cp->state = P_JSON_FALSE_FALS;
         input++;
         if (!(input < limit))
@@ -483,7 +489,7 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
 
       case P_JSON_FALSE_FALS:
         if (*input != 'e')
-          myabort();
+          json_error(ctx, *input);
         vstack_push_bool(ctx, stack, 0);
         input++;
         POP_CONTEXT(input);

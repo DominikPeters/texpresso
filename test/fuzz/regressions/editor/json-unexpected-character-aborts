@@ -1,0 +1,4 @@
+["open", "main.tex", "x"]
+["change", "main.tex", 1, 2, "ab"]
+["change-lines", "main.tex", 1,"], "l\n"]
+["change-range", "main.tex", 2, 3, 2, 5, "\u00e9"]
