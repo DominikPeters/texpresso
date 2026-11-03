@@ -160,6 +160,12 @@ bool editor_parse(fz_context *ctx,
                   val command,
                   struct editor_command *out);
 
+// Resolve a change to a byte span of the current contents `data`. Return
+// false, after logging why, if the change does not fit them.
+bool editor_change_span(const unsigned char *data, size_t len,
+                        const struct editor_change *op,
+                        int *offset, int *remove);
+
 // Sending message
 
 enum EDITOR_INFO_BUFFER

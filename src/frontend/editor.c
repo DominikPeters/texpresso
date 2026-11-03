@@ -32,6 +32,116 @@ static bool truth_value(fz_context *ctx, vstack *t, val v)
   return !(val_is_name(v) && strcmp(val_as_name(ctx, t, v), "nil") == 0);
 }
 
+#include "utf_mapping.h"
+
+// Skip `lines` newlines from `offset`. Return the new offset, or -1 if the
+// buffer ends first.
+static int skip_lines(const unsigned char *p, int len, int offset, int lines)
+{
+  while (lines > 0 && offset < len)
+  {
+    if (p[offset] == '\n')
+      lines -= 1;
+    offset++;
+  }
+  return lines > 0 ? -1 : offset;
+}
+
+bool editor_change_span(const unsigned char *p, size_t size,
+                        const struct editor_change *op,
+                        int *offsetp, int *removep)
+{
+  const char *path = op->path;
+  if (size > INT_MAX)
+    return false;
+  int len = size;
+  int offset = op->span.offset, remove = op->span.remove;
+
+  if (op->base == BASE_LINE)
+  {
+    if (offset < 0 || remove < 0)
+    {
+      fprintf(stderr, "[command] change line %s: negative line, skipping\n", path);
+      return false;
+    }
+    int count = remove;
+    offset = skip_lines(p, len, 0, op->span.offset);
+    if (offset < 0)
+    {
+      fprintf(stderr, "[command] change line %s: invalid line number, skipping\n", path);
+      return false;
+    }
+
+    remove = offset;
+    while (count > 0 && remove < len)
+    {
+      if (p[remove] == '\n')
+        count -= 1;
+      remove++;
+    }
+
+    // The last line may lack its newline.
+    if (count > 1)
+    {
+      fprintf(stderr, "[command] change line %s: invalid line count, skipping\n", path);
+      return false;
+    }
+
+    remove -= offset;
+  }
+  else if (op->base == BASE_RANGE)
+  {
+    if (op->range.start_line < 0 || op->range.start_char < 0 ||
+        op->range.end_char < 0 || op->range.end_line < op->range.start_line)
+    {
+      fprintf(stderr, "[command] change range %s: invalid range, skipping\n", path);
+      return false;
+    }
+
+    int line_start = skip_lines(p, len, 0, op->range.start_line);
+    if (line_start < 0)
+    {
+      fprintf(stderr, "[command] change range %s: invalid start line, skipping\n", path);
+      return false;
+    }
+
+    int start_char_offset = utf16_to_utf8_offset(p + line_start, p + len, op->range.start_char);
+    if (start_char_offset == -1)
+    {
+      fprintf(stderr, "[command] change range %s: invalid start char, skipping\n", path);
+      return false;
+    }
+    offset = line_start + start_char_offset;
+
+    int end_line_start = skip_lines(p, len, line_start,
+                                    op->range.end_line - op->range.start_line);
+    if (end_line_start < 0)
+    {
+      fprintf(stderr, "[command] change range %s: invalid end line, skipping\n", path);
+      return false;
+    }
+
+    int end_char_offset = utf16_to_utf8_offset(p + end_line_start, p + len, op->range.end_char);
+    if (end_char_offset == -1)
+    {
+      fprintf(stderr, "[command] change range %s: invalid end char, skipping\n", path);
+      return false;
+    }
+
+    remove = end_line_start + end_char_offset - offset;
+  }
+
+  if (remove < 0 || offset < 0 || offset > len || remove > len - offset)
+  {
+    fprintf(stderr, "[command] change %s: invalid range, skipping\n", path);
+    return false;
+  }
+
+  *offsetp = offset;
+  *removep = remove;
+  return true;
+}
+
 bool editor_parse(fz_context *ctx,
                   vstack *stack,
                   val command,

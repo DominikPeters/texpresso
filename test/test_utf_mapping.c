@@ -1,4 +1,4 @@
-#include "../src/utf_mapping.h"
+#include "../src/frontend/utf_mapping.h"
 
 // Test strings covering all corner cases
 struct test_vec {

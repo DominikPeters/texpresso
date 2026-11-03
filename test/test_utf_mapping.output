@@ -111,11 +111,13 @@
   ^____
 [error] Invalid UTF-16 range: pointing past end of buffer
 [error] Invalid UTF-16 range: pointing past end of buffer
+[error] Invalid UTF-16 range: pointing past end of buffer
 
 # Test 15. test_end_mid_4byte: incomplete 4-byte
 
 | c  | a  | f  | C3 | A9 | F0 | 90 | 8C |
   ^    ^    ^    ^         ^___
+[error] Invalid UTF-16 range: pointing past end of buffer
 
 # Test 16. test_middle_surrogate: Pointing in middle of surrogate pair (should fail, U+D800 not followed by low surrogate)
 

@@ -19,11 +19,15 @@ static const void *move_utf8_by_utf16_codeunits(const void *start,
     return NULL;
   }
 
-  const unsigned char *p = start;
+  const unsigned char *p = start, *lim = end;
   int warned_continuation = 0;
 
   while (count > 0)
   {
+    // Out of bounds: the position is past the end of the buffer
+    if (p >= lim)
+      break;
+
     unsigned char b = *p;
 
     // 1-byte UTF-8: ASCII char
@@ -42,14 +46,11 @@ static const void *move_utf8_by_utf16_codeunits(const void *start,
       // Count as single UTF-16 code unit
       count -= 1;
       p += 1;
-
-      // Out of bounds
-      if ((void*)p > end)
-        return NULL;
+      continue;
     }
 
     // 1-byte: continuation (warn and ignore)
-    else if (b < 0xC0)
+    if (b < 0xC0)
     {
       if (!warned_continuation)
       {
@@ -59,35 +60,22 @@ static const void *move_utf8_by_utf16_codeunits(const void *start,
         warned_continuation = 1;
       }
       p += 1;
+      continue;
     }
 
-    // 2-byte UTF-8, 1 UTF-16 code unit
-    else if (b < 0xE0)
+    // 2-byte and 3-byte UTF-8: 1 UTF-16 code unit
+    // 4-byte UTF-8: a surrogate pair, needing two UTF-16 code units
+    int bytes = b < 0xE0 ? 2 : b < 0xF0 ? 3 : 4;
+    if (lim - p < bytes)
     {
-      count -= 1;
-      p += 2;
-      if ((void*)p <= end && p[-1] == '\n')
-        goto invalid_nl;
+      p = lim + 1;
+      break;
     }
-
-    // 3-byte UTF-8, 1 UTF-16 code unit
-    else if (b < 0xF0)
-    {
-      count -= 1;
-      p += 3;
-      if ((void*)p <= end && (p[-1] == '\n' || p[-2] == '\n'))
+    for (int i = 1; i < bytes; i++)
+      if (p[i] == '\n')
         goto invalid_nl;
-    }
-
-    // 4-byte UTF-8 encodings: translate to a surrogate pair, needing two
-    // UTF-16 code units
-    else
-    {
-      p += 4;
-      count -= 2;
-      if ((void*)p <= end && (p[-1] == '\n' || p[-2] == '\n' || p[-3] == '\n'))
-        goto invalid_nl;
-    }
+    p += bytes;
+    count -= bytes == 4 ? 2 : 1;
   }
 
   // At this point, count is:
@@ -95,7 +83,7 @@ static const void *move_utf8_by_utf16_codeunits(const void *start,
   // - (-1) if the offset given pointed in the middle of a surrogate pair
   // - >0 if the offset is pointing past the end of the buffer
   //
-  if (count > 0 || (void*)p > end)
+  if (count > 0 || p > lim)
   {
     fprintf(stderr,
             "[error] Invalid UTF-16 range: "

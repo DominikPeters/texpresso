@@ -623,8 +623,6 @@ static int find_diff(const fz_buffer *buf, const void *data, int size)
   return i;
 }
 
-#include "utf_mapping.h"
-
 static void realize_change(struct persistent_state *ps,
                            ui_state *ui,
                            struct editor_change *op)
@@ -651,115 +649,9 @@ static void realize_change(struct persistent_state *ps,
     return;
   }
 
-  int offset = op->span.offset, remove = op->span.remove, length = op->length;
-
-  if (op->base == BASE_LINE)
-  {
-    // Compute byte offsets from line offsets
-    int line = offset, count = remove;
-
-    offset = remove = 0;
-
-    uint8_t *p = b->data;
-    size_t len = b->len;
-
-    while (line > 0 && offset < len)
-    {
-      if (p[offset] == '\n')
-        line -= 1;
-      offset++;
-    }
-
-    if (line > 0)
-    {
-      fprintf(stderr, "[command] change line %s: invalid line number, skipping\n", path);
-      return;
-    }
-
-    remove = offset;
-    while (count > 0 && remove < len)
-    {
-      if (p[remove] == '\n')
-        count -= 1;
-      remove++;
-    }
-
-    if (count > 1)
-    {
-      fprintf(stderr, "[command] change line %s: invalid line count, skipping\n", path);
-      return;
-    }
-
-    remove -= offset;
-  }
-  else if (op->base == BASE_RANGE)
-  {
-    // Compute byte offsets from line offsets
-    int line = op->range.start_line;
-    offset = remove = 0;
-
-    uint8_t *p = b->data;
-    size_t len = b->len;
-
-    while (line > 0 && offset < len)
-    {
-      if (p[offset] == '\n')
-        line -= 1;
-      offset++;
-    }
-
-    if (line > 0)
-    {
-      fprintf(stderr, "[command] change range %s: invalid start line, skipping\n", path);
-      return;
-    }
-
-    int start_char_offset = utf16_to_utf8_offset(p + offset, p + len, op->range.start_char);
-    if (start_char_offset == -1)
-    {
-      fprintf(stderr, "[command] change range %s: invalid start char, skipping\n", path);
-      return;
-    }
-
-    remove = offset;
-    offset += start_char_offset;
-
-    line = op->range.end_line - op->range.start_line;
-    if (line < 0)
-    {
-      fprintf(stderr, "[command] change range %s: invalid end line, skipping\n", path);
-      return;
-    }
-
-    while (line > 0 && remove < len)
-    {
-      if (p[remove] == '\n')
-        line -= 1;
-      remove++;
-    }
-
-    if (line > 0)
-    {
-      fprintf(stderr, "[command] change range %s: invalid end line, skipping\n", path);
-      return;
-    }
-
-    int end_char_offset = utf16_to_utf8_offset(p + remove, p + len, op->range.end_char);
-    if (end_char_offset == -1)
-    {
-      fprintf(stderr, "[command] change range %s: invalid end char, skipping\n", path);
-      return;
-    }
-
-    remove += end_char_offset;
-    remove -= offset;
-  }
-
-  if (remove < 0 || offset < 0 || offset + remove > b->len)
-  {
-    fprintf(stderr, "[command] change %s: invalid range, skipping\n", path);
+  int offset, remove, length = op->length;
+  if (!editor_change_span(b->data, b->len, op, &offset, &remove))
     return;
-  }
 
   if (b->len - remove + length > b->cap)
     fz_resize_buffer(ps->ctx, b, b->len - remove + length + 128);
