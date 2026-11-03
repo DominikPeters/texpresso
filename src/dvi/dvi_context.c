@@ -89,6 +89,9 @@ void dvi_context_begin_frame(fz_context *ctx, dvi_context *dc, fz_device *dev)
   dc->annotation_link_count = dc->annotation_destination_count = 0; dc->annotation_uri = NULL;
   dvi_context_set_device(ctx, dc, dev);
   dvi_state *st = &dc->root;
+  // DVI pages select their own font; do not let a page drawn before select
+  // its font depend on which page was rendered last.
+  st->f = 0;
   st->registers_stack.depth = 0;
   st->gs = (dvi_graphicstate){0,};
   st->gs.ctm = fz_identity;

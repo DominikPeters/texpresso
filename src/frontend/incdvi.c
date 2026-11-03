@@ -364,7 +364,7 @@ static fz_buffer *page_key(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int pag
   fz_buffer *key=fz_new_buffer(ctx, (size_t)(end-first)+256);
   bool eligible=true, selected=false;
   unsigned char fonts[1250]={0};
-  uint32_t font=d->dc->root.f;
+  uint32_t font=0; /* dvi_context_begin_frame resets the font */
   fz_var(key);
   fz_try(ctx) {
     fz_append_data(ctx,key,&bounds,sizeof bounds);

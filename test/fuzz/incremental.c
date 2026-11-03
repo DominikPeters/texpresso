@@ -165,7 +165,9 @@ static bool try_render(fz_context *ctx, incdvi_t *d, fz_buffer *b, int page, uin
     *hash = render(ctx, d, b, page);
   fz_catch(ctx)
   {
-    (void)txp_take_error(ctx);
+    const char *error = txp_take_error(ctx);
+    if (getenv("FUZZ_VERBOSE"))
+      fprintf(stderr, "render of page %d failed: %s\n", page, error);
     ok = false;
   }
   return ok;
