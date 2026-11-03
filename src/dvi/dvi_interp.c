@@ -41,6 +41,8 @@ int dvi_preamble_size(const uint8_t *buf, int len)
   if (buf[0] != PRE)
     return 0;
   CHECK_LEN(15);
+  // The comment may still be arriving when the output is streamed.
+  CHECK_LEN(14 + buf[14]);
   return 15 + buf[14];
 }
 
