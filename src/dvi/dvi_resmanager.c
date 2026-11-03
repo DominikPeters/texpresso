@@ -540,8 +540,8 @@ static fz_font *dvi_resmanager_get_fz_font(fz_context *ctx, dvi_resmanager *rm, 
 {
   for (cell_fz_font *cell = rm->first_fz_font; cell; cell = cell->next)
   {
-    if (strncmp(name, cell->name, len) == 0 &&
-        cell->name[len] == 0 &&
+    if (strlen(cell->name) == (size_t)len &&
+        memcmp(name, cell->name, len) == 0 &&
         cell->index == index)
       return cell->font;
   }
@@ -608,7 +608,9 @@ dvi_font *dvi_resmanager_get_tex_font(fz_context *ctx, dvi_resmanager *rm, const
 {
   for (cell_dvi_font *cell = rm->first_dvi_font; cell; cell = cell->next)
   {
-    if (strncmp(name, cell->font.name, len) == 0 && cell->font.name[len] == 0)
+    // Names come from the DVI and may contain NUL bytes: compare lengths
+    // before looking at the stored name's bytes.
+    if (strlen(cell->font.name) == (size_t)len && memcmp(name, cell->font.name, len) == 0)
       return &cell->font;
   }
 
