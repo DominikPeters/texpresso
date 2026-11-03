@@ -653,6 +653,8 @@ bool channel_read_query(channel_t *t, int fd, query_t *r)
   {
     fprintf(stderr, "sprotocol: worker closed the channel inside a %s query\n",
             query_to_string(tag));
+    if (tag == Q_CHLD)
+      close(r->chld.fd);
     return 0;
   }
   if (LOG)
