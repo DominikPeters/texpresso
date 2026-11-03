@@ -2,6 +2,14 @@
 
 [include.tex](include.tex) (`make include`): a .tex file to test include path support, it needs `-I incpath` to be passed to TeXpresso to build correctly.
 
+`make test-editing-lifecycle` replays deterministic DVI output edits
+(byte-by-byte arrival, rollback to every prefix, same-length compiler restarts)
+under AddressSanitizer and UndefinedBehaviorSanitizer, comparing the incremental
+index with a fresh one. Fuzzers live in [fuzz/](fuzz/README.md).
+
+`make test-sprotocol` covers the frontend side of the worker channel when a
+worker dies, discards a checkpoint descriptor, or sends malformed messages.
+
 `make test-synctex` checks inverse-search geometry without running a compiler:
 text-line height/depth, compressed vertical coordinates, nearby whitespace,
 negative kern widths, nested boxes, invisible struts, and glyph-only boxes.

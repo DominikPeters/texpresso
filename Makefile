@@ -150,9 +150,18 @@ build/test-texlive-provider: test/test_texlive_provider.c src/common/texlive_pro
 
 .PHONY: test-preview-destinations
 .PHONY: test-preview-safety
-.PHONY: test-editing-lifecycle
-test-editing-lifecycle:
-	python3 test/fuzz/build.py --editing-tests --run
+.PHONY: test-editing-lifecycle fuzz fuzz-run fuzz-replay
+test-editing-lifecycle: | Makefile.config
+	python3 test/fuzz/fuzz.py editing-tests
+
+# Fuzzers: see test/fuzz/README.md. FUZZ_SECONDS bounds each harness.
+FUZZ_SECONDS ?= 60
+fuzz: | Makefile.config
+	python3 test/fuzz/fuzz.py build
+fuzz-run: fuzz
+	python3 test/fuzz/fuzz.py run --seconds $(FUZZ_SECONDS)
+fuzz-replay: fuzz
+	python3 test/fuzz/fuzz.py replay
 
 test-preview-safety: texpresso
 	$(MAKE) -f Makefile.config -f Makefile build/test-preview-safety
