@@ -888,7 +888,11 @@ static void display_page(struct persistent_state *ps, ui_state *ui)
   fz_catch(ps->ctx) {
     // Allocation/syscall failures are not page-local; let the outer engine
     // boundary report them and stop before potentially corrupted state is used.
+#if FZ_VERSION_MAJOR > 1 || FZ_VERSION_MINOR >= 24
     if (fz_caught(ps->ctx) == FZ_ERROR_SYSTEM) fz_rethrow(ps->ctx);
+#else
+    if (fz_caught(ps->ctx) == FZ_ERROR_MEMORY) fz_rethrow(ps->ctx);
+#endif
     const char *message = txp_take_error(ps->ctx);
     fprintf(stderr, "[preview] Page %d: %s\n", ui->page + 1, message);
     ui->preview.valid = false;
@@ -1742,7 +1746,12 @@ bool texpresso_main(struct persistent_state *ps)
       process_prepared_inverse(ps, ui);
       bool aux_ready = !ui->prepare.held && !send(is_finishing, ui->eng)
                        && send(aux_dirty, ui->eng);
-      if (ps->rerun_once_pending && aux_ready)
+      // A visible page can stop demand before auxiliary outputs close. An
+      // explicit rerun must finish that source pass even when aux_dirty is
+      // still false; lack of page demand does not mean convergence is done.
+      bool unfinished_source = txp_engine_completed_page_count(ui->eng) < 0
+                               && send(get_status, ui->eng) == DOC_RUNNING;
+      if (ps->rerun_once_pending && (aux_ready || unfinished_source))
       {
         ps->rerun_once_pending = false;
         fprintf(stderr, "[rerun] on-demand: finishing pass\n");
