@@ -32,10 +32,18 @@ public static class TeXpressoLookupJob {
   static IntPtr ownedJob;
   public static volatile bool InputClosed;
   static System.Collections.Concurrent.ConcurrentQueue<string> requests = new System.Collections.Concurrent.ConcurrentQueue<string>();
-  public static bool Next(out string request) { return requests.TryDequeue(out request); }
+  static System.Threading.AutoResetEvent ready = new System.Threading.AutoResetEvent(false);
+  public static string Next() {
+    string request;
+    while (!InputClosed) {
+      if (requests.TryDequeue(out request)) return request;
+      ready.WaitOne();
+    }
+    return null;
+  }
   static void WatchInput() {
-    try { string line; while ((line = Console.In.ReadLine()) != null) requests.Enqueue(line); }
-    catch {} finally { InputClosed = true; }
+    try { string line; while ((line = Console.In.ReadLine()) != null) { requests.Enqueue(line); ready.Set(); } }
+    catch {} finally { InputClosed = true; ready.Set(); }
   }
   public static void Initialize() {
     ownedJob = CreateJobObject(IntPtr.Zero, null);
@@ -74,8 +82,8 @@ try {
   Add-Type -Path $assembly
   [TeXpressoLookupJob]::Initialize()
   while (![TeXpressoLookupJob]::InputClosed) {
-    $request = $null
-    if (![TeXpressoLookupJob]::Next([ref]$request)) { Start-Sleep -Milliseconds 10; continue }
+    $request = [TeXpressoLookupJob]::Next()
+    if ($null -eq $request) { break }
     $separator = $request.IndexOf(':')
     if ($separator -lt 1) { throw 'Invalid lookup request' }
     $limit = [long]::Parse($request.Substring(0,$separator))
