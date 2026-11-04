@@ -323,8 +323,9 @@ static int startup_timeout_ms(void)
     long timeout = strtol(value, &end, 10);
     if (!*end && timeout >= 50 && timeout <= 120000) return timeout;
   }
-  // Explicit package downloads may outlive the ordinary local-format deadline.
-  return miktex_auto_install() ? 600000 : 120000;
+  // Windows interop can make a first format exceed the local two-minute
+  // deadline even with packages installed. Downloads are separately opt-in.
+  return miktex_auto_install() || miktex_windows() ? 600000 : 120000;
 }
 
 bool txp_engine_startup_pending(txp_engine *_self)

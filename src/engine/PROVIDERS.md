@@ -188,7 +188,9 @@ The helper caches its small process-job assembly under Windows LocalAppData,
 bounds lookup duration, and owns descendants in a kill-on-close Windows job.
 A dedicated stdin keepalive releases the job when the Linux caller disappears.
 Windows format caches have a separate `miktex-windows` namespace, further
-qualified by the selected binary directory when supplied.
+qualified by the selected binary directory when supplied. First worker startup
+has a ten-minute bound for this experimental bridge, including when downloads
+are disabled: building a fresh format can exceed the ordinary two-minute limit.
 
 The ordinary provider fixture checks encoding, paths and installer policy.
 Windows/WSL CI runs the real MiKTeX compile/render/cold-download/warm-cache
