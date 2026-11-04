@@ -1,9 +1,8 @@
 # TeXpresso Providers
 
 TeXpresso embeds its own version of the XeTeX engine but needs a TeX
-distribution to run it. It currently supports two distribution "providers"
-which are used to load files from existing distributions: `tectonic` and
-`texlive`.
+distribution to run it. It currently supports distribution "providers"
+which are used to load files from existing distributions: `tectonic`, `texlive` and `miktex`.
 
 A provider fills two roles:
 - The primary one is to return the contents of a file from its name (e.g., when
@@ -164,3 +163,32 @@ fonts, and PDF inputs use graphics. When a renderer font is absent from the
 previously loaded map, MiKTeX font-map configuration is refreshed and reloaded
 under the same explicit installer policy. This covers metrics/packages installed
 after the renderer was created, without assuming TeX Live's directory layout.
+
+
+### Experimental Windows MiKTeX from WSL
+
+Use `-miktex-windows` instead of `-miktex` to resolve packages through an
+existing Windows MiKTeX installation. The compiler and format cache remain in
+Linux; Windows `findtexmf.exe` locates package files and `wslpath` translates
+returned paths. No Linux MiKTeX installation is needed. Windows system fonts
+are not automatically added to Linux fontconfig.
+
+Windows PowerShell and WSL Windows interoperability must be available. By
+default the helper finds MiKTeX on the Windows PATH. For a specific installation,
+pass `-miktex-windows-bin 'C:\Program Files\MiKTeX\miktex\bin\x64'`, or set
+`TEXPRESSO_MIKTEX_WINDOWS_BIN` to that Windows directory. Workers inherit the
+setting. Downloads remain disabled unless `-miktex-auto-install` is explicit;
+when enabled they run in the Windows user's MiKTeX installation.
+
+Arguments travel as encoded data to the fixed `src/common/miktex_windows.ps1`
+helper (embedded in `miktex_windows.h`); never as interpolated shell commands.
+The helper caches its small process-job assembly under Windows LocalAppData,
+bounds lookup duration, and owns descendants in a kill-on-close Windows job.
+A dedicated stdin keepalive releases the job when the Linux caller disappears.
+Windows format caches have a separate `miktex-windows` namespace, further
+qualified by the selected binary directory when supplied.
+
+The ordinary provider fixture checks encoding, paths and installer policy.
+Windows/WSL CI runs the real MiKTeX compile/render/cold-download/warm-cache
+acceptance test with `TEXPRESSO_TEST_MIKTEX_PROVIDER=miktex-windows`, plus
+`test/test-miktex-windows-cancel.py` against an owned Windows process fixture.

@@ -873,6 +873,8 @@ static void usage(char *argv0)
       "  -texlive     Use TeXlive packages (need kpsewhich command)\n"
       "  -tectonic    Use Tectonic packages (need tectonic command)\n"
       "  -miktex      Use MiKTeX packages (need findtexmf command)\n"
+      "  -miktex-windows  Use Windows MiKTeX from WSL (experimental)\n"
+      "  -miktex-windows-bin PATH  Optional Windows binary directory\n"
       "  -miktex-auto-install  Allow noninteractive missing-package installation\n"
       "  -texpresso   Internal (route I/O through TeXpresso)\n"
       "  -regenerate-format  Force generation of a fresh format file\n"
@@ -887,7 +889,7 @@ static void usage(char *argv0)
 static const char *format_path(const char *ext)
 {
   char prefix[64];
-  snprintf(prefix, sizeof prefix, "%s-v%d-", use_miktex ? "miktex" : use_texlive ? "texlive" : "tectonic", FORMAT_SERIAL);
+  snprintf(prefix, sizeof prefix, "%s-v%d-", use_miktex ? miktex_cache_name() : use_texlive ? "texlive" : "tectonic", FORMAT_SERIAL);
   if (!ext || (*ext == '.' || *ext == '-'))
     return cache_path("format", prefix, format_name, ext);
   else
@@ -992,6 +994,12 @@ int main(int argc, char **argv)
         use_tectonic = 1;
       else if (strcmp(argv[i], "-miktex") == 0)
         use_miktex = 1;
+      else if (strcmp(argv[i], "-miktex-windows") == 0) { use_miktex = 1; miktex_use_windows(true); }
+      else if (strcmp(argv[i], "-miktex-windows-bin") == 0) {
+        if (++i == argc || setenv("TEXPRESSO_MIKTEX_WINDOWS_BIN", argv[i], 1)) {
+          fprintf(stderr, "-miktex-windows-bin requires a Windows directory\n"); return 1;
+        }
+      }
       else if (strcmp(argv[i], "-miktex-auto-install") == 0)
         auto_install_miktex = 1;
       else if (strcmp(argv[i], "-texlive") == 0)

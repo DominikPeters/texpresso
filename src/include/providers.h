@@ -78,6 +78,9 @@ const char *texlive_file_path(const char *name, FILE *record_dependency);
 bool texlive_check_dependencies(FILE *record);
 
 void miktex_select(bool enabled, bool auto_install);
+void miktex_use_windows(bool enabled);
+bool miktex_windows(void);
+const char *miktex_cache_name(void);
 bool miktex_selected(void);
 bool miktex_auto_install(void);
 bool miktex_available(void);

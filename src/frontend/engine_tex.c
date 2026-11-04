@@ -248,7 +248,7 @@ static pid_t exec_xelatex(char *engine_path, bool use_texlive, const char *filen
 {
   char *args[] = {
     engine_path,
-    (miktex_selected() ? "-miktex" : use_texlive ? "-texlive" : "-tectonic"),
+    (miktex_windows() ? "-miktex-windows" : miktex_selected() ? "-miktex" : use_texlive ? "-texlive" : "-tectonic"),
     "-texpresso",
     (char*)filename,
     miktex_auto_install() ? "-miktex-auto-install" : NULL,

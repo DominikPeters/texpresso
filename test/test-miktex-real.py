@@ -47,6 +47,8 @@ def assert_png_ink(body):
     assert ink > 100, ('blank rendered page', ink)
 
 engine = str(Path(sys.argv[1]).resolve())
+provider = os.environ.get("TEXPRESSO_TEST_MIKTEX_PROVIDER", "miktex")
+assert provider in ("miktex", "miktex-windows")
 caps = json.loads(subprocess.check_output([engine, '-capabilities']))
 assert 'miktex' in caps['packageProviders'] and caps['miktexAutoInstall']
 with tempfile.TemporaryDirectory(prefix='texpresso-miktex-real-') as directory:
@@ -58,13 +60,15 @@ with tempfile.TemporaryDirectory(prefix='texpresso-miktex-real-') as directory:
 MiKTeX live preview: caf\'e. $\int_0^1 x^2\,dx = \frac13$.
 \end{document}
 ''')
+    if provider == 'miktex-windows':
+        source.write_text(source.read_text().replace(r'\usepackage{amsmath}', r'\usepackage{amsmath}'+ '\n'+r'\usepackage{csquotes}'))
     env = {**os.environ, 'XDG_CACHE_HOME': str(folder/'cache'), 'SDL_VIDEODRIVER': 'dummy'}
     diagnostics = Path(os.environ.get('TEXPRESSO_TEST_ARTIFACTS', 'artifacts'))/'miktex'
     diagnostics.mkdir(parents=True, exist_ok=True)
     format_stamp = None
     for automatic in (True, False):
         with (diagnostics/('cold.log' if automatic else 'warm.log')).open('w+b') as log:
-            args = [engine, '-miktex', '-headless', '-json', '-lines']
+            args = [engine, '-'+provider, '-headless', '-json', '-lines']
             if automatic: args.append('-miktex-auto-install')
             p = subprocess.Popen(args+[str(source)], cwd=folder, env=env, stdin=subprocess.PIPE,
                                  stdout=subprocess.PIPE, stderr=log, start_new_session=True)
@@ -117,7 +121,7 @@ MiKTeX live preview: caf\'e. $\int_0^1 x^2\,dx = \frac13$.
                 contents = Path(log.name).read_text(errors='replace')
                 assert 'no font file nor VF file found' not in contents, 'missing renderer font'
                 assert not any('Font mapping' in line and 'not found' in line for line in contents.splitlines()), 'missing TECkit mapping'
-                formats = list((folder/'cache/texpresso/format').glob('miktex-*.fmt'))
+                formats = list((folder/'cache/texpresso/format').glob(provider+'-*.fmt'))
                 assert len(formats) == 1
                 stamp = formats[0].stat().st_mtime_ns
                 if not automatic: assert stamp == format_stamp, 'warm launch rebuilt its format'
@@ -129,6 +133,6 @@ MiKTeX live preview: caf\'e. $\int_0^1 x^2\,dx = \frac13$.
                 except ProcessLookupError: pass
                 p.wait(); p.stdout.close()
                 if not p.stdin.closed: p.stdin.close()
-    assert list((folder/'cache/texpresso/format').glob('miktex-*.fmt'))
+    assert list((folder/'cache/texpresso/format').glob(provider+'-*.fmt'))
     assert not list((folder/'cache/texpresso/format').glob('texlive-*.fmt'))
 print('PASS: real MiKTeX compilation, package installation, PNG/SVG font rendering, warm offline-policy restart')

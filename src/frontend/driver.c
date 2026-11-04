@@ -145,6 +145,8 @@ static void usage(void)
           " -stream   Skip filesystem lookups; files are pushed via editor commands\n");
   fprintf(stderr,
           " -miktex   Load packages and fonts using MiKTeX findtexmf\n"
+          " -miktex-windows Use Windows MiKTeX from WSL (experimental)\n"
+          " -miktex-windows-bin PATH Optional Windows MiKTeX binary directory\n"
           " -miktex-auto-install Allow noninteractive installation of missing MiKTeX packages\n"
           " -headless Export preview images over stdout (requires -json)\n"
           " -watch-parent Release isolated compiler group when its editor exits (headless only)\n"
@@ -180,7 +182,7 @@ int main(int argc, const char **argv)
   enum editor_protocol protocol = EDITOR_SEXP;
   bool line_output = 0;
   bool use_tectonic = 0;
-  bool use_texlive = 0, use_miktex = 0, miktex_auto_install = 0;
+  bool use_texlive = 0, use_miktex = 0, use_miktex_windows = 0, miktex_auto_install = 0;
   bool initialize_only = 0;
   bool stream_mode = 0;
   bool headless = 0;
@@ -242,6 +244,12 @@ int main(int argc, const char **argv)
       }
       else if (strcmp(arg, "-miktex") == 0)
         use_miktex = 1;
+      else if (strcmp(arg, "-miktex-windows") == 0) { use_miktex = 1; use_miktex_windows = 1; }
+      else if (strcmp(arg, "-miktex-windows-bin") == 0) {
+        if (++i == argc || setenv("TEXPRESSO_MIKTEX_WINDOWS_BIN", argv[i], 1)) {
+          fprintf(stderr, "[error] -miktex-windows-bin requires a Windows directory\n"); return 1;
+        }
+      }
       else if (strcmp(arg, "-miktex-auto-install") == 0)
         miktex_auto_install = 1;
       else if (strcmp(arg, "-texlive") == 0)
@@ -280,7 +288,7 @@ int main(int argc, const char **argv)
 
   if (capabilities)
   {
-    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true,\"parentWatch\":true,\"packageProviders\":[\"texlive\",\"miktex\",\"tectonic\"],\"miktexAutoInstall\":true,\"pngCompression\":%s}\n", TXP_PREVIEW_MAX_PIXELS, TXP_PNG_COMPRESSION);
+    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true,\"parentWatch\":true,\"packageProviders\":[\"texlive\",\"miktex\",\"miktex-windows\",\"tectonic\"],\"miktexAutoInstall\":true,\"miktexWindowsBridge\":true,\"pngCompression\":%s}\n", TXP_PREVIEW_MAX_PIXELS, TXP_PNG_COMPRESSION);
     return 0;
   }
   if (headless && protocol != EDITOR_JSON)
@@ -464,6 +472,7 @@ int main(int argc, const char **argv)
       .use_tectonic = use_tectonic,
       .use_texlive = use_texlive,
       .use_miktex = use_miktex,
+      .use_miktex_windows = use_miktex_windows,
       .miktex_auto_install = miktex_auto_install,
       .initialize_only = initialize_only,
       .stream_mode = stream_mode,

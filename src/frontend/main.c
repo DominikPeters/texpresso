@@ -1494,9 +1494,10 @@ bool texpresso_main(struct persistent_state *ps)
 
   bool using_texlive = 0;
 
+  miktex_use_windows(ps->use_miktex_windows);
   miktex_select(ps->use_miktex, ps->miktex_auto_install);
   if (ps->use_miktex) {
-    if (!miktex_available()) { fprintf(stderr, "[fatal] cannot find MiKTeX findtexmf on PATH\n"); return 0; }
+    if (!miktex_available()) { fprintf(stderr, ps->use_miktex_windows ? "[fatal] Windows MiKTeX bridge needs WSL interoperability, PowerShell and Windows MiKTeX\n" : "[fatal] cannot find MiKTeX findtexmf on PATH\n"); return 0; }
     using_texlive = 1; /* Shared local-file resource hooks; lookup dispatches through texmf_file_path. */
   }
   else if (ps->use_texlive)

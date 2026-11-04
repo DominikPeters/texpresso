@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Small provider regressions; no MiKTeX installation/download required."""
 import ctypes
+import base64
 import json
 import os
 from pathlib import Path
@@ -9,6 +10,10 @@ import sys
 import tempfile
 import time
 root = Path(__file__).resolve().parents[1]
+script = (root/'src/common/miktex_windows.ps1').read_text()
+assert script.isascii(), 'encoded-command template must be ASCII; request data is UTF-8 base64'
+expected = '/* Generated from miktex_windows.ps1; checked by test-miktex-provider.py. */\nstatic const char miktex_windows_script[] =\n'+''.join(json.dumps(line)+'\n' for line in script.splitlines(True))+';\n'
+assert (root/'src/common/miktex_windows.h').read_text() == expected
 with tempfile.TemporaryDirectory(prefix='texpresso-miktex-') as temp:
     temp = Path(temp)
     (temp/'stub.c').write_text('const char *texlive_file_path(const char *name, void *record) { (void)name; (void)record; return 0; }')
@@ -36,6 +41,10 @@ print(path)
     os.environ['PATH'] = str(temp)+os.pathsep+os.environ.get('PATH','')
     os.environ['MIKTEX_TEST_ROOT'] = str(temp)
     lib = ctypes.CDLL(str(library))
+    lib.miktex_available.restype = ctypes.c_bool
+    lib.miktex_refresh_fontmaps.restype = ctypes.c_bool
+    lib.miktex_use_windows.argtypes = [ctypes.c_bool]
+    lib.miktex_cache_name.restype = ctypes.c_char_p
     lib.miktex_select.argtypes = [ctypes.c_bool, ctypes.c_bool]
     lib.miktex_file_path.argtypes = [ctypes.c_char_p, ctypes.c_void_p]
     lib.miktex_file_path.restype = ctypes.c_char_p
@@ -70,6 +79,43 @@ print(path)
     (temp/'install.sty').write_text('installed')
     assert lib.miktex_file_path(b'install.sty', None)
     assert '--must-exist' in json.loads((temp/'calls').read_text().splitlines()[-1])
+    # Exercise the real encoded command builder and path converter with tiny
+    # fake interop tools. Actual PowerShell/job semantics run on Windows CI.
+    powershell = temp/'powershell.exe'
+    powershell.write_text('#!'+sys.executable+'\n'+r'''
+import base64,json,os,pathlib,re,sys
+root=pathlib.Path(os.environ['MIKTEX_TEST_ROOT'])
+text=base64.b64decode(sys.argv[-1]).decode('utf-16-le')
+request=base64.b64decode(re.search(r"\$encoded='([^']*)'",text)[1]).decode('utf8').split('\0')
+with (root/'windows-calls').open('a') as log: log.write(json.dumps(request)+'\n')
+if '--version' in request: print('MiKTeX Windows test'); sys.exit(0)
+if request[1]=='miktex.exe': sys.exit(0)
+print('D:\\MiKTeX café\\'+request[-1])
+''')
+    powershell.chmod(0o755)
+    converter=temp/'wslpath'
+    converter.write_text('#!'+sys.executable+'\n'+r'''
+import os,pathlib,sys
+assert sys.argv[1]=='-u'
+assert sys.argv[2].startswith('D:\\MiKTeX café\\')
+print(pathlib.Path(os.environ['MIKTEX_TEST_ROOT'])/sys.argv[2].rsplit('\\',1)[1])
+''')
+    converter.chmod(0o755)
+    windows_bin = r"C:\MiKTeX café ' $(literal)"
+    os.environ['TEXPRESSO_MIKTEX_WINDOWS_BIN'] = windows_bin
+    lib.miktex_use_windows(True); lib.miktex_select(True,False)
+    assert lib.miktex_cache_name().startswith(b'miktex-windows-')
+    assert lib.miktex_available()
+    bridge_name = "bridge space ' $(literal).sty"
+    (temp/bridge_name).write_text('Windows package')
+    assert lib.miktex_file_path(bridge_name.encode(),None) == str(temp/bridge_name).encode()
+    request=json.loads((temp/'windows-calls').read_text().splitlines()[-1])
+    assert request[0] == windows_bin and request[1]=='findtexmf.exe' and request[-1]==bridge_name
+    assert '--must-exist' not in request
+    assert lib.miktex_refresh_fontmaps()
+    assert json.loads((temp/'windows-calls').read_text().splitlines()[-1])[1:]==['miktex.exe','--disable-installer','fontmaps','configure']
+    lib.miktex_use_windows(False)
+    assert lib.miktex_cache_name()==b'miktex'
     lib.miktex_select(True, False)
     started = time.monotonic()
     assert not lib.miktex_file_path(b'hang.tex', None)
