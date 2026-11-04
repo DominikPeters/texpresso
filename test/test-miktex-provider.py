@@ -86,11 +86,15 @@ print(path)
 import base64,json,os,pathlib,re,sys
 root=pathlib.Path(os.environ['MIKTEX_TEST_ROOT'])
 text=base64.b64decode(sys.argv[-1]).decode('utf-16-le')
-request=base64.b64decode(re.search(r"\$encoded='([^']*)'",text)[1]).decode('utf8').split('\0')
-with (root/'windows-calls').open('a') as log: log.write(json.dumps(request)+'\n')
-if '--version' in request: print('MiKTeX Windows test'); sys.exit(0)
-if request[1]=='miktex.exe': sys.exit(0)
-print('D:\\MiKTeX café\\'+request[-1])
+assert 'TeXpressoLookupJob' in text
+with (root/'windows-starts').open('a') as log: log.write('start\n')
+for line in sys.stdin:
+    limit,encoded=line.strip().split(':',1)
+    request=base64.b64decode(encoded).decode('utf8').split('\0')
+    with (root/'windows-calls').open('a') as log: log.write(json.dumps(request)+'\n')
+    if request[-1]=='bridge-exit.sty': sys.exit(0)
+    output='MiKTeX Windows test' if '--version' in request else '' if request[1]=='miktex.exe' else 'D:\\MiKTeX café\\'+request[-1]
+    print('0:'+base64.b64encode(output.encode('utf8')).decode('ascii'),flush=True)
 ''')
     powershell.chmod(0o755)
     converter=temp/'wslpath'
@@ -114,6 +118,10 @@ print(pathlib.Path(os.environ['MIKTEX_TEST_ROOT'])/sys.argv[2].rsplit('\\',1)[1]
     assert '--must-exist' not in request
     assert lib.miktex_refresh_fontmaps()
     assert json.loads((temp/'windows-calls').read_text().splitlines()[-1])[1:]==['miktex.exe','--disable-installer','fontmaps','configure']
+    assert len((temp/'windows-starts').read_text().splitlines())==1, 'reuse PowerShell helper'
+    assert not lib.miktex_file_path(b'bridge-exit.sty',None), 'helper exit must fail promptly'
+    assert lib.miktex_available(), 'next lookup restarts a failed helper'
+    assert len((temp/'windows-starts').read_text().splitlines())==2
     lib.miktex_use_windows(False)
     assert lib.miktex_cache_name()==b'miktex'
     lib.miktex_select(True, False)

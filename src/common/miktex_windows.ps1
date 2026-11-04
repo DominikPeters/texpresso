@@ -1,6 +1,6 @@
 # MIT License; Copyright (c) 2026 Dominik Peters. See ../../LICENSE.
-# $encoded is a base64 UTF-8 NUL-separated argument vector, never script text.
-# $limit is the child deadline in milliseconds. Native stdin is a keepalive.
+# Stdin lines contain deadline:base64 UTF-8 NUL-separated arguments, never code.
+# Stdout lines contain exit-code:base64 UTF-8 output. EOF releases the process job.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
@@ -31,7 +31,12 @@ public static class TeXpressoLookupJob {
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
   static IntPtr ownedJob;
   public static volatile bool InputClosed;
-  static void WatchInput() { try { Console.In.ReadToEnd(); } catch {} finally { InputClosed = true; } }
+  static System.Collections.Concurrent.ConcurrentQueue<string> requests = new System.Collections.Concurrent.ConcurrentQueue<string>();
+  public static bool Next(out string request) { return requests.TryDequeue(out request); }
+  static void WatchInput() {
+    try { string line; while ((line = Console.In.ReadLine()) != null) requests.Enqueue(line); }
+    catch {} finally { InputClosed = true; }
+  }
   public static void Initialize() {
     ownedJob = CreateJobObject(IntPtr.Zero, null);
     var info = new Extended(); info.Basic.Flags = 0x2000; // KILL_ON_JOB_CLOSE
@@ -68,36 +73,45 @@ try {
   } finally { if ($locked) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
   Add-Type -Path $assembly
   [TeXpressoLookupJob]::Initialize()
-  $values = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded)).Split([char]0)
-  $bin = $values[0]; $tool = $values[1]
-  if ($tool -notin @('findtexmf.exe','miktex.exe')) { throw 'Unsupported Windows MiKTeX tool' }
-  if ($bin) { $executable = Join-Path $bin $tool }
-  else {
-    $command = Get-Command $tool -CommandType Application -ErrorAction SilentlyContinue
-    if (!$command) {
-      $env:PATH = [Environment]::GetEnvironmentVariable('Path','User') + ';' + [Environment]::GetEnvironmentVariable('Path','Machine')
-      $command = Get-Command $tool -CommandType Application -ErrorAction Stop
+  while (![TeXpressoLookupJob]::InputClosed) {
+    $request = $null
+    if (![TeXpressoLookupJob]::Next([ref]$request)) { Start-Sleep -Milliseconds 10; continue }
+    $separator = $request.IndexOf(':')
+    if ($separator -lt 1) { throw 'Invalid lookup request' }
+    $limit = [long]::Parse($request.Substring(0,$separator))
+    $encoded = $request.Substring($separator+1)
+    $values = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded)).Split([char]0)
+    $bin = $values[0]; $tool = $values[1]
+    if ($tool -notin @('findtexmf.exe','miktex.exe')) { throw 'Unsupported Windows MiKTeX tool' }
+    if ($bin) { $executable = Join-Path $bin $tool }
+    else {
+      $command = Get-Command $tool -CommandType Application -ErrorAction SilentlyContinue
+      if (!$command) {
+        $env:PATH = [Environment]::GetEnvironmentVariable('Path','User') + ';' + [Environment]::GetEnvironmentVariable('Path','Machine')
+        $command = Get-Command $tool -CommandType Application -ErrorAction Stop
+      }
+      $executable = $command.Source
     }
-    $executable = $command.Source
+    $info = New-Object Diagnostics.ProcessStartInfo
+    $info.FileName = $executable
+    $info.Arguments = (($values | Select-Object -Skip 2 | ForEach-Object { QuoteArgument $_ }) -join ' ')
+    $info.WorkingDirectory = [IO.Path]::GetTempPath()
+    $info.UseShellExecute = $false; $info.CreateNoWindow = $true
+    $info.RedirectStandardInput = $true; $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
+    $info.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
+    if ([TeXpressoLookupJob]::InputClosed) { exit 125 }
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $info; $null = $process.Start(); $process.StandardInput.Close()
+    $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    while (!$process.WaitForExit(50)) {
+      if ([TeXpressoLookupJob]::InputClosed -or $watch.ElapsedMilliseconds -ge $limit) { exit 124 }
+    }
+    # The job also owns descendants which retain redirected handles after exit.
+    if (!$stdout.Wait(5000) -or !$stderr.Wait(5000)) { exit 124 }
+    [Console]::Error.Write($stderr.Result)
+    [Console]::Out.WriteLine([string]$process.ExitCode + ':' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($stdout.Result)))
+    [Console]::Out.Flush()
   }
-  $info = New-Object Diagnostics.ProcessStartInfo
-  $info.FileName = $executable
-  $info.Arguments = (($values | Select-Object -Skip 2 | ForEach-Object { QuoteArgument $_ }) -join ' ')
-  $info.WorkingDirectory = [IO.Path]::GetTempPath()
-  $info.UseShellExecute = $false; $info.CreateNoWindow = $true
-  $info.RedirectStandardInput = $true; $info.RedirectStandardOutput = $true; $info.RedirectStandardError = $true
-  $info.StandardOutputEncoding = New-Object Text.UTF8Encoding($false)
-  $info.StandardErrorEncoding = New-Object Text.UTF8Encoding($false)
-  if ([TeXpressoLookupJob]::InputClosed) { exit 125 }
-  $process = New-Object Diagnostics.Process
-  $process.StartInfo = $info; $null = $process.Start(); $process.StandardInput.Close()
-  $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
-  $watch = [Diagnostics.Stopwatch]::StartNew()
-  while (!$process.WaitForExit(50)) {
-    if ([TeXpressoLookupJob]::InputClosed -or $watch.ElapsedMilliseconds -ge $limit) { exit 124 }
-  }
-  # The job also owns descendants which retain redirected handles after exit.
-  if (!$stdout.Wait(5000) -or !$stderr.Wait(5000)) { exit 124 }
-  [Console]::Out.Write($stdout.Result); [Console]::Error.Write($stderr.Result)
-  exit $process.ExitCode
 } catch { [Console]::Error.WriteLine('[miktex-windows] ' + $_.Exception.Message); exit 1 }

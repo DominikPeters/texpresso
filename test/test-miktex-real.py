@@ -67,6 +67,8 @@ MiKTeX live preview: caf\'e. $\int_0^1 x^2\,dx = \frac13$.
     diagnostics.mkdir(parents=True, exist_ok=True)
     format_stamp = None
     for automatic in (True, False):
+        phase_started = time.monotonic()
+        print('Starting '+provider+(' cold/install-enabled' if automatic else ' warm/install-disabled'), flush=True)
         with (diagnostics/('cold.log' if automatic else 'warm.log')).open('w+b') as log:
             args = [engine, '-'+provider, '-headless', '-json', '-lines']
             if automatic: args.append('-miktex-auto-install')
@@ -81,7 +83,8 @@ MiKTeX live preview: caf\'e. $\int_0^1 x^2\,dx = \frac13$.
                         if not selector.select(.2):
                             with open(log.name, 'rb') as diagnostic:
                                 diagnostic.seek(0, 2); length = diagnostic.tell(); diagnostic.seek(max(0,length-8192))
-                                assert b'Compiler startup failed' not in diagnostic.read(), 'compiler startup failed'
+                                tail = diagnostic.read()
+                                assert b'Compiler startup failed' not in tail and b'Compiler startup timed out' not in tail, 'compiler startup failed'
                             if p.poll() is not None: break
                             continue
                         data = os.read(p.stdout.fileno(), 65536)
@@ -126,6 +129,7 @@ MiKTeX live preview: caf\'e. $\int_0^1 x^2\,dx = \frac13$.
                 stamp = formats[0].stat().st_mtime_ns
                 if not automatic: assert stamp == format_stamp, 'warm launch rebuilt its format'
                 format_stamp = stamp
+                print('PASS: '+('cold' if automatic else 'warm')+' '+provider+' compile/render/cache in %.1fs' % (time.monotonic()-phase_started), flush=True)
             except Exception:
                 log.seek(0); print(log.read().decode(errors='replace')[-16000:], file=sys.stderr); raise
             finally:

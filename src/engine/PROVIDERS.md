@@ -181,7 +181,9 @@ setting. Downloads remain disabled unless `-miktex-auto-install` is explicit;
 when enabled they run in the Windows user's MiKTeX installation.
 
 Arguments travel as encoded data to the fixed `src/common/miktex_windows.ps1`
-helper (embedded in `miktex_windows.h`); never as interpolated shell commands.
+persistent helper (embedded in `miktex_windows.h`); never as interpolated shell commands.
+One helper serves sequential requests for each Linux engine process, avoiding
+a PowerShell startup for every package file.
 The helper caches its small process-job assembly under Windows LocalAppData,
 bounds lookup duration, and owns descendants in a kill-on-close Windows job.
 A dedicated stdin keepalive releases the job when the Linux caller disappears.

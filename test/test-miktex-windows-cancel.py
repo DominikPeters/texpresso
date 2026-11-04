@@ -33,7 +33,7 @@ int main(void) { miktex_select(true,false); miktex_use_windows(true); return mik
         os.killpg(p.pid,signal.SIGKILL)
         p.communicate(timeout=10)
         query = '$items=@(Get-Process -Id '+','.join(map(str,ids))+' -ErrorAction SilentlyContinue); if ($items.Count) { exit 1 }; exit 0'
-        while subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',query],capture_output=True).returncode:
+        while subprocess.run(['powershell.exe','-NoProfile','-NonInteractive','-Command',query],capture_output=True,timeout=15).returncode:
             assert time.monotonic()-started < 15, ('Windows lookup workers survived cancellation',ids)
             time.sleep(.2)
         print('PASS: killing Linux owner released Windows lookup and worker in %.1fs' % (time.monotonic()-started))

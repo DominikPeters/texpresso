@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -38,29 +39,20 @@ static long long milliseconds(void) {
   struct timespec now; clock_gettime(CLOCK_MONOTONIC, &now);
   return (long long)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
-/* The Windows helper gets a dedicated stdin keepalive. Closing the engine
- * closes its writer, so Windows can release its owned lookup process job. */
 static bool run_capture(char *const args[], char *output, size_t capacity,
-                        bool diagnostics, long timeout, bool keepalive) {
-  int pipefd[2], control[2] = {-1,-1};
+                        bool diagnostics, long timeout) {
+  int pipefd[2];
   if (pipe(pipefd)) return false;
-  if (keepalive && pipe(control)) { close(pipefd[0]); close(pipefd[1]); return false; }
   fcntl(pipefd[0], F_SETFD, FD_CLOEXEC); fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
-  if (keepalive) { fcntl(control[0], F_SETFD, FD_CLOEXEC); fcntl(control[1], F_SETFD, FD_CLOEXEC); }
   posix_spawn_file_actions_t actions;
   posix_spawn_file_actions_init(&actions);
-  if (keepalive) {
-    posix_spawn_file_actions_adddup2(&actions, control[0], STDIN_FILENO);
-    posix_spawn_file_actions_addclose(&actions, control[0]);
-    posix_spawn_file_actions_addclose(&actions, control[1]);
-  } else posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+  posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
   posix_spawn_file_actions_adddup2(&actions, diagnostics ? STDERR_FILENO : pipefd[1], STDOUT_FILENO);
   posix_spawn_file_actions_addclose(&actions, pipefd[0]);
   posix_spawn_file_actions_addclose(&actions, pipefd[1]);
   pid_t child; int error = posix_spawnp(&child, args[0], &actions, NULL, args, environ);
   posix_spawn_file_actions_destroy(&actions); close(pipefd[1]);
-  if (keepalive) close(control[0]);
-  if (error) { close(pipefd[0]); if (keepalive) close(control[1]); return false; }
+  if (error) { close(pipefd[0]); return false; }
   fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
   size_t used = 0; bool complete = false, overflow = false;
   long long deadline = milliseconds() + timeout;
@@ -81,16 +73,6 @@ static bool run_capture(char *const args[], char *output, size_t capacity,
     if (result == child) { reaped = true; break; }
     if (result < 0 && errno != EINTR) break;
     struct timespec delay = {0, 10000000}; nanosleep(&delay, NULL);
-  }
-  if (keepalive) close(control[1]);
-  if (!reaped && keepalive) {
-    /* Give the Windows helper time to observe EOF and close its process job. */
-    long long cleanup = milliseconds() + 5000;
-    while (milliseconds() < cleanup) {
-      if (waitpid(child, &status, WNOHANG) == child) { reaped = true; break; }
-      struct timespec delay = {0, 10000000}; nanosleep(&delay, NULL);
-    }
-    complete = false;
   }
   if (!reaped) {
     complete = false; kill(child, SIGKILL);
@@ -115,30 +97,101 @@ static char *base64(const unsigned char *bytes, size_t length) {
   }
   result[out] = 0; return result;
 }
-static bool windows_lookup(char **args, char *output, size_t capacity, bool diagnostics, long timeout) {
-  const char *bin = getenv("TEXPRESSO_MIKTEX_WINDOWS_BIN"); if (!bin) bin = "";
-  const char *tool = diagnostics ? "miktex.exe" : "findtexmf.exe";
-  size_t length = strlen(bin)+1+strlen(tool);
-  for (int i=1; args[i]; i++) length += strlen(args[i])+1;
-  if (length > 8192) return false;
-  unsigned char *data = malloc(length); if (!data) return false;
-  unsigned char *at = data;
-  memcpy(at,bin,strlen(bin)); at+=strlen(bin); *at++=0;
-  memcpy(at,tool,strlen(tool)); at+=strlen(tool);
-  for (int i=1; args[i]; i++) { *at++=0; memcpy(at,args[i],strlen(args[i])); at+=strlen(args[i]); }
-  char *request = base64(data,length); free(data); if (!request) return false;
-  size_t size = strlen(request)+strlen(miktex_windows_script)+100;
-  char *script = malloc(size); if (!script) { free(request); return false; }
-  snprintf(script,size,"$encoded='%s';$limit=%ld;\n%s",request,timeout,miktex_windows_script); free(request);
-  size_t script_length = strlen(script);
-  unsigned char *utf16 = calloc(script_length,2); if (!utf16) { free(script); return false; }
-  for (size_t i=0; i<script_length; i++) utf16[i*2]=(unsigned char)script[i];
-  free(script); char *encoded = base64(utf16,script_length*2); free(utf16);
+/* One persistent Windows helper per Linux process avoids a PowerShell startup
+ * for every package lookup. Its dedicated stdin is also the lifetime signal. */
+static pid_t windows_child;
+static int windows_input = -1, windows_output = -1;
+static void close_windows_helper(void) {
+  if (windows_input >= 0) close(windows_input);
+  if (windows_output >= 0) close(windows_output);
+  windows_input = windows_output = -1;
+  if (!windows_child) return;
+  long long deadline = milliseconds()+5000; int status;
+  while (milliseconds()<deadline) {
+    pid_t result = waitpid(windows_child,&status,WNOHANG);
+    if (result == windows_child || (result<0 && errno!=EINTR)) { windows_child=0; return; }
+    struct timespec delay={0,10000000}; nanosleep(&delay,NULL);
+  }
+  kill(windows_child,SIGKILL);
+  while (waitpid(windows_child,&status,0)<0 && errno==EINTR) {}
+  windows_child=0;
+}
+static bool open_windows_helper(void) {
+  if (windows_child) return true;
+  size_t n=strlen(miktex_windows_script);
+  unsigned char *utf16=calloc(n,2); if (!utf16) return false;
+  for (size_t i=0;i<n;i++) utf16[2*i]=(unsigned char)miktex_windows_script[i];
+  char *encoded=base64(utf16,n*2); free(utf16);
   if (!encoded) return false;
   if (strlen(encoded)>30000) { free(encoded); return false; }
-  char *command[] = {"powershell.exe","-NoLogo","-NoProfile","-NonInteractive","-EncodedCommand",encoded,NULL};
-  bool ok = run_capture(command,output,capacity,diagnostics,timeout+15000,true);
-  free(encoded); return ok;
+  int input[2],output[2];
+  if (socketpair(AF_UNIX,SOCK_STREAM,0,input)) { free(encoded); return false; }
+  if (pipe(output)) { close(input[0]); close(input[1]); free(encoded); return false; }
+  for (int i=0;i<2;i++) { fcntl(input[i],F_SETFD,FD_CLOEXEC); fcntl(output[i],F_SETFD,FD_CLOEXEC); }
+#ifdef SO_NOSIGPIPE
+  int enabled=1; setsockopt(input[1],SOL_SOCKET,SO_NOSIGPIPE,&enabled,sizeof enabled);
+#endif
+  posix_spawn_file_actions_t actions; posix_spawn_file_actions_init(&actions);
+  posix_spawn_file_actions_adddup2(&actions,input[0],STDIN_FILENO);
+  posix_spawn_file_actions_adddup2(&actions,output[1],STDOUT_FILENO);
+  for (int i=0;i<2;i++) { posix_spawn_file_actions_addclose(&actions,input[i]); posix_spawn_file_actions_addclose(&actions,output[i]); }
+  char *args[]={"powershell.exe","-NoLogo","-NoProfile","-NonInteractive","-EncodedCommand",encoded,NULL};
+  int error=posix_spawnp(&windows_child,args[0],&actions,NULL,args,environ);
+  posix_spawn_file_actions_destroy(&actions); free(encoded); close(input[0]); close(output[1]);
+  if (error) { windows_child=0; close(input[1]); close(output[0]); return false; }
+  windows_input=input[1]; windows_output=output[0];
+  fcntl(windows_input,F_SETFL,O_NONBLOCK); fcntl(windows_output,F_SETFL,O_NONBLOCK);
+  static bool registered;
+  if (!registered) { atexit(close_windows_helper); registered=true; }
+  return true;
+}
+static bool windows_lookup(char **args, char *output, size_t capacity, bool diagnostics, long timeout) {
+  const char *bin=getenv("TEXPRESSO_MIKTEX_WINDOWS_BIN"); if (!bin) bin="";
+  const char *tool=diagnostics ? "miktex.exe" : "findtexmf.exe";
+  size_t length=strlen(bin)+1+strlen(tool);
+  for (int i=1;args[i];i++) length+=strlen(args[i])+1;
+  if (length>8192) return false;
+  unsigned char *data=malloc(length); if (!data) return false;
+  unsigned char *at=data;
+  memcpy(at,bin,strlen(bin)); at+=strlen(bin); *at++=0;
+  memcpy(at,tool,strlen(tool)); at+=strlen(tool);
+  for (int i=1;args[i];i++) { *at++=0; memcpy(at,args[i],strlen(args[i])); at+=strlen(args[i]); }
+  char *encoded=base64(data,length); free(data); if (!encoded) return false;
+  char request[12000]; snprintf(request,sizeof request,"%ld:%s\n",timeout,encoded); free(encoded);
+  if (!open_windows_helper()) return false;
+  long long deadline=milliseconds()+timeout+15000;
+  size_t sent=0, size=strlen(request), used=0;
+  while (sent<size && milliseconds()<deadline) {
+#ifdef MSG_NOSIGNAL
+    ssize_t n=send(windows_input,request+sent,size-sent,MSG_NOSIGNAL);
+#else
+    ssize_t n=send(windows_input,request+sent,size-sent,0);
+#endif
+    if (n>0) sent+=(size_t)n;
+    else if (n<0 && errno!=EAGAIN && errno!=EINTR) break;
+    struct pollfd fd={windows_input,POLLOUT,0}; poll(&fd,1,50);
+  }
+  char response[32768]; bool complete=false;
+  while (sent==size && used<sizeof response-1 && milliseconds()<deadline) {
+    ssize_t n=read(windows_output,response+used,sizeof response-1-used);
+    if (n>0) { used+=(size_t)n; if (response[used-1]=='\n') { complete=true; break; } }
+    else if (!n || (errno!=EAGAIN && errno!=EINTR)) break;
+    struct pollfd fd={windows_output,POLLIN|POLLHUP,0}; poll(&fd,1,50);
+  }
+  if (!complete) { fprintf(stderr,"[miktex-windows] helper exceeded time/output limit or exited\n"); close_windows_helper(); return false; }
+  response[used]=0; char *body; long status=strtol(response,&body,10);
+  if (body==response || *body++!=':') { close_windows_helper(); return false; }
+  size_t decoded=0; unsigned value=0,bits=0;
+  for (;*body && *body!='=' && *body!='\r' && *body!='\n';body++) {
+    const char *alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const char *digit=strchr(alphabet,*body);
+    if (!digit) { close_windows_helper(); return false; }
+    value=(value<<6)|(unsigned)(digit-alphabet); bits+=6;
+    if (bits>=8) { bits-=8; if (decoded+1>=capacity) { close_windows_helper(); return false; } output[decoded++]=(char)(value>>bits); }
+  }
+  output[decoded]=0;
+  if (diagnostics) { fwrite(output,1,decoded,stderr); output[0]=0; }
+  return status==0;
 }
 /* No shell or protocol stdin is exposed to MiKTeX. findtexmf explicitly
  * disables its installer unless --must-exist was supplied. */
@@ -166,7 +219,7 @@ static bool lookup(const char *name, char *output, size_t capacity, int operatio
   args[count] = NULL;
   long timeout = install && !version ? 180000 : MIKTEX_LOOKUP_TIMEOUT_MS;
   return windows_bridge ? windows_lookup(args,output,capacity,fontmaps,timeout)
-    : run_capture(args,output,capacity,fontmaps,timeout,false);
+    : run_capture(args,output,capacity,fontmaps,timeout);
 }
 static bool package_path(char *line, char *converted, size_t capacity) {
   if (!windows_bridge) {
@@ -177,7 +230,7 @@ static bool package_path(char *line, char *converted, size_t capacity) {
   if (n>=2 && line[0]=='"' && line[n-1]=='"') { line[n-1]=0; line++; }
   if (!((line[0] && line[1]==':' && (line[2]=='\\' || line[2]=='/')) || (line[0]=='\\' && line[1]=='\\'))) return false;
   char *command[] = {"wslpath","-u",line,NULL};
-  if (!run_capture(command,converted,capacity,false,MIKTEX_LOOKUP_TIMEOUT_MS,false)) return false;
+  if (!run_capture(command,converted,capacity,false,MIKTEX_LOOKUP_TIMEOUT_MS)) return false;
   converted[strcspn(converted,"\r\n")] = 0;
   return converted[0]=='/';
 }
