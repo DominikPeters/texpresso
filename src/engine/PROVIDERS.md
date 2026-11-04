@@ -130,3 +130,31 @@ to check cache migration. The tests use temporary documents and private caches,
 compare all paragraph contexts and redirected diagnostics against XeLaTeX, and
 cover scoping, control-symbol paragraph names, primitive identity/redefinition,
 error suppression, `microtype` titles/footnotes, and repeated format loads.
+
+## MiKTeX
+
+Select `-miktex` to use `findtexmf` on PATH for package and renderer font/resource
+lookup. Auto selection tries TeX Live first, then MiKTeX, then Tectonic.
+`-capabilities` advertises `packageProviders` and `miktexAutoInstall` (support
+for the opt-in flag, not the current policy).
+
+By default the provider omits `--must-exist`; findtexmf explicitly disables its
+installer in this mode, overriding an interactive Ask policy. Add
+`-miktex-auto-install` together with `-miktex` to permit noninteractive downloads.
+Lookups use argument vectors, never a shell, and do not inherit protocol stdin.
+Diagnostics go to stderr. Installed-file lookups have a 15-second bound;
+installation-enabled lookups have a 180-second bound. Session process-group
+cleanup also owns lookup subprocesses. Downloads happen on the engine host,
+including inside the selected WSL distribution.
+
+Successful paths are cached for the process lifetime and checked for existence;
+misses are retried because packages may be installed later. MiKTeX formats use
+a separate `miktex-v<SERIAL>-` cache namespace. Their successful source inputs
+are recorded by absolute path, size and modification/change time and checked
+before reuse. The compiler is still TeXpresso's embedded XeTeX, not MiKTeX's
+compiler executable; MiKTeX package/kernel upgrades require compatibility tests.
+
+Run `python3 test/test-miktex-provider.py` for the small command/cache regression
+suite, or `python3 test/test-miktex-real.py build/texpresso` with an initialized
+MiKTeX installation to exercise compilation, downloads, PNG/SVG rendering and
+provider-separated cache reuse.

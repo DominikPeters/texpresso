@@ -330,7 +330,7 @@ texlive_hooks_open_file(fz_context *ctx, void *env, dvi_reskind kind, const char
       for (const char **ext = exts; *ext; ++ext)
       {
         stpcpy(pext, *ext);
-        const char *path = texlive_file_path(name_with_ext, NULL);
+        const char *path = texmf_file_path(name_with_ext, NULL);
         if (path)
         {
           fz_stream *stream = fz_open_file(ctx, path);

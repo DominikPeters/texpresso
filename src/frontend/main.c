@@ -1494,7 +1494,12 @@ bool texpresso_main(struct persistent_state *ps)
 
   bool using_texlive = 0;
 
-  if (ps->use_texlive)
+  miktex_select(ps->use_miktex, ps->miktex_auto_install);
+  if (ps->use_miktex) {
+    if (!miktex_available()) { fprintf(stderr, "[fatal] cannot find MiKTeX findtexmf on PATH\n"); return 0; }
+    using_texlive = 1; /* Shared local-file resource hooks; lookup dispatches through texmf_file_path. */
+  }
+  else if (ps->use_texlive)
   {
     if (!texlive_available())
     {
@@ -1515,7 +1520,12 @@ bool texpresso_main(struct persistent_state *ps)
       return 0;
     }
   }
-  else if (!(using_texlive = texlive_available()) && !tectonic_available())
+  else if (!(using_texlive = texlive_available()) && miktex_available())
+  {
+    miktex_select(true, false);
+    using_texlive = 1;
+  }
+  else if (!using_texlive && !ps->use_tectonic && !tectonic_available())
   {
     fprintf(stderr,
             "[fatal] cannot find tectonic nor kpsewhich (texlive)"

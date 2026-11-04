@@ -1,4 +1,4 @@
-OBJECTS= utils.o tectonic_provider.o texlive_provider.o
+OBJECTS= utils.o tectonic_provider.o texlive_provider.o miktex_provider.o
 
 BUILD=../../build
 DIR=$(BUILD)/common

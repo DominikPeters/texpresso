@@ -23,6 +23,7 @@
  */
 
 #include <mupdf/fitz/buffer.h>
+#include "providers.h"
 #include <stdlib.h>
 #include <errno.h>
 #include <limits.h>
@@ -247,9 +248,10 @@ static pid_t exec_xelatex(char *engine_path, bool use_texlive, const char *filen
 {
   char *args[] = {
     engine_path,
-    (use_texlive ? "-texlive" : "-tectonic"),
+    (miktex_selected() ? "-miktex" : use_texlive ? "-texlive" : "-tectonic"),
     "-texpresso",
     (char*)filename,
+    miktex_auto_install() ? "-miktex-auto-install" : NULL,
     NULL
   };
 

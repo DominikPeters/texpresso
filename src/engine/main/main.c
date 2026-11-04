@@ -35,6 +35,7 @@ bool use_tectonic = 0;
 
 // Use texlive provider
 bool use_texlive = 0;
+bool use_miktex = 0, auto_install_miktex = 0;
 
 // Connect to TeXpresso
 bool use_texpresso = 0;
@@ -308,13 +309,13 @@ ttbc_input_handle_t *ttstub_input_open(const char *path,
 
     if (use_texlive)
     {
-      const char *tlpath = texlive_file_path(path, dependency_tape);
+      const char *tlpath = texmf_file_path(path, dependency_tape);
       for (const char **exts = format_extensions(format); !tlpath && *exts;
            exts++)
       {
         strcpy(tmp, path);
         strcat(tmp, *exts);
-        tlpath = texlive_file_path(tmp, NULL);
+        tlpath = texmf_file_path(tmp, NULL);
       }
       if (tlpath)
       {
@@ -871,9 +872,11 @@ static void usage(char *argv0)
       "Options:\n"
       "  -texlive     Use TeXlive packages (need kpsewhich command)\n"
       "  -tectonic    Use Tectonic packages (need tectonic command)\n"
+      "  -miktex      Use MiKTeX packages (need findtexmf command)\n"
+      "  -miktex-auto-install  Allow noninteractive missing-package installation\n"
       "  -texpresso   Internal (route I/O through TeXpresso)\n"
       "  -regenerate-format  Force generation of a fresh format file\n"
-      "Default: try TeXlive first, then Tectonic, then fails\n",
+      "Default: try TeX Live, MiKTeX, then Tectonic\n",
       argv0);
 }
 
@@ -884,7 +887,7 @@ static void usage(char *argv0)
 static const char *format_path(const char *ext)
 {
   char prefix[64];
-  snprintf(prefix, sizeof prefix, "%s-v%d-", use_texlive ? "texlive" : "tectonic", FORMAT_SERIAL);
+  snprintf(prefix, sizeof prefix, "%s-v%d-", use_miktex ? "miktex" : use_texlive ? "texlive" : "tectonic", FORMAT_SERIAL);
   if (!ext || (*ext == '.' || *ext == '-'))
     return cache_path("format", prefix, format_name, ext);
   else
@@ -911,7 +914,9 @@ static bool validate_format(void)
     return 0;
 
   bool result;
-  if (use_texlive)
+  if (use_miktex)
+    result = miktex_check_dependencies(tape);
+  else if (use_texlive)
     result = texlive_check_dependencies(tape);
   else
     result = tectonic_check_version(tape);
@@ -985,6 +990,10 @@ int main(int argc, char **argv)
     {
       if (strcmp(argv[i], "-tectonic") == 0)
         use_tectonic = 1;
+      else if (strcmp(argv[i], "-miktex") == 0)
+        use_miktex = 1;
+      else if (strcmp(argv[i], "-miktex-auto-install") == 0)
+        auto_install_miktex = 1;
       else if (strcmp(argv[i], "-texlive") == 0)
         use_texlive = 1;
       else if (strcmp(argv[i], "-texpresso") == 0)
@@ -1013,11 +1022,17 @@ int main(int argc, char **argv)
     }
   }
 
-  if (use_tectonic && use_texlive)
+  miktex_select(use_miktex, auto_install_miktex);
+  if (use_tectonic + use_texlive + use_miktex > 1 || (auto_install_miktex && !use_miktex))
   {
-    fprintf(stderr, "Provide either -tectonic or -texlive.\n");
+    fprintf(stderr, "Choose one provider; -miktex-auto-install requires -miktex.\n");
     usage(argv[0]);
     return 1;
+  }
+  else if (use_miktex)
+  {
+    if (!miktex_available()) { fprintf(stderr, "Cannot find MiKTeX findtexmf.\n"); return 1; }
+    use_texlive = 1; /* Common local-file lookup path. */
   }
   else if (use_texlive)
   {
@@ -1043,6 +1058,9 @@ int main(int argc, char **argv)
   }
   else if (texlive_available())
     use_texlive = 1;
+  else if (miktex_available()) {
+    use_miktex = use_texlive = 1; miktex_select(true, false);
+  }
   else if (tectonic_available())
     use_tectonic = 1;
   else
@@ -1056,7 +1074,9 @@ int main(int argc, char **argv)
     return 1;
   }
 
-  if (use_texlive)
+  if (use_miktex)
+    fprintf(stderr, "Using MiKTeX (automatic installation %s).\n", auto_install_miktex ? "enabled" : "disabled");
+  else if (use_texlive)
     fprintf(stderr, "Using TeXlive.\n");
   else
     fprintf(stderr, "Using Tectonic.\n");

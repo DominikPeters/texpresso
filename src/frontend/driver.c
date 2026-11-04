@@ -144,6 +144,8 @@ static void usage(void)
   fprintf(stderr,
           " -stream   Skip filesystem lookups; files are pushed via editor commands\n");
   fprintf(stderr,
+          " -miktex   Load packages and fonts using MiKTeX findtexmf\n"
+          " -miktex-auto-install Allow noninteractive installation of missing MiKTeX packages\n"
           " -headless Export preview images over stdout (requires -json)\n"
           " -watch-parent Release isolated compiler group when its editor exits (headless only)\n"
           " -capabilities Print supported preview features as JSON and exit\n"
@@ -178,7 +180,7 @@ int main(int argc, const char **argv)
   enum editor_protocol protocol = EDITOR_SEXP;
   bool line_output = 0;
   bool use_tectonic = 0;
-  bool use_texlive = 0;
+  bool use_texlive = 0, use_miktex = 0, miktex_auto_install = 0;
   bool initialize_only = 0;
   bool stream_mode = 0;
   bool headless = 0;
@@ -238,6 +240,10 @@ int main(int argc, const char **argv)
       {
         use_tectonic = 1;
       }
+      else if (strcmp(arg, "-miktex") == 0)
+        use_miktex = 1;
+      else if (strcmp(arg, "-miktex-auto-install") == 0)
+        miktex_auto_install = 1;
       else if (strcmp(arg, "-texlive") == 0)
       {
         use_texlive = 1;
@@ -274,7 +280,7 @@ int main(int argc, const char **argv)
 
   if (capabilities)
   {
-    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true,\"parentWatch\":true,\"pngCompression\":%s}\n", TXP_PREVIEW_MAX_PIXELS, TXP_PNG_COMPRESSION);
+    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true,\"parentWatch\":true,\"packageProviders\":[\"texlive\",\"miktex\",\"tectonic\"],\"miktexAutoInstall\":true,\"pngCompression\":%s}\n", TXP_PREVIEW_MAX_PIXELS, TXP_PNG_COMPRESSION);
     return 0;
   }
   if (headless && protocol != EDITOR_JSON)
@@ -289,9 +295,9 @@ int main(int argc, const char **argv)
     exit(1);
   }
 
-  if (use_tectonic && use_texlive)
+  if (use_tectonic + use_texlive + use_miktex > 1 || (miktex_auto_install && !use_miktex))
   {
-    fprintf(stderr, "[error] -texlive and -tectonic are mutually exclusive.\n");
+    fprintf(stderr, "[error] Choose one provider; -miktex-auto-install requires -miktex.\n");
     usage();
     exit(1);
   }
@@ -457,6 +463,8 @@ int main(int argc, const char **argv)
       .line_output = line_output,
       .use_tectonic = use_tectonic,
       .use_texlive = use_texlive,
+      .use_miktex = use_miktex,
+      .miktex_auto_install = miktex_auto_install,
       .initialize_only = initialize_only,
       .stream_mode = stream_mode,
       .headless = headless,
