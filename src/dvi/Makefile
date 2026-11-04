@@ -11,6 +11,8 @@ DIR_OBJECTS=$(foreach OBJ,$(OBJECTS),$(DIR)/$(OBJ))
 
 all: $(DIR)/libmydvi.a
 
+$(DIR_OBJECTS): mydvi.h
+
 $(DIR)/libmydvi.a: $(DIR_OBJECTS)
 	ar cr $@ $^
 

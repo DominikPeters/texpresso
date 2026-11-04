@@ -1,5 +1,6 @@
 /* Derived from tectonic_xetex_format version 33; maintained for TeXpresso.
  * Format 1001 adds Web2C paragraph, show-stream and ignored-error parameters.
+ * Format 1002 adds the preview-only source filename primitive.
  * Its equivalence layout is deliberately distinct from Tectonic. */
 
 #ifndef __TECTONIC_XETEX_FORMAT_ENGINE_HEADER__
@@ -9,7 +10,7 @@
 
 /* The format version associated with these symbols. */
 
-#define TECTONIC_FORMAT_VERSION 1001 /* TeXpresso format namespace */
+#define TECTONIC_FORMAT_VERSION 1002 /* TeXpresso format namespace; preview source primitive */
 
 /* Parameters associated with the multiletter control string hash table. */
 
@@ -524,7 +525,8 @@
 #define XETEX_UCHAR_CODE 38 /* = 0x26 */
 #define XETEX_UCHARCAT_CODE 39 /* = 0x27 */
 #define JOB_NAME_CODE 40 /* = 0x28 */
-#define XETEX_CONVERT_CODES 40 /* = 0x28 */
+#define TEXPRESSO_SOURCE_FILE_CODE 41
+#define XETEX_CONVERT_CODES 41
 
 /* Subcommand codes for the EXTENSION command. */
 
@@ -1075,6 +1077,7 @@ typedef struct xetex_format_primitive_def_t {
     { "Uchar", CONVERT, XETEX_UCHAR_CODE, xf_prim_init_none }, \
     { "Ucharcat", CONVERT, XETEX_UCHARCAT_CODE, xf_prim_init_none }, \
     { "jobname", CONVERT, JOB_NAME_CODE, xf_prim_init_none }, \
+    { "texpressosourcefile", CONVERT, TEXPRESSO_SOURCE_FILE_CODE, xf_prim_init_none }, \
     { "the", THE, SHOW_CODE, xf_prim_init_none }, \
     { "unexpanded", THE, SHOW_BOX_CODE, xf_prim_init_none }, \
     { "detokenize", THE, SHOW_TOKENS, xf_prim_init_none }, \

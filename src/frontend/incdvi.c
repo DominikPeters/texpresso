@@ -314,6 +314,7 @@ static bool cache_token(const unsigned char *s, size_t n, const char *token)
 static bool cache_special(const unsigned char *s, size_t n)
 {
   while (n && (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r')) { s++; n--; }
+  if (cache_token(s,n,"texpresso:figure")) return true;
   if (cache_token(s,n,"color") || cache_token(s,n,"pdfcolorstack") || cache_token(s,n,"pdfcolorstackinit") ||
       cache_token(s,n,"landscape") || cache_token(s,n,"papersize")) return true;
   if (n < 4 || memcmp(s,"pdf:",4)) return false;

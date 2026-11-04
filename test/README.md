@@ -15,6 +15,21 @@ text-line height/depth, compressed vertical coordinates, nearby whitespace,
 negative kern widths, nested boxes, invisible struts, and glyph-only boxes.
 It uses the same MuPDF/compiler configuration as the frontend.
 
+`make test-dvi-annotations` also checks preview figure-special geometry, source
+metadata, malformed inputs and page reset. Live XeLaTeX workers install a small
+built-in TikZ hook (ordinary CLI compilation is unchanged). Headless image
+annotations can optionally contain `figures: [{bounds, file, line, endLine}]`;
+`tikzFigures: true` advertises support. Bounds are page points, top-left origin,
+with the renderer's real transformation applied. Source lines are one-based
+**execution locations**, with `endLine` exclusive. TeX collects macro arguments
+before execution: a multiline `scalebox` can report its closing-argument line for
+both endpoints. Clients must resolve that location against a unique literal
+source picture, not assume it is the picture's opening line. Repeated/ambiguous
+macro expansions are not exact editable source ranges. Nested TikZ pictures
+inside node labels are suppressed. Format namespace 1002 is required for the
+hex-UTF8 `\texpressosourcefile` primitive; ordinary job names and source line
+numbering remain intact.
+
 `make test-preview-png` checks exact pixels with an independent system-zlib
 decoder, chunk CRCs, large incompressible streams, grayscale/RGB detection,
 resolution metadata and dirty-patch erasure. Run it with the default frontend

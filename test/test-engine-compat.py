@@ -190,7 +190,7 @@ A\eject
     def test_cached_format_round_trip(self):
         body = r'\typeout{CHECK:format:\the\partokencontext,\the\showstream,\the\ignoreprimitiveerror}Hello.'
         _, first, directory = self.run_tex(body)
-        formats = list((self.root / 'cache/texpresso/format').glob('*v1001*.fmt'))
+        formats = list((self.root / 'cache/texpresso/format').glob('*v1002*.fmt'))
         self.assertEqual(len(formats), 1)
         before = formats[0].stat().st_mtime_ns
         digest = hashlib.sha256(formats[0].read_bytes()).digest()
@@ -211,7 +211,7 @@ A\eject
         original = formats[0].read_bytes()
         self.run_tex(r'\typeout{CHECK:new-format:\the\partokencontext}')
         self.assertEqual(formats[0].read_bytes(), original)
-        self.assertTrue(list((self.root / 'cache/texpresso/format').glob('*v1001*.fmt')))
+        self.assertTrue(list((self.root / 'cache/texpresso/format').glob('*v1002*.fmt')))
 
 
 unittest.main(argv=[__file__] + remaining)

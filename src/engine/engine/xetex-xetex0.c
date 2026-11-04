@@ -2962,6 +2962,9 @@ print_cmd_chr(uint16_t cmd, int32_t chr_code)
         case XETEX_UCHARCAT_CODE:
             print_esc_cstr("Ucharcat");
             break;
+        case TEXPRESSO_SOURCE_FILE_CODE:
+            print_esc_cstr("texpressosourcefile");
+            break;
         default:
             print_esc_cstr("jobname");
             break;
@@ -9853,6 +9856,18 @@ conv_toks(void)
     case JOB_NAME_CODE:
         print_file_name(job_name, 0, 0);
         break;
+
+    case TEXPRESSO_SOURCE_FILE_CODE: {
+        /* Hex UTF-8 survives TeX expansion and special parsing, including
+         * filenames containing braces, quotes, spaces or non-ASCII text. */
+        char *path = gettexstring(full_source_filename_stack[in_open]);
+        const char *hex = "0123456789abcdef";
+        for (const unsigned char *p = (unsigned char *)path; *p; p++) {
+            print_char(hex[*p >> 4]); print_char(hex[*p & 15]);
+        }
+        free(path);
+        break;
+    }
     }
 
     selector = old_setting;
@@ -10932,6 +10947,8 @@ start_input(const char *primary_input_name)
          * are hardly used so it'd be nice to get rid of them someday. */
 
         format = TTBC_FILE_FORMAT_TECTONIC_PRIMARY;
+        if (synctex_texpresso_extension && !strcmp(primary_input_name, "__texpresso_preview_hooks__.tex"))
+            format = TTBC_FILE_FORMAT_TEX;
 
         name_in_progress = true;
         begin_name();

@@ -3876,6 +3876,11 @@ tt_run_engine(const char *dump_name, const char *input_file_name, time_t build_d
     pdf_files_init();
     synctex_init_command();
     start_input(input_file_name);
+    /* A separate immutable input leaves the user's source/line numbers and
+     * jobname intact. Never install preview hooks in ordinary CLI builds or
+     * during format generation. */
+    if (synctex_texpresso_extension && !in_initex_mode)
+        start_input("__texpresso_preview_hooks__.tex");
     history = HISTORY_SPOTLESS;
     main_control();
     final_cleanup();

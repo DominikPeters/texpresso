@@ -71,6 +71,7 @@ $(BUILD)/$(XETEX_BIN): $(OBJECTS) $(BUILD)/common/libcommon.a
 	$(_LD) -o $@ $^ $(LDFLAGS)
 
 $(OBJECTS): engine/xetex_format.h engine/xetex_bindings.h engine/xetex-constants.h
+$(BUILD)/main/main.o: main/preview_hooks.h
 
 $(BUILD)/%.o: %.c | $(BUILD_DIRS)
 	$(_CC) $(CFLAGS) -I../include -c -o $@ $<

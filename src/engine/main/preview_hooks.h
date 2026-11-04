@@ -1,0 +1,31 @@
+/* Preview-only metadata. No source rewriting, disk files, auxiliary pass or
+ * TeX package dependency. The local depth follows TikZ's own groups, so pictures
+ * nested in node text do not become competing hover regions. */
+static const char txp_preview_hooks[] =
+"\\begingroup\\catcode`\\@=11\n"
+"\\gdef\\txp@installtikz{%\n"
+"  \\newcount\\txp@tikzdepth\n"
+"  \\let\\txp@tikzpicture\\tikzpicture\n"
+"  \\let\\txp@endtikzpicture\\endtikzpicture\n"
+"  \\def\\tikzpicture{\\begingroup\n"
+"    \\advance\\txp@tikzdepth by1\n"
+"    \\edef\\txp@source{\\texpressosourcefile}%\n"
+"    \\edef\\txp@line{\\number\\inputlineno}%\n"
+"    \\txp@tikzpicture}%\n"
+"  \\def\\endtikzpicture{\\txp@endtikzpicture\\endgroup}%\n"
+"  \\let\\txp@typesetpicturebox\\pgfsys@typesetpicturebox\n"
+"  \\def\\pgfsys@typesetpicturebox##1{%\n"
+"    \\ifnum\\txp@tikzdepth=1\n"
+"      \\setbox##1=\\hbox{%\n"
+"        \\special{texpresso:figure \\number\\pgf@picminx\\space\n"
+"          \\number\\pgf@picminy\\space \\number\\pgf@picmaxx\\space\n"
+"          \\number\\pgf@picmaxy\\space \\txp@line\\space\n"
+"          \\number\\inputlineno\\space \\txp@source}%\n"
+"        \\box##1}%\n"
+"    \\fi\n"
+"    \\txp@typesetpicturebox##1}%\n"
+"}\n"
+"\\ifdefined\\AddToHook\n"
+"  \\AddToHook{package/tikz/after}{\\txp@installtikz}%\n"
+"\\fi\n"
+"\\endgroup\n";

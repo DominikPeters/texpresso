@@ -6,6 +6,54 @@
 #include <ctype.h>
 #include <math.h>
 #include <string.h>
+#include <stdlib.h>
+#include <errno.h>
+
+static int unhex(unsigned char c)
+{
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return -1;
+}
+static bool figure(fz_context *ctx, dvi_context *dc, dvi_state *st, const char *data, size_t len)
+{
+  const char prefix[] = "texpresso:figure ";
+  if (len < sizeof(prefix)-1 || memcmp(data, prefix, sizeof(prefix)-1)) return false;
+  /* Untrusted specials may never grow metadata without a bound or interfere
+   * with drawing. Signed sp coordinates; source lines are one-based, end
+   * exclusive. UTF-8 filename is encoded as hex by the preview hook. */
+  if (len > 16384 || !dc->annotation_figures || dc->annotation_figure_count >= 1024 ||
+      dc->annotation_figures->len > 256*1024-32768) return true;
+  char text[16385]; memcpy(text, data, len); text[len] = 0;
+  char *p = text + sizeof(prefix)-1, *end;
+  long v[6];
+  for (int i=0; i<6; i++) {
+    while (*p == ' ') p++;
+    errno=0; v[i]=strtol(p,&end,10);
+    if (p==end || errno || *end!=' ' || v[i]<INT32_MIN || v[i]>INT32_MAX) return true;
+    p=end+1;
+  }
+  while (*p == ' ') p++;
+  size_t n=strlen(p);
+  while (n && p[n-1]==' ') n--;
+  if (!n || n>8192 || n%2 || v[4]<1 || v[5]<v[4] || v[5]>=INT32_MAX || v[0]>=v[2] || v[1]>=v[3]) return true;
+  char path[4097];
+  for (size_t i=0; i<n/2; i++) {
+    int a=unhex(p[2*i]), b=unhex(p[2*i+1]);
+    if (a<0 || b<0 || (a*16+b)<32 || (a*16+b)==127) return true;
+    path[i]=(char)(a*16+b);
+  }
+  path[n/2]=0;
+  const float sp=72.f/(72.27f*65536.f);
+  fz_rect b=fz_transform_rect(fz_make_rect(v[0]*sp,v[1]*sp,v[2]*sp,v[3]*sp),dvi_get_ctm(dc,st));
+  if (fz_is_empty_rect(b) || fz_is_infinite_rect(b) || !isfinite(b.x0) || !isfinite(b.y0) ||
+      !isfinite(b.x1) || !isfinite(b.y1) || fabsf(b.x0)>=1e9f || fabsf(b.y0)>=1e9f ||
+      fabsf(b.x1)>=1e9f || fabsf(b.y1)>=1e9f) return true;
+  fz_append_printf(ctx,dc->annotation_figures,
+    "%s{\"bounds\":[%g,%g,%g,%g],\"file\":%q,\"line\":%d,\"endLine\":%d}",
+    dc->annotation_figure_count++ ? ",":"",b.x0,b.y0,b.x1,b.y1,path,(int)v[4],(int)v[5]+1);
+  return true;
+}
 
 static const char *special(const char *data, size_t len, const char *name)
 {
@@ -59,6 +107,7 @@ void dvi_annotation_bounds(fz_context *ctx, dvi_context *dc, fz_rect b)
 }
 bool dvi_annotation_special(fz_context *ctx, dvi_context *dc, dvi_state *st, const char *data, size_t len)
 {
+  if (figure(ctx, dc, st, data, len)) return true;
   if (special(data, len, "eann")) {
     dvi_context_flush_text(ctx, dc, st); dc->annotation_uri = NULL; return true;
   }
@@ -102,6 +151,12 @@ fz_buffer *dvi_annotations(fz_context *ctx, dvi_context *dc)
   if (dc->annotation_links) fz_append_buffer(ctx, buf, dc->annotation_links);
   fz_append_string(ctx, buf, "],\"destinations\":[");
   if (dc->annotation_destinations) fz_append_buffer(ctx, buf, dc->annotation_destinations);
-  fz_append_string(ctx, buf, "]}");
+  fz_append_string(ctx, buf, "]");
+  if (dc->annotation_figure_count) {
+    fz_append_string(ctx, buf, ",\"figures\":[");
+    fz_append_buffer(ctx, buf, dc->annotation_figures);
+    fz_append_string(ctx, buf, "]");
+  }
+  fz_append_string(ctx, buf, "}");
   return buf;
 }

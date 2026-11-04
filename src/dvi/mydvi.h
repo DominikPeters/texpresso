@@ -336,10 +336,10 @@ typedef struct
   // Pdf color stacks (introduced by pdftex)
   dvi_colorstacks pdfcolorstacks;
   float scale;
-  fz_buffer *annotation_links, *annotation_destinations;
+  fz_buffer *annotation_links, *annotation_destinations, *annotation_figures;
   pdf_document *annotation_pdf;
   const char *annotation_uri;
-  int annotation_link_count, annotation_destination_count;
+  int annotation_link_count, annotation_destination_count, annotation_figure_count;
 } dvi_context;
 
 bool dvi_annotation_special(fz_context *ctx, dvi_context *dc, dvi_state *st, const char *data, size_t len);

@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "incdvi.h"
 #include "mydvi.h"
 static void u32(fz_context *ctx, fz_buffer *b, unsigned n)
@@ -27,7 +28,27 @@ int main(void)
   dvi_context_begin_frame(ctx,dc,NULL); /* allocated, zero-length buffers */
   empty=dvi_annotations(ctx,dc);
   assert(empty->len==strlen(empty_json) && !memcmp(empty->data,empty_json,empty->len));
-  fz_drop_buffer(ctx,empty);dvi_context_free(ctx,dc);
+  fz_drop_buffer(ctx,empty);
+  const char *fig="texpresso:figure 0 0 65536 131072 3 7 6d61696e2e746578";
+  assert(dvi_annotation_special(ctx,dc,&dc->root,fig,strlen(fig)));
+  assert(dc->annotation_figure_count==1);
+  empty=dvi_annotations(ctx,dc);
+  fz_terminate_buffer(ctx,empty);
+  assert(strstr((char *)empty->data,"\"file\":\"main.tex\",\"line\":3,\"endLine\":8"));
+  float x0,y0,x1,y1;
+  char *bounds=strstr((char *)empty->data,"\"bounds\":[");
+  assert(bounds && sscanf(bounds,"\"bounds\":[%f,%f,%f,%f]",&x0,&y0,&x1,&y1)==4);
+  assert(fabsf(x0-72)<.001 && fabsf(y1-72)<.001);
+  assert(fabsf((x1-x0)-72.f/72.27f)<.001 && fabsf((y1-y0)-144.f/72.27f)<.001);
+  fz_drop_buffer(ctx,empty);
+  const char *bad[]={"texpresso:figure nan 0 1 2 1 2 aa", "texpresso:figure 0 0 1 2 -1 2 aa",
+    "texpresso:figure 0 0 1 2 1 2 00", "texpresso:figure 0 0 1 2 1 2 xyz",
+    "texpresso:figure 0 0 1 2 1 2147483647 aa"};
+  for(size_t i=0;i<sizeof bad/sizeof *bad;i++) assert(dvi_annotation_special(ctx,dc,&dc->root,bad[i],strlen(bad[i])));
+  assert(dc->annotation_figure_count==1);
+  dvi_context_begin_frame(ctx,dc,NULL);
+  assert(dc->annotation_figure_count==0);
+  dvi_context_free(ctx,dc);
   fz_buffer *full=page(ctx,"old"),*partial=fz_new_buffer(ctx,1);
   for(size_t i=0;i<full->len;i++) {
     fz_append_byte(ctx,partial,full->data[i]);incdvi_update(ctx,d,partial);

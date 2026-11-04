@@ -288,7 +288,7 @@ int main(int argc, const char **argv)
 
   if (capabilities)
   {
-    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true,\"parentWatch\":true,\"packageProviders\":[\"texlive\",\"miktex\",\"miktex-windows\",\"tectonic\"],\"miktexAutoInstall\":true,\"miktexWindowsBridge\":true,\"pngCompression\":%s}\n", TXP_PREVIEW_MAX_PIXELS, TXP_PNG_COMPRESSION);
+    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"regions\":true,\"links\":true,\"tikzFigures\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true,\"parentWatch\":true,\"packageProviders\":[\"texlive\",\"miktex\",\"miktex-windows\",\"tectonic\"],\"miktexAutoInstall\":true,\"miktexWindowsBridge\":true,\"pngCompression\":%s}\n", TXP_PREVIEW_MAX_PIXELS, TXP_PNG_COMPRESSION);
     return 0;
   }
   if (headless && protocol != EDITOR_JSON)

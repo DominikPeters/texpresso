@@ -18,6 +18,7 @@
 #include "common.h"
 #include "../engine/xetex-xetexd.h"
 #include "../engine/xetex_bindings.h"
+#include "preview_hooks.h"
 #define LOG 0
 
 /**
@@ -212,6 +213,18 @@ ttbc_input_handle_t *ttstub_input_open(const char *path,
 
   if (is_gz != 0)
     do_abortf("GZ compression not supported");
+
+  if (texpresso && !strcmp(path, "__texpresso_preview_hooks__.tex")) {
+    FILE *f = tmpfile();
+    if (!f || fwrite(txp_preview_hooks, 1, sizeof(txp_preview_hooks) - 1, f) != sizeof(txp_preview_hooks) - 1)
+      _tt_abort("Cannot initialize preview hooks");
+    rewind(f);
+    txp_input_file *input = calloc(1, sizeof(*input));
+    if (!input) _tt_abort("Cannot allocate preview hooks input");
+    input->id = -1; input->file = f;
+    strcpy(last_open, path);
+    return txp_as_input((txp_input *)input);
+  }
 
   if (texpresso && format == TTBC_FILE_FORMAT_FORMAT)
   {
