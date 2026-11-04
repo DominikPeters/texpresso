@@ -623,6 +623,17 @@ dvi_font *dvi_resmanager_get_tex_font(fz_context *ctx, dvi_resmanager *rm, const
 
   tex_fontmap_entry *e = tex_fontmap_lookup(rm->map, cell->font.name);
 
+  if (!e && miktex_selected())
+  {
+    /* A cold MiKTeX installation can install metrics during compilation,
+     * after this renderer loaded its font map. Generate the corresponding
+     * maps under the explicit installer policy, then retry once per new font. */
+    if (miktex_refresh_fontmaps()) {
+      load_fontmap(ctx, rm);
+      e = tex_fontmap_lookup(rm->map, cell->font.name);
+    }
+  }
+
   if (e && e->font_file_name)
   {
     cell->font.fz = fz_keep_font(ctx, dvi_resmanager_get_fz_font(ctx, rm, e->font_file_name, strlen(e->font_file_name), 0));

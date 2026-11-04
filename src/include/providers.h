@@ -81,6 +81,7 @@ void miktex_select(bool enabled, bool auto_install);
 bool miktex_selected(void);
 bool miktex_auto_install(void);
 bool miktex_available(void);
+bool miktex_refresh_fontmaps(void);
 const char *miktex_file_path(const char *name, FILE *record);
 bool miktex_check_dependencies(FILE *record);
 const char *texmf_file_path(const char *name, FILE *record);

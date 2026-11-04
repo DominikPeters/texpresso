@@ -27,23 +27,30 @@ static long long milliseconds(void) {
 }
 /* No shell, no inherited protocol input, and bounded output/time. findtexmf
  * explicitly calls EnableInstaller(False) unless --must-exist was supplied. */
-static bool lookup(const char *name, char *output, size_t capacity, bool version) {
+static bool lookup(const char *name, char *output, size_t capacity, int operation) {
+  bool version = operation == 1, fontmaps = operation == 2;
   int pipefd[2]; if (pipe(pipefd)) return false;
   posix_spawn_file_actions_t actions;
   posix_spawn_file_actions_init(&actions);
   posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
-  posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
+  posix_spawn_file_actions_adddup2(&actions, fontmaps ? STDERR_FILENO : pipefd[1], STDOUT_FILENO);
   posix_spawn_file_actions_addclose(&actions, pipefd[0]);
   posix_spawn_file_actions_addclose(&actions, pipefd[1]);
   char *args[10]; int count = 0;
-  args[count++] = "findtexmf";
-  if (version) args[count++] = "--version";
+  args[count++] = fontmaps ? "miktex" : "findtexmf";
+  if (fontmaps) {
+    args[count++] = install ? "--enable-installer" : "--disable-installer";
+    args[count++] = "fontmaps"; args[count++] = "configure";
+  }
+  else if (version) args[count++] = "--version";
   else {
     args[count++] = "--the-name-of-the-game=xetex";
     /* MiKTeX infers .txt as documentation. XeTeX requests Unicode tables
      * such as UnicodeData.txt from the TeX input tree, not the doc tree. */
     const char *extension = strrchr(name, '.');
     if (extension && !strcmp(extension, ".txt")) args[count++] = "--file-type=tex";
+    else if (extension && !strcmp(extension, ".tec")) args[count++] = "--file-type=misc fonts";
+    else if (extension && !strcmp(extension, ".pdf")) args[count++] = "--file-type=graphic/figure";
     if (install) args[count++] = "--must-exist";
     args[count++] = "--";
     args[count++] = (char *)name;
@@ -81,6 +88,7 @@ static bool lookup(const char *name, char *output, size_t capacity, bool version
   if (!complete || overflow) fprintf(stderr, "[miktex] lookup exceeded time/output limit\n");
   return complete && !overflow && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
+bool miktex_refresh_fontmaps(void) { char output[16384]; return lookup(NULL, output, sizeof output, 2); }
 bool miktex_available(void) { char version[16384]; return lookup(NULL, version, sizeof version, true) && strstr(version, "MiKTeX"); }
 struct cached_path { struct cached_path *next; char *name, *path; };
 static struct cached_path *cache;

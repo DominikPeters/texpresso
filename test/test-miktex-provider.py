@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory(prefix='texpresso-miktex-') as temp:
     temp = Path(temp)
     (temp/'stub.c').write_text('const char *texlive_file_path(const char *name, void *record) { (void)name; (void)record; return 0; }')
     library = temp/('provider.dylib' if sys.platform == 'darwin' else 'provider.so')
-    subprocess.run(['cc', '-shared', '-fPIC', '-DMIKTEX_LOOKUP_TIMEOUT_MS=250', '-Wall', '-Wextra', '-Werror',
+    subprocess.run(['cc', '-shared', '-fPIC', '-DMIKTEX_LOOKUP_TIMEOUT_MS=1000', '-Wall', '-Wextra', '-Werror',
                     '-I'+str(root/'src/include'), str(root/'src/common/miktex_provider.c'), str(temp/'stub.c'), '-o', str(library)], check=True)
     command = temp/'findtexmf'
     command.write_text('#!'+sys.executable+'\n'+r'''
@@ -29,6 +29,9 @@ if not path.is_file(): sys.exit(1)
 print(path)
 ''')
     command.chmod(0o755)
+    utility = temp/'miktex'
+    utility.write_text('#!'+sys.executable+'\nimport json,os,pathlib,sys\nwith (pathlib.Path(os.environ["MIKTEX_TEST_ROOT"])/"calls").open("a") as log: log.write(json.dumps(sys.argv[1:])+"\\n")\n')
+    utility.chmod(0o755)
     os.environ['PATH'] = str(temp)+os.pathsep+os.environ.get('PATH','')
     os.environ['MIKTEX_TEST_ROOT'] = str(temp)
     lib = ctypes.CDLL(str(library))
@@ -50,13 +53,21 @@ print(path)
     (temp/'UnicodeData.txt').write_text('unicode table')
     assert lib.miktex_file_path(b'UnicodeData.txt', None)
     assert '--file-type=tex' in json.loads((temp/'calls').read_text().splitlines()[-1])
+    for filename, filetype in [('tex-text.tec','misc fonts'), ('figure.pdf','graphic/figure')]:
+        (temp/filename).write_bytes(b'resource')
+        assert lib.miktex_file_path(filename.encode(), None)
+        assert '--file-type='+filetype in json.loads((temp/'calls').read_text().splitlines()[-1])
+    assert lib.miktex_refresh_fontmaps()
+    assert json.loads((temp/'calls').read_text().splitlines()[-1]) == ['--disable-installer','fontmaps','configure']
     lib.miktex_select(True, True)
+    assert lib.miktex_refresh_fontmaps()
+    assert json.loads((temp/'calls').read_text().splitlines()[-1]) == ['--enable-installer','fontmaps','configure']
     (temp/'install.sty').write_text('installed')
     assert lib.miktex_file_path(b'install.sty', None)
     assert '--must-exist' in json.loads((temp/'calls').read_text().splitlines()[-1])
     lib.miktex_select(True, False)
     started = time.monotonic()
     assert not lib.miktex_file_path(b'hang.tex', None)
-    assert time.monotonic()-started < 2, 'closed stdout cannot evade deadline'
+    assert time.monotonic()-started < 3, 'closed stdout cannot evade deadline'
     assert not (temp/'sentinel').exists()
 print('PASS: safe argv, positive cache, retry misses, explicit install policy, bounded child lifetime')

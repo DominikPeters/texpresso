@@ -18,8 +18,8 @@ def assert_png_ink(body):
         kind, data = body[offset+4:offset+8], body[offset+8:offset+8+n]
         if kind == b'IHDR':
             width, height, depth, color, _, _, interlace = struct.unpack('>IIBBBBB', data)
-            assert depth == 8 and color in (2, 6) and interlace == 0
-            channels = 3 if color == 2 else 4
+            assert depth == 8 and color in (0, 2, 4, 6) and interlace == 0, (depth,color,interlace)
+            channels = {0:1, 2:3, 4:2, 6:4}[color]
         elif kind == b'IDAT': compressed += data
         offset += n+12
     raw = zlib.decompress(compressed); stride = width*channels
@@ -40,7 +40,9 @@ def assert_png_ink(body):
                 estimate = a+b-c
                 predictor = min((a,b,c), key=lambda value: abs(estimate-value))
             row[x] = (row[x]+predictor)&255
-        ink += sum(min(row[x:x+3]) < 160 for x in range(0,stride,channels))
+        ink += sum((channels not in (2,4) or row[x+channels-1] >= 128) and
+                   (row[x] if channels in (1,2) else min(row[x:x+3])) < 160
+                   for x in range(0,stride,channels))
         previous = row
     assert ink > 100, ('blank rendered page', ink)
 
@@ -112,6 +114,9 @@ MiKTeX live preview: caf\'e. $\int_0^1 x^2\,dx = \frac13$.
                                 p.stdin.write((json.dumps(['preview-svg',100,0,800,revision,sequence])+'\n').encode()); p.stdin.flush()
                 assert received == {'image/png','image/svg+xml'}, (received,p.poll())
                 p.stdin.close(); assert p.wait(timeout=10) == 0
+                contents = Path(log.name).read_text(errors='replace')
+                assert 'no font file nor VF file found' not in contents, 'missing renderer font'
+                assert not any('Font mapping' in line and 'not found' in line for line in contents.splitlines()), 'missing TECkit mapping'
                 formats = list((folder/'cache/texpresso/format').glob('miktex-*.fmt'))
                 assert len(formats) == 1
                 stamp = formats[0].stat().st_mtime_ns

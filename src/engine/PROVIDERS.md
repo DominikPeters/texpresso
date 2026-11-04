@@ -158,3 +158,9 @@ Run `python3 test/test-miktex-provider.py` for the small command/cache regressio
 suite, or `python3 test/test-miktex-real.py build/texpresso` with an initialized
 MiKTeX installation to exercise compilation, downloads, PNG/SVG rendering and
 provider-separated cache reuse.
+
+Text Unicode tables use the TeX input search type, TECkit maps use miscellaneous
+fonts, and PDF inputs use graphics. When a renderer font is absent from the
+previously loaded map, MiKTeX font-map configuration is refreshed and reloaded
+under the same explicit installer policy. This covers metrics/packages installed
+after the renderer was created, without assuming TeX Live's directory layout.
