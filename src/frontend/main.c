@@ -1798,9 +1798,12 @@ bool texpresso_main(struct persistent_state *ps)
         if (!stdin_eof)
           wakeup_poll_thread(poll_stdin_pipe, 'c');
 
-        bool rerun_eligible = ps->rerun_enabled
+        // An edited pass can match a preexisting .aux prefix until EOF.
+        // With automatic reruns enabled, idle finishing must establish that
+        // EOF before deciding convergence; visible page demand alone cannot.
+        bool rerun_eligible = ps->rerun_enabled && !ps->paused && !ui->prepare.held
                               && rerun_count < MAX_RERUNS
-                              && aux_ready;
+                              && (aux_ready || unfinished_source);
         txp_activity_sample wait_start = {0};
         if (txp_activity_enabled()) wait_start = txp_activity_clock();
         if (startup_wait)
