@@ -25,6 +25,7 @@ name = sys.argv[-1]
 if name == 'hang.tex':
     os.close(1); time.sleep(30)
 path = root/name
+if name == "pdftex.map" and (root/"override.map").is_file(): path = root/"override.map"
 if not path.is_file(): sys.exit(1)
 print(path)
 ''')
@@ -57,8 +58,12 @@ print(path)
         (temp/filename).write_bytes(b'resource')
         assert lib.miktex_file_path(filename.encode(), None)
         assert '--file-type='+filetype in json.loads((temp/'calls').read_text().splitlines()[-1])
+    (temp/'pdftex.map').write_text('old system map')
+    assert lib.miktex_file_path(b'pdftex.map', None) == str(temp/'pdftex.map').encode()
+    (temp/'override.map').write_text('new user map')
     assert lib.miktex_refresh_fontmaps()
     assert json.loads((temp/'calls').read_text().splitlines()[-1]) == ['--disable-installer','fontmaps','configure']
+    assert lib.miktex_file_path(b'pdftex.map', None) == str(temp/'override.map').encode()
     lib.miktex_select(True, True)
     assert lib.miktex_refresh_fontmaps()
     assert json.loads((temp/'calls').read_text().splitlines()[-1]) == ['--enable-installer','fontmaps','configure']

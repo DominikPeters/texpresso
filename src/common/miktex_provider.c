@@ -88,10 +88,24 @@ static bool lookup(const char *name, char *output, size_t capacity, int operatio
   if (!complete || overflow) fprintf(stderr, "[miktex] lookup exceeded time/output limit\n");
   return complete && !overflow && WIFEXITED(status) && WEXITSTATUS(status) == 0;
 }
-bool miktex_refresh_fontmaps(void) { char output[16384]; return lookup(NULL, output, sizeof output, 2); }
-bool miktex_available(void) { char version[16384]; return lookup(NULL, version, sizeof version, true) && strstr(version, "MiKTeX"); }
 struct cached_path { struct cached_path *next; char *name, *path; };
 static struct cached_path *cache;
+bool miktex_refresh_fontmaps(void) {
+  char output[16384];
+  if (!lookup(NULL, output, sizeof output, 2)) return false;
+  /* A generated user map can take precedence over a still-existing system
+   * map. Re-resolve map names rather than reusing their previous paths. */
+  struct cached_path **link = &cache;
+  while (*link) {
+    struct cached_path *p = *link;
+    const char *extension = strrchr(p->name, '.');
+    if (extension && !strcmp(extension, ".map")) {
+      *link = p->next; free(p->name); free(p->path); free(p);
+    } else link = &p->next;
+  }
+  return true;
+}
+bool miktex_available(void) { char version[16384]; return lookup(NULL, version, sizeof version, true) && strstr(version, "MiKTeX"); }
 const char *miktex_file_path(const char *name, FILE *record) {
   if (!name || strchr(name, '\n') || strchr(name, '\r')) return NULL;
   const char *path = NULL;
