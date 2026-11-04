@@ -35,9 +35,20 @@ static bool lookup(const char *name, char *output, size_t capacity, bool version
   posix_spawn_file_actions_adddup2(&actions, pipefd[1], STDOUT_FILENO);
   posix_spawn_file_actions_addclose(&actions, pipefd[0]);
   posix_spawn_file_actions_addclose(&actions, pipefd[1]);
-  char *args[] = {"findtexmf", version ? "--version" : "--the-name-of-the-game=xetex",
-    version ? NULL : install ? "--must-exist" : "--", install ? "--" : (char *)name,
-    install ? (char *)name : NULL, NULL};
+  char *args[10]; int count = 0;
+  args[count++] = "findtexmf";
+  if (version) args[count++] = "--version";
+  else {
+    args[count++] = "--the-name-of-the-game=xetex";
+    /* MiKTeX infers .txt as documentation. XeTeX requests Unicode tables
+     * such as UnicodeData.txt from the TeX input tree, not the doc tree. */
+    const char *extension = strrchr(name, '.');
+    if (extension && !strcmp(extension, ".txt")) args[count++] = "--file-type=tex";
+    if (install) args[count++] = "--must-exist";
+    args[count++] = "--";
+    args[count++] = (char *)name;
+  }
+  args[count] = NULL;
   pid_t child; int error = posix_spawnp(&child, args[0], &actions, NULL, args, environ);
   posix_spawn_file_actions_destroy(&actions); close(pipefd[1]);
   if (error) { close(pipefd[0]); return false; }
