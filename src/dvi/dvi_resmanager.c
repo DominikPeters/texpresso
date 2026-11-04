@@ -628,6 +628,14 @@ dvi_font *dvi_resmanager_get_tex_font(fz_context *ctx, dvi_resmanager *rm, const
     /* A cold MiKTeX installation can install metrics during compilation,
      * after this renderer loaded its font map. Generate the corresponding
      * maps under the explicit installer policy, then retry once per new font. */
+    /* Computer Modern metrics and Type 1 outlines can be separate packages.
+     * Locate the same-name outline before regenerating maps; the lookup never
+     * installs anything unless the client explicitly enabled that policy. */
+    char outline[1024];
+    if (strlen(cell->font.name) < sizeof(outline) - 5) {
+      snprintf(outline, sizeof outline, "%s.pfb", cell->font.name);
+      miktex_file_path(outline, NULL);
+    }
     if (miktex_refresh_fontmaps()) {
       load_fontmap(ctx, rm);
       e = tex_fontmap_lookup(rm->map, cell->font.name);
