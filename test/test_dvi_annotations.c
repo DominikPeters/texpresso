@@ -39,7 +39,13 @@ static void test_figure_cache(fz_context *ctx)
   fz_display_list *same=incdvi_display_list(ctx,d,b,0);
   assert(same==first && incdvi_display_list_token(d,same)==token);
   fz_buffer *after=incdvi_annotations(ctx,d); fz_terminate_buffer(ctx,after);
-  assert(strstr((char *)after->data,"\"file\":\"child-café.tex\",\"line\":30,\"endLine\":71"));
+  dvi_figure parsed; assert(dvi_parse_figure(shifted,strlen(shifted),&parsed));
+  assert(!strcmp(parsed.file,"child-café.tex") && parsed.line==30 && parsed.end_line==71);
+  /* MuPDF may emit valid Unicode escapes rather than literal UTF-8 in JSON. */
+  fz_buffer *expected=fz_new_buffer(ctx,64);
+  fz_append_printf(ctx,expected,"\"file\":%q,\"line\":30,\"endLine\":71","child-café.tex");
+  fz_terminate_buffer(ctx,expected); assert(strstr((char *)after->data,(char *)expected->data));
+  fz_drop_buffer(ctx,expected);
   assert(!strstr((char *)after->data,"main.tex"));
   char *old_figures=strstr((char *)before->data,"\"figures\""), *new_figures=strstr((char *)after->data,"\"figures\"");
   assert(old_figures && new_figures);
