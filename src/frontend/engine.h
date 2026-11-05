@@ -26,7 +26,7 @@
 #define GENERIC_ENGINE_H_
 
 #include "state.h"
-#include <mupdf/fitz/display-list.h>
+#include <mupdf/fitz.h>
 #include "synctex.h"
 #include "mydvi.h"
 
