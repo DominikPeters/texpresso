@@ -11,14 +11,30 @@ import tempfile
 import time
 
 
+def signal_group(group, sig):
+    try:
+        os.killpg(group, sig)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Darwin can report EPERM while the last member is disappearing.
+        # Establish absence independently; never treat a populated group as
+        # successfully cleaned up just because signaling was denied.
+        groups = subprocess.check_output(['ps', '-axo', 'pgid='], text=True).split()
+        if str(group) not in groups:
+            return False
+        if sig:
+            raise
+        return True
+
+
 def wait_gone(group, child=None):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         if child is not None:
             child.poll()  # Reap our direct child, if it has exited.
-        try:
-            os.killpg(group, 0)
-        except ProcessLookupError:
+        if not signal_group(group, 0):
             return
         time.sleep(.02)
     raise AssertionError(f'Disposable process group {group} survived')
@@ -88,10 +104,7 @@ time.sleep(30)
             wait_gone(group, child)
         finally:
             # Only groups created by the fixture above are eligible for cleanup.
-            try:
-                os.killpg(group, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            signal_group(group, signal.SIGKILL)
             if child is not None:
                 child.wait(timeout=5)
             log.close()
