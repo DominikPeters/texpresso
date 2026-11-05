@@ -50,18 +50,21 @@ with tempfile.TemporaryDirectory(prefix='texpresso-parent-watch-') as directory:
     bad = subprocess.run([str(fixture)], capture_output=True, timeout=5)
     assert bad.returncode == 1 and b'isolated process group' in bad.stderr
 
-    for mode in ('frontend-crash', 'frontend-eof', 'owner-crash', 'watcher-term', 'watcher-int', 'watcher-hup'):
+    for mode in ('frontend-crash', 'frontend-eof', 'owner-crash', 'watcher-term', 'watcher-int', 'watcher-hup', 'owner-crash-closed-stderr'):
         log = (folder / f'{mode}.log').open('wb')
         owner = None
-        if mode == 'owner-crash':
-            marker = folder / 'owner.json'
+        if mode.startswith('owner-crash'):
+            marker = folder / (mode + '.json')
             script = '''import json,subprocess,sys,time
-p = subprocess.Popen([sys.argv[1]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+p = subprocess.Popen([sys.argv[1]], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                     stderr=subprocess.PIPE if sys.argv[3] == 'closed-stderr' else None,
+                     start_new_session=True)
 line = p.stdout.readline()
 with open(sys.argv[2], 'w') as f: json.dump({'group':p.pid, 'workers':json.loads(line)},f)
 time.sleep(30)
 '''
-            owner = subprocess.Popen([sys.executable, '-c', script, str(fixture), str(marker)], stderr=log)
+            owner = subprocess.Popen([sys.executable, '-c', script, str(fixture), str(marker),
+                                      'closed-stderr' if mode.endswith('closed-stderr') else 'file-stderr'], stderr=log)
             deadline = time.monotonic() + 5
             while not marker.exists() and time.monotonic() < deadline:
                 time.sleep(.02)

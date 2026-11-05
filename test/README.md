@@ -40,7 +40,8 @@ keep their system ABI. `-capabilities` reports the chosen backend and level.
 
 `make test-parent-watch` builds a small fixture around the production parent
 watcher. It verifies isolated-group enforcement and cleanup after frontend
-crashes, stdin EOF, and a launcher crash. It creates only disposable processes
+crashes, stdin EOF, a launcher crash (including closed stderr pipes), and
+TERM/INT/HUP delivered to the supervisor. It creates only disposable processes
 and does not require TeX Live or MuPDF.
 
 `make test-checkpoint-cleanup` runs the production checkpoint fork/socket code
@@ -50,11 +51,16 @@ exits within five seconds while another session stays responsive. It exercises
 socket-driven cleanup without the parent watcher or cooperative TERM handlers,
 so a missing supervisor cannot conceal descriptor ownership bugs. It requires
 only Python and a C compiler, and targets only its own isolated fixture groups.
+It acknowledges CHLD immediately like the real frontend. A test-only waitpid
+gate also makes spontaneous leaf failure deterministic: the frontend must not
+observe that leaf's EOF before its retained parent has consumed the resume ACK.
 Passing a built engine to `python3 test/test-checkpoint-cleanup.py build/texpresso`
 also compiles into the middle of a disposable 12-page document, retaining a real
 checkpoint tree, and checks actual compiler descendants
 after EOF, frontend SIGKILL, supervisor TERM and process-group TERM. That optional
-integration check requires TeX Live and process listing access.
+integration check requires TeX Live and process listing access. It also kills a
+real worker, edits beyond its observed input prefix, and requires compilation
+to recover to a later page without restarting the frontend.
 
 Headless clients can opt into `-watch-parent` when `parentWatch` is advertised.
 The launcher must create an isolated process group with the engine as its

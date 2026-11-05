@@ -52,6 +52,8 @@ static void send_child_fd(int chan_fd, int32_t pid, uint32_t time, int child_fd)
   fds0[0] = child_fd;
 
   NO_EINTR(sent = sendmsg(chan_fd, &msg, 0));
+  if (sent < 0 && (errno == EPIPE || errno == ECONNRESET))
+    _exit(0); // The driver disappeared while this checkpoint was being made.
   PERROR(sent);
   PASSERT(sent == 12);
 }
@@ -85,11 +87,9 @@ pid_t texpresso_fork_with_channel(int fd, uint32_t time, txp_activity *profile, 
     // In parent: send other end of new socket to driver
     send_child_fd(fd, child, time, sockets[0]);
 
-    // The driver owns the transferred endpoint, and the child owns the other
-    // one. Keeping either here while parked prevents EOF from reaching the
-    // child when the driver exits, stranding this entire checkpoint chain.
+    // Only the driver may retain its endpoint. Keeping it here while parked
+    // prevents the child seeing EOF when the driver exits, stranding the tree.
     PERROR(close(sockets[0]));
-    PERROR(close(sockets[1]));
 
     // Wait for process to end
     int status;
@@ -128,6 +128,11 @@ pid_t texpresso_fork_with_channel(int fd, uint32_t time, txp_activity *profile, 
             "recvd: %d, answer: %c%c%c%c",
             recvd,
             answer[0], answer[1], answer[2], answer[3]);
+    // Preserve the original resume ordering: the driver must not observe the
+    // child's EOF before this checkpoint has woken and consumed its DONE.
+    // This duplicate is the worker endpoint, so it does not hide driver EOF
+    // from the child. It also closes automatically on the teardown exits above.
+    PERROR(close(sockets[1]));
   }
   return child;
 }

@@ -177,10 +177,10 @@ static void write_all(channel_t *t,int fd, const char *buf, int size)
     {
       if (errno == EINTR)
         continue;
+      if (errno == EPIPE || errno == ECONNRESET)
+        return; // The next read observes EOF and retires this worker normally.
       perror("sprotocol.c write_all");
       print_backtrace();
-      if (errno == ECONNRESET)
-        return;
     }
     if (n <= 0)
       mabort();

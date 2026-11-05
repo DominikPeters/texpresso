@@ -319,6 +319,13 @@ int main(int argc, const char **argv)
     if (result >= 0) return result;
   }
 
+  // A worker can exit between a protocol read and our response. Treat its
+  // closed socket as a failed pass instead of terminating the whole frontend.
+  if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+    perror("[error] ignoring broken worker pipes");
+    return 1;
+  }
+
   char *inclusion_path = malloc(inclusion_path_size);
   if (!inclusion_path) {
     fprintf(stderr, "[error] Could not allocate include path list\n");

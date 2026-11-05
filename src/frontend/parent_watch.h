@@ -53,6 +53,13 @@ static int txp_watch_parent(void)
         return -1;
     }
 
+    // The editor owns stderr's reader. If it disappears, the diagnostic below
+    // must not kill this supervisor with SIGPIPE before it releases the group.
+    if (signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        kill(-group, SIGKILL);
+        _exit(1);
+    }
+
     for (;;) {
         int status;
         const pid_t result = waitpid(frontend, &status, WNOHANG);

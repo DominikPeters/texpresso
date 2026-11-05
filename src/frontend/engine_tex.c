@@ -1638,14 +1638,18 @@ static void rollback_add_change(fz_context *ctx, struct tex_engine *self, fileen
   if (trace_len == NOT_IN_TRANSACTION)
     return;
 
+  // Even an unread edit must replace a closed current worker. Otherwise the
+  // prefix optimization below leaves a failed retained checkpoint current
+  // forever, and later edits beyond its seen position never resume compilation.
+  if (get_process(self)->fd < 0)
+    self->rollback.flush = 1;
+
   // A worker cannot hold bytes (or an existence answer) for an unopened file:
   // Q_OPRD records seen=0 before returning A_OPEN; failed opens use INT_MAX.
   // Do not mistake startup/preamble work for a hung consumer of this input.
   if (e->seen < 0)
   {
-    if (get_process(self)->fd < 0)
-      self->rollback.flush = 1; // A genuinely dead root still needs replacement.
-    else if (txp_profile_now())
+    if (get_process(self)->fd >= 0 && txp_profile_now())
       txp_profile_printf("[profile] {\"stage\":\"compiler-unread-edit\",\"ms\":0,\"nativeAt\":%.4f,\"request\":-1,\"page\":-1,\"bytes\":0,\"offset\":%d,\"trace\":%d}\n", txp_profile_now(), changed, get_process(self)->trace_len);
     return;
   }

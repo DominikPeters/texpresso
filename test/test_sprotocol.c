@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <fcntl.h>
+#include <signal.h>
 #include "../src/frontend/sprotocol.h"
 
 // driver.c provides this in the real binaries.
@@ -171,6 +172,22 @@ static void test_protocol_violations(void)
   }
 }
 
+static void test_answer_after_worker_exit(void)
+{
+  // Match driver.c: an EPIPE is a worker failure, not a frontend crash.
+  void (*previous)(int) = signal(SIGPIPE, SIG_IGN);
+  assert(previous != SIG_ERR);
+  channel_t *c = channel_new();
+  int fds[2]; pair(fds); close(fds[1]);
+  answer_t answer = { .tag = A_DONE };
+  channel_write_answer(c, fds[0], &answer);
+  channel_flush(c, fds[0]);
+  query_t query;
+  assert(!channel_read_query(c, fds[0], &query));
+  close(fds[0]); channel_free(c);
+  signal(SIGPIPE, previous);
+}
+
 int main(void)
 {
   test_reset_discards_unparsed_descriptor();
@@ -178,6 +195,7 @@ int main(void)
   test_peek_keeps_query();
   test_truncated_queries();
   test_protocol_violations();
+  test_answer_after_worker_exit();
   puts("PASS: sprotocol");
   return 0;
 }
