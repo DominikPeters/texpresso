@@ -230,3 +230,49 @@ All terminal replies are flushed before the engine waits for more input.
 Successful document completion is distinct from a worker error or cancellation.
 A failed partial pass does not declare a shorter final document, promote partial
 auxiliary output, or resolve a source search to the best page of a failed prefix.
+
+## Precise source synchronization
+
+Engines advertising `synctexPrecision: 1` support these additional commands.
+Legacy commands and replies keep their existing shapes. Request IDs are positive
+32-bit integers; revisions/sequences are nonnegative 32-bit integers. Page
+indices are zero-based, bounded by 100000. Coordinates and rectangles use the
+same MuPDF page-space points as preview images.
+
+* `["preview-search-precise", id, sourcePath, line, sequence, column, word?]`
+  performs an identified forward search. `line` is one-based. `column` is a
+  one-based UTF-8 byte offset within that source line, or 0 if unavailable.
+  Compiler columns are advisory: XeTeX currently usually supplies none, and
+  the engine never invents a column from horizontal page position. `word` is
+  an optional UTF-8 source-word hint, at most 256 bytes, without embedded NUL.
+  It refines a target only when a unique whole-word match lies inside the
+  compiler's source rectangles; ambiguous or unmapped text keeps the line
+  geometry. The reply is
+  `["preview-source-precise", id, revision, sequence, page, x, y, rectangles]`.
+  `rectangles` contains at most 128 finite nonempty `[x0,y0,x1,y1]` arrays,
+  or `[]` when no usable rectangles exist. It may describe several wrapped
+  lines. Existing source-search cancellation and completion rules apply.
+
+* `["preview-inverse-precise", id, revision, sequence, page, x, y, inputTags, prepare]`
+  queries a source location. `inputTags` is `null` for unrestricted lookup, or
+  an array of at most 4096 positive SyncTeX Input IDs (the IDs announced by
+  `input-file`). `[]` permits no files. Filtering precedes geometric ranking,
+  so a disallowed closest file does not hide an allowed candidate. Clients
+  apply their own filename masks to announced paths rather than relying on an
+  engine glob dialect. `prepare` must be a boolean. With `false`, only an
+  already published map may be read: no page switch, compiler stepping, PNG
+  export, or display-list interpretation is performed. Optional text recovery
+  reads an existing immutable display list and releases temporary structured
+  text immediately. A cache miss still permits a line-only location.
+
+  The reply is `["preview-inverse-result", id, revision, sequence, page, location]`,
+  where `location` is `null` when unavailable (including stale input), or
+  `{"file": path, "line": line, "column": column, "word": word}`.
+  `file` is absolute, `line` is one-based, `column` is the compiler's advisory
+  one-based UTF-8 byte column or -1 when absent (0 is also unknown), and `word`
+  is bounded UTF-8 text or `""`. Clients must correlate every ID, epoch and page,
+  and discard stale or superseded replies before touching the editor.
+
+Explicit source jumps may highlight the returned rectangles. Continuous cursor
+following can use the same geometry quietly. Automatic scroll-to-source clients
+should set `prepare: false`, debounce gestures, and preserve keyboard focus.

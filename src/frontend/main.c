@@ -120,13 +120,19 @@ typedef struct {
   bool advancing;
   txp_preview preview;
   int source_request;
+  bool source_precise;
+  int source_column;
+  char source_word[257];
   struct {
     bool queued, active, held;
     int request, revision, sequence, offset;
     char path[4097];
     uint32_t started;
   } prepare;
-  struct { bool pending; int revision, sequence, page; float x, y; } prepared_inverse;
+  struct {
+    bool pending, precise, restricted; int request, revision, sequence, page, tag_count;
+    float x,y; int tags[EDITOR_MAX_SYNCTEX_TAGS];
+  } prepared_inverse;
 } ui_state;
 
 /* UI rendering */
@@ -961,9 +967,36 @@ static void resolve_forward(struct persistent_state *ps, ui_state *ui)
     // FIXME: Scroll to point
     float f = send(scale_factor, ui->eng);
     fz_point p = fz_make_point(f * x, f * y);
+    fz_rect rects[SYNCTEX_MAX_RECTS]; int rect_count=0;
+    if (ps->headless && ui->source_precise) {
+      fz_irect raw[SYNCTEX_MAX_RECTS];
+      rect_count=synctex_target_rects(stx,buf,page,ui->source_column,raw,SYNCTEX_MAX_RECTS,&x,&y);
+      p=fz_make_point(f*x,f*y);
+      for (int i=0;i<rect_count;i++) rects[i]=fz_make_rect(f*raw[i].x0,f*raw[i].y0,f*raw[i].x1,f*raw[i].y1);
+      fz_display_list *list=NULL;
+      fz_var(list);
+      fz_try(ps->ctx) {
+        if (rect_count && ui->source_word[0]) {
+          list=txp_engine_cached_page(ui->eng,ps->ctx,page);
+          fz_rect word;
+          if (txp_renderer_find_source_word(ps->ctx,ui->doc_renderer,list,ui->source_word,rects,rect_count,&word)) {
+            rects[0]=word; rect_count=1;
+            p=fz_make_point((word.x0+word.x1)/2,(word.y0+word.y1)/2);
+          }
+        }
+      }
+      fz_always(ps->ctx) { fz_drop_display_list(ps->ctx,list); }
+      fz_catch(ps->ctx) { fprintf(stderr,"[synctex] Word refinement unavailable; retaining compiler geometry\n"); }
+    }
     if (ps->headless)
     {
-      if (ui->source_request > 0)
+      if (ui->source_request>0 && ui->source_precise) {
+        printf("[\"preview-source-precise\",%d,%d,%d,%d,%.9g,%.9g,[",ui->source_request,
+          ui->preview.revision,ui->preview.sequence,page,p.x,p.y);
+        for (int i=0;i<rect_count;i++) printf("%s[%.9g,%.9g,%.9g,%.9g]",i?",":"",rects[i].x0,rects[i].y0,rects[i].x1,rects[i].y1);
+        fputs("]]\n",stdout);
+      }
+      else if (ui->source_request > 0)
         printf("[\"preview-source\",%d,%d,%d,%d,%.9g,%.9g]\n", ui->source_request,
           ui->preview.revision, ui->preview.sequence, page, p.x, p.y);
       else
@@ -1096,16 +1129,26 @@ static void process_prepared_inverse(struct persistent_state *ps, ui_state *ui)
   int page = ui->prepared_inverse.page;
   if (!stx || !buf || factor <= 0 || page < 0 || synctex_page_count(stx) <= page) return;
   ui->prepared_inverse.pending = false;
-  char *word = NULL;
-  fz_var(word);
-  fz_try(ps->ctx) {
-    if (ui->preview.valid && !ui->preview.background && ui->page == page)
-      word = txp_renderer_word_at(ps->ctx, ui->doc_renderer,
-        fz_make_point(ui->prepared_inverse.x, ui->prepared_inverse.y));
+  synctex_location hit;
+  if (!synctex_lookup(ps->ctx,stx,buf,page,ui->prepared_inverse.x/factor,ui->prepared_inverse.y/factor,
+      ui->prepared_inverse.restricted?ui->prepared_inverse.tags:NULL,ui->prepared_inverse.tag_count,&hit)) {
+    if (ui->prepared_inverse.precise) editor_inverse_result(ui->prepared_inverse.request,ui->prepared_inverse.revision,
+        ui->prepared_inverse.sequence,page,ps->doc_path,NULL,NULL);
+    return;
   }
+  char *word = NULL;
+  fz_display_list *list=NULL;
+  fz_var(word); fz_var(list);
+  fz_try(ps->ctx) {
+    list=txp_engine_cached_page(ui->eng,ps->ctx,page);
+    word=txp_renderer_cached_word(ps->ctx,ui->doc_renderer,list,
+      fz_make_point(ui->prepared_inverse.x,ui->prepared_inverse.y));
+  }
+  fz_always(ps->ctx) { fz_drop_display_list(ps->ctx,list); }
   fz_catch(ps->ctx) { fprintf(stderr, "[preview] Could not extract clicked word\n"); }
-  synctex_scan_word(ps->ctx, stx, buf, ps->doc_path, page,
-    ui->prepared_inverse.x / factor, ui->prepared_inverse.y / factor, word);
+  if (ui->prepared_inverse.precise) editor_inverse_result(ui->prepared_inverse.request,ui->prepared_inverse.revision,
+      ui->prepared_inverse.sequence,page,ps->doc_path,&hit,word);
+  else editor_synctex_word(ps->doc_path,hit.file,hit.file_len,hit.line,hit.column,word);
   fz_free(ps->ctx, word);
 }
 
@@ -1121,13 +1164,19 @@ static void interpret_command(struct persistent_state *ps,
   if (ps->headless && (cmd.tag == EDIT_OPEN || cmd.tag == EDIT_CLOSE || cmd.tag == EDIT_CHANGE ||
       cmd.tag == EDIT_RESCAN || cmd.tag == EDIT_RERUN_ONCE || cmd.tag == EDIT_RESUME ||
       cmd.tag == EDIT_SYNCTEX_FORWARD || cmd.tag == EDIT_PREVIEW_SEARCH || cmd.tag == EDIT_PREVIEW_CANCEL ||
-      (cmd.tag == EDIT_PREVIEW_INVERSE && cmd.preview_inverse.revision == ui->preview.revision && cmd.preview_inverse.sequence == ui->preview.sequence) ||
+      (cmd.tag == EDIT_PREVIEW_INVERSE && (!cmd.preview_inverse.precise || cmd.preview_inverse.prepare) &&
+       cmd.preview_inverse.revision == ui->preview.revision && cmd.preview_inverse.sequence == ui->preview.sequence) ||
       (cmd.tag == EDIT_PREVIEW_DESTINATION && cmd.preview_destination.revision == ui->preview.revision && cmd.preview_destination.sequence == ui->preview.sequence) ||
       (cmd.tag == EDIT_PREVIEW_RENDER && cmd.preview_render.revision == ui->preview.revision && cmd.preview_render.sequence == ui->preview.sequence) ||
       (cmd.tag == EDIT_PREVIEW_BARRIER && cmd.preview_barrier.sequence != ui->preview.sequence)))
   {
     cancel_prepare(ps, ui, true);
-    if (cmd.tag != EDIT_PREVIEW_INVERSE) ui->prepared_inverse.pending = false;
+    if (cmd.tag != EDIT_PREVIEW_INVERSE) {
+      if (ui->prepared_inverse.pending && ui->prepared_inverse.precise)
+        editor_inverse_result(ui->prepared_inverse.request,ui->prepared_inverse.revision,
+          ui->prepared_inverse.sequence,ui->prepared_inverse.page,ps->doc_path,NULL,NULL);
+      ui->prepared_inverse.pending=false;
+    }
   }
   if (ps->headless && cmd.tag == EDIT_PAUSE) cancel_prepare(ps, ui, false);
 
@@ -1259,6 +1308,9 @@ static void interpret_command(struct persistent_state *ps,
       }
       cancel_source(ui);
       if (identified) ui->source_request = cmd.preview_search.request;
+      ui->source_precise=identified && cmd.preview_search.precise;
+      ui->source_column=ui->source_precise?cmd.preview_search.column:0;
+      snprintf(ui->source_word,sizeof ui->source_word,"%s",ui->source_precise && cmd.preview_search.word?cmd.preview_search.word:"");
       if (ps->headless) preempt_background(ps, ui, ui->preview.foreground_page);
       fz_buffer *buf;
       synctex_t *stx = send(synctex, ui->eng, &buf);
@@ -1418,8 +1470,14 @@ static void interpret_command(struct persistent_state *ps,
     case EDIT_PREVIEW_INVERSE:
       if (ps->headless && cmd.preview_inverse.revision == ui->preview.revision &&
           cmd.preview_inverse.sequence == ui->preview.sequence) {
-        cancel_source(ui);
+        if (!cmd.preview_inverse.precise || cmd.preview_inverse.prepare) cancel_source(ui);
         ui->prepared_inverse.pending = true;
+        ui->prepared_inverse.precise=cmd.preview_inverse.precise;
+        ui->prepared_inverse.request=cmd.preview_inverse.request;
+        ui->prepared_inverse.restricted=cmd.preview_inverse.restricted;
+        ui->prepared_inverse.tag_count=cmd.preview_inverse.tag_count;
+        for (int i=0;i<cmd.preview_inverse.tag_count;i++)
+          ui->prepared_inverse.tags[i]=val_number(ps->ctx,val_array_get(ps->ctx,stack,cmd.preview_inverse.tags,i));
         ui->prepared_inverse.revision = cmd.preview_inverse.revision;
         ui->prepared_inverse.sequence = cmd.preview_inverse.sequence;
         ui->prepared_inverse.page = cmd.preview_inverse.page;
@@ -1430,6 +1488,12 @@ static void interpret_command(struct persistent_state *ps,
         // from an already visible cached page back to its source line.
         process_prepared_inverse(ps, ui);
         if (!ui->prepared_inverse.pending) break;
+        if (cmd.preview_inverse.precise && !cmd.preview_inverse.prepare) {
+          ui->prepared_inverse.pending=false;
+          editor_inverse_result(cmd.preview_inverse.request,cmd.preview_inverse.revision,
+            cmd.preview_inverse.sequence,cmd.preview_inverse.page,ps->doc_path,NULL,NULL);
+          break;
+        }
         preempt_background(ps, ui, cmd.preview_inverse.page);
         if (ui->page != cmd.preview_inverse.page) ui->preview.valid = false;
         ui->page = cmd.preview_inverse.page;
@@ -1437,6 +1501,8 @@ static void interpret_command(struct persistent_state *ps,
         schedule_event(RELOAD_EVENT);
         process_prepared_inverse(ps, ui);
       }
+      else if (cmd.preview_inverse.precise) editor_inverse_result(cmd.preview_inverse.request,
+        cmd.preview_inverse.revision,cmd.preview_inverse.sequence,cmd.preview_inverse.page,ps->doc_path,NULL,NULL);
       break;
 
     case EDIT_RERUN_ONCE:

@@ -24,6 +24,8 @@
 
 #include <math.h>
 #include <string.h>
+#include <limits.h>
+#include <stdlib.h>
 #include "synctex.h"
 #include "editor.h"
 #include "myabort.h"
@@ -588,8 +590,16 @@ static void consider(synctex_t *stx, fz_buffer *buf, int x, int y,
   c->rect = rect; c->link = link;
 }
 
+static bool allowed_tag(int tag, const int *tags, int count)
+{
+  if (!tags) return true;
+  for (int i=0;i<count;i++) if (tags[i]==tag) return true;
+  return false;
+}
+
 static void
-parse_tree(synctex_t *stx, fz_buffer *buf, const uint8_t *ptr, int x, int y, struct candidate *c)
+parse_tree(synctex_t *stx, fz_buffer *buf, const uint8_t *ptr, int x, int y,
+           const int *tags, int tag_count, struct candidate *c)
 {
   struct frame { struct record box; unsigned children; } saved[256];
   int nest = 0;
@@ -602,7 +612,7 @@ parse_tree(synctex_t *stx, fz_buffer *buf, const uint8_t *ptr, int x, int y, str
     {
       case STEX_ENTER_H:
       case STEX_ENTER_V:
-        consider(stx, buf, x, y, record_rect(r), r.link, &fallback);
+        if (allowed_tag(r.link.tag,tags,tag_count)) consider(stx, buf, x, y, record_rect(r), r.link, &fallback);
         if (nest == sizeof saved / sizeof *saved) return;
         saved[nest++] = (struct frame){r, children};
         break;
@@ -614,7 +624,7 @@ parse_tree(synctex_t *stx, fz_buffer *buf, const uint8_t *ptr, int x, int y, str
         {
           /* A glyph-only hbox may have no individual source records. */
           struct record box = saved[nest].box;
-          if (rect_area(record_rect(box)) > 0)
+          if (rect_area(record_rect(box)) > 0 && allowed_tag(box.link.tag,tags,tag_count))
           {
             consider(stx, buf, x, y, record_rect(box), box.link, c);
             children++;
@@ -636,12 +646,12 @@ parse_tree(synctex_t *stx, fz_buffer *buf, const uint8_t *ptr, int x, int y, str
           }
         /* A kern ends at its recorded position; its width can be negative. */
         if (r.kind == STEX_KERN) r.point.x -= r.size.width;
-        consider(stx, buf, x, y, record_rect(r), r.link, c);
+        if (allowed_tag(r.link.tag,tags,tag_count)) consider(stx, buf, x, y, record_rect(r), r.link, c);
         children++;
         break;
       case STEX_BOX:
         /* Zero-width struts and empty layout boxes do not paint anything. */
-        if (rect_area(record_rect(r)) > 0)
+        if (rect_area(record_rect(r)) > 0 && allowed_tag(r.link.tag,tags,tag_count))
         {
           consider(stx, buf, x, y, record_rect(r), r.link, c);
           children++;
@@ -674,6 +684,20 @@ static int get_input(fz_buffer *buf,
   return (fend - filename);
 }
 
+bool synctex_lookup(fz_context *ctx, synctex_t *stx, fz_buffer *buf, unsigned page,
+                   int x, int y, const int *tags, int tag_count, synctex_location *out)
+{
+  if (!stx || !buf || synctex_page_count(stx)<=page) return false;
+  int bop,eop;
+  synctex_page_offset(ctx,stx,page,&bop,&eop);
+  struct candidate c={0}; c.area=INFINITY;
+  parse_tree(stx,buf,buf->data+bop,x,y,tags,tag_count,&c);
+  if (!c.link.tag) return false;
+  out->file_len=get_input(buf,stx,c.link.tag-1,&out->file);
+  out->line=c.link.line; out->column=c.link.column;
+  return out->file_len>0 && out->line>0;
+}
+
 void synctex_scan_word(fz_context *ctx,
                   synctex_t *stx,
                   fz_buffer *buf,
@@ -683,30 +707,9 @@ void synctex_scan_word(fz_context *ctx,
                   int y,
                   const char *word)
 {
-  if (synctex_page_count(stx) <= page)
-    return;
-
-  int bop, eop;
-  synctex_page_offset(ctx, stx, page, &bop, &eop);
-
-  const uint8_t *ptr = &buf->data[bop];
-
-  struct candidate c = {0,};
-  c.area = INFINITY;
-
-  parse_tree(stx, buf, ptr, x, y, &c);
-  if (c.link.tag)
-  {
-    const char *fname;
-    int len = get_input(buf, stx, c.link.tag-1, &fname);
-    fprintf(stderr,
-            "synctex best candidate: (%d,%d)-(%d,%d) "
-            "file:%.*s line:%d column:%d\n",
-            c.rect.x0, c.rect.y0, c.rect.x1, c.rect.y1,
-            len, fname,
-            c.link.line, c.link.column);
-    editor_synctex_word(doc_dir, fname, len, c.link.line, c.link.column, word);
-  }
+  synctex_location hit;
+  if (synctex_lookup(ctx,stx,buf,page,x,y,NULL,0,&hit))
+    editor_synctex_word(doc_dir,hit.file,hit.file_len,hit.line,hit.column,word);
 }
 
 void synctex_scan(fz_context *ctx, synctex_t *stx, fz_buffer *buf,
@@ -944,4 +947,50 @@ int synctex_find_resolved_target(fz_context *ctx, synctex_t *stx, fz_buffer *buf
                                bool complete, int *page, int *x, int *y)
 {
   return synctex_find_target_impl(ctx, stx, buf, true, complete, page, x, y);
+}
+
+int synctex_target_rects(synctex_t *stx, fz_buffer *buf, int page, int column,
+                         fz_irect *rects, int capacity, int *x, int *y)
+{
+  if (!stx || !buf || page<0 || page>=synctex_page_count(stx) || capacity<=0) return 0;
+  capacity=fz_mini(capacity,SYNCTEX_MAX_RECTS);
+  const uint8_t *start=buf->data+int_abs(stx->page_off.ptr[page*2]);
+  struct record r={0}, stack[256]; int depth=0,count=0,best_column=-1;
+  long long best_distance=LLONG_MAX;
+  /* Most XeTeX records have no column. Never infer a character offset from
+   * horizontal page coordinates. Positive columns are compiler-provided hints. */
+  if (column>0) for (const uint8_t *p=start;(p=parse_line(p,&r));)
+    if (is_oneliner(r.kind) && r.link.tag==stx->input_tag+1 &&
+        r.link.line==stx->candidate_line && r.link.column>0) {
+      long long distance=llabs((long long)r.link.column-column);
+      if (distance<best_distance) { best_distance=distance; best_column=r.link.column; }
+    }
+  bool placed=false;
+  for (const uint8_t *p=start;(p=parse_line(p,&r));) {
+    if (r.kind==STEX_ENTER_H || r.kind==STEX_ENTER_V) {
+      if (depth==256) return 0;
+      stack[depth++]=r;
+    } else if (r.kind==STEX_LEAVE_H || r.kind==STEX_LEAVE_V) {
+      if (!depth) return 0;
+      --depth;
+      continue;
+    }
+    if ((!is_oneliner(r.kind) && r.kind!=STEX_ENTER_H && r.kind!=STEX_BOX) ||
+        r.link.tag!=stx->input_tag+1 || r.link.line!=stx->candidate_line ||
+        (best_column>0 && r.link.column!=best_column)) continue;
+    struct record geometry=r;
+    if (r.kind==STEX_KERN) geometry.point.x-=geometry.size.width;
+    if (best_column<0 || !geometry.size.height) {
+      for (int i=depth-1;i>=0;--i) if (stack[i].kind==STEX_ENTER_H) {
+        geometry=stack[i]; break;
+      }
+    }
+    fz_irect box=record_rect(geometry);
+    if (box.x1<=box.x0 || box.y1<=box.y0) continue;
+    if (best_column>0 && !placed) { *x=r.point.x; *y=r.point.y; placed=true; }
+    bool duplicate=false;
+    for (int i=0;i<count;i++) if (!memcmp(&rects[i],&box,sizeof box)) { duplicate=true; break; }
+    if (!duplicate && count<capacity) rects[count++]=box;
+  }
+  return count;
 }

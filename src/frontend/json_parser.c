@@ -196,7 +196,8 @@ const char *json_parse(fz_context *ctx, json_parser *cp, vstack *stack, const
             if (!vstack_in_array(stack))
               json_error(ctx, *input);
             vstack_end_array(ctx, stack);
-            POP_CONTEXT(input + 1);
+            ++input;
+            POP_CONTEXT(input);
             continue;
           case 't': cp->state = P_JSON_TRUE_T; break;
           case 'f': cp->state = P_JSON_FALSE_F; break;

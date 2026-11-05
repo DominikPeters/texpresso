@@ -324,6 +324,51 @@ void dvi_exec_xdvfontdef(fz_context *ctx, dvi_context *dc, dvi_state *st, uint32
   }
 }
 
+/* Adobe glyph names may encode a Unicode sequence (f_f_i, uni00660069),
+ * optionally followed by a stylistic suffix. Never fabricate text for a
+ * component that cannot be decoded. The caller supplies a bounded buffer. */
+int dvi_glyph_unicode(const char *name, int *out, int capacity)
+{
+  char copy[128];
+  size_t length = strcspn(name, ".");
+  if (!length || length >= sizeof copy || capacity <= 0) return 0;
+  memcpy(copy, name, length); copy[length] = 0;
+  int count = 0;
+  char *part = copy;
+  while (part && *part) {
+    char *next = strchr(part, '_');
+    if (next) *next++ = 0;
+    if (!strncmp(part, "uni", 3) && strlen(part + 3) > 4 && strlen(part + 3) % 4 == 0) {
+      for (char *p = part + 3; *p; p += 4) {
+        unsigned value = 0;
+        for (int i = 0; i < 4; ++i) {
+          unsigned char c = p[i];
+          int hex = c >= '0' && c <= '9' ? c-'0' : c >= 'A' && c <= 'F' ? c-'A'+10 : -1;
+          if (hex < 0) return 0;
+          value = value * 16 + hex;
+        }
+        if (!value || (value >= 0xd800 && value <= 0xdfff) || count == capacity) return 0;
+        out[count++] = value;
+      }
+    } else {
+      int value = fz_unicode_from_glyph_name_strict(part);
+      const char *ligatures[] = {"ff", "fi", "fl", "ffi", "ffl", "st", "st"};
+      if (value >= 0xfb00 && value <= 0xfb06) {
+        for (const char *p = ligatures[value - 0xfb00]; *p; ++p) {
+          if (count == capacity) return 0;
+          out[count++] = *p;
+        }
+      } else {
+        if (value <= 0 || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff) || count == capacity) return 0;
+        out[count++] = value;
+      }
+    }
+    if (next && !*next) return 0;
+    part = next;
+  }
+  return count;
+}
+
 void dvi_exec_xdvglyphs(fz_context *ctx, dvi_context *dc, dvi_state *st, fixed_t width,
                 int char_count, uint16_t *chars,
                 int num_glyphs, fixed_t *dx, fixed_t dy0, fixed_t *dy, uint16_t *glyphs)
@@ -357,9 +402,10 @@ void dvi_exec_xdvglyphs(fz_context *ctx, dvi_context *dc, dvi_state *st, fixed_t
          * selection and inverse SyncTeX instead of marking every glyph NUL. */
         char name[128] = {0};
         fz_get_glyph_name(ctx, font, glyphs[i], name, sizeof name);
-        int unicode = fz_unicode_from_glyph_name_strict(name);
-        fz_show_glyph(ctx, text, font, ctm, glyphs[i], unicode > 0 ? unicode : 0, 0, 0, FZ_BIDI_LTR,
-                      FZ_LANG_UNSET);
+        int unicode[32], count = dvi_glyph_unicode(name, unicode, 32);
+        fz_show_glyph(ctx, text, font, ctm, glyphs[i], count ? unicode[0] : 0, 0, 0, FZ_BIDI_LTR, FZ_LANG_UNSET);
+        for (int j = 1; j < count; ++j)
+          fz_show_glyph(ctx, text, font, ctm, -1, unicode[j], 0, 0, FZ_BIDI_LTR, FZ_LANG_UNSET);
       }
     }
   }

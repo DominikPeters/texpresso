@@ -55,6 +55,29 @@ static void check_string(fz_context *ctx, const char *input, const char *expecte
   vstack_free(ctx,stack);
 }
 
+static void check_nested_empty(fz_context *ctx, bool fragmented)
+{
+  const char *input = "[\"inverse\",[],false,[1,2],null]";
+  const char *end = input + strlen(input), *done = NULL;
+  vstack *stack = vstack_new(ctx); json_parser parser = initial_json_parser;
+  if (fragmented) for (const char *p = input; p < end; ++p) {
+    done = json_parse(ctx, &parser, stack, p, p + 1);
+    assert(!done || done == end);
+  } else done = json_parse(ctx, &parser, stack, input, end);
+  assert(done == end);
+  val root; vstack_get_arguments(ctx, stack, &root, 1);
+  assert(val_array_length(ctx, stack, root) == 5);
+  val empty = val_array_get(ctx, stack, root, 1);
+  assert(val_is_array(empty) && val_array_length(ctx, stack, empty) == 0);
+  val flag = val_array_get(ctx, stack, root, 2);
+  assert(val_is_bool(flag) && !val_bool(ctx, flag));
+  val tags = val_array_get(ctx, stack, root, 3);
+  assert(val_array_length(ctx, stack, tags) == 2);
+  assert(val_number(ctx, val_array_get(ctx, stack, tags, 1)) == 2);
+  assert(val_is_null(val_array_get(ctx, stack, root, 4)));
+  vstack_free(ctx, stack);
+}
+
 int main(void)
 {
   // The compact decoded representation must not double DVI metadata size.
@@ -73,6 +96,7 @@ int main(void)
     check_string(ctx, "[\"\\ud83d\"]", "\xef\xbf\xbd", fragmented);
     check_string(ctx, "[\"\\u00e9\\u20ac\\u0041\"]", "\xc3\xa9\xe2\x82\xac" "A", fragmented);
   }
+  check_nested_empty(ctx, false); check_nested_empty(ctx, true);
   fz_drop_context(ctx);
   puts("protocol integer precision: passed");
 }

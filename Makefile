@@ -245,3 +245,11 @@ test-parent-watch:
 .PHONY: test-checkpoint-cleanup
 test-checkpoint-cleanup:
 	python3 test/test-checkpoint-cleanup.py
+
+.PHONY: test-synctex-words
+test-synctex-words: texpresso
+	$(MAKE) -f Makefile.config -f Makefile build/test-synctex-words
+	build/test-synctex-words
+build/test-synctex-words: test/test_synctex_words.c build/frontend/renderer.o build/frontend/libmydvi.a build/common/libcommon.a
+	$(CC) -Isrc/frontend -Isrc/dvi -c -o build/test-synctex-words.o test/test_synctex_words.c
+	$(LDCC) -o $@ build/test-synctex-words.o build/frontend/renderer.o build/frontend/libmydvi.a build/common/libcommon.a $(LIBS)

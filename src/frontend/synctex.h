@@ -28,6 +28,7 @@
 #include <stdbool.h>
 #include <mupdf/fitz/context.h>
 #include <mupdf/fitz/buffer.h>
+#include <mupdf/fitz/geometry.h>
 
 typedef struct synctex_s synctex_t;
 
@@ -41,6 +42,15 @@ void synctex_page_offset(fz_context *ctx, synctex_t *stx, unsigned index, int *b
 int synctex_input_offset(fz_context *ctx, synctex_t *stx, unsigned index);
 void synctex_scan_word(fz_context *ctx, synctex_t *stx, fz_buffer *buf, const char *doc_dir, unsigned page, int x, int y, const char *word);
 void synctex_scan(fz_context *ctx, synctex_t *stx, fz_buffer *buf, const char *doc_dir, unsigned page, int x, int y);
+
+/* Borrowed filename bytes remain owned by buf. A NULL tags pointer permits all
+ * inputs; a non-NULL empty list permits none. Tags are one-based Input IDs. */
+typedef struct { const char *file; int file_len, line, column; } synctex_location;
+bool synctex_lookup(fz_context *ctx, synctex_t *stx, fz_buffer *buf, unsigned page,
+                   int x, int y, const int *tags, int tag_count, synctex_location *out);
+#define SYNCTEX_MAX_RECTS 128
+int synctex_target_rects(synctex_t *stx, fz_buffer *buf, int page, int column,
+                         fz_irect *rects, int capacity, int *x, int *y);
 
 int synctex_has_target(synctex_t *stx);
 void synctex_set_target(synctex_t *stx, int current_page, const char *path, int line);

@@ -449,6 +449,32 @@ bool editor_parse(fz_context *ctx,
       goto arity;
     *out = (struct editor_command){.tag = EDIT_RERUN_ONCE, .rerun_once = {}};
   }
+  else if (strcmp(verb,"preview-inverse-precise")==0)
+  {
+    if (len!=9) goto arity;
+    int a[4];
+    for (int i=0;i<4;i++) if (!int_arg(ctx,val_array_get(ctx,stack,command,i+1),&a[i]) || a[i]<(i?0:1)) goto arguments;
+    double xy[2];
+    for (int i=0;i<2;i++) {
+      val v=val_array_get(ctx,stack,command,i+5);
+      if (!val_is_number(v)) goto arguments;
+      xy[i]=val_number(ctx,v);
+      if (!isfinite(xy[i]) || fabs(xy[i])>=1e9) goto arguments;
+    }
+    if (a[3]>100000) goto arguments;
+    val tags=val_array_get(ctx,stack,command,7), prepare=val_array_get(ctx,stack,command,8);
+    bool restricted=!val_is_null(tags);
+    if ((restricted && !val_is_array(tags)) || !val_is_bool(prepare)) goto arguments;
+    int count=restricted?val_array_length(ctx,stack,tags):0;
+    if (count>EDITOR_MAX_SYNCTEX_TAGS) goto arguments;
+    for (int i=0;i<count;i++) {
+      int tag;
+      if (!int_arg(ctx,val_array_get(ctx,stack,tags,i),&tag) || tag<1) goto arguments;
+    }
+    *out=(struct editor_command){.tag=EDIT_PREVIEW_INVERSE,
+      .preview_inverse={.revision=a[1],.sequence=a[2],.page=a[3],.x=xy[0],.y=xy[1],
+        .request=a[0],.precise=true,.prepare=val_bool(ctx,prepare),.restricted=restricted,.tags=tags,.tag_count=count}};
+  }
   else if (strcmp(verb, "preview-background") == 0 || strcmp(verb, "preview-png") == 0 || strcmp(verb, "preview-auto") == 0 || strcmp(verb, "preview-svg") == 0 || strcmp(verb, "preview-render") == 0 || strcmp(verb, "preview-region") == 0 || strcmp(verb, "preview-inverse") == 0)
   {
     bool background = strcmp(verb, "preview-background") == 0;
@@ -507,9 +533,10 @@ bool editor_parse(fz_context *ctx,
     *out = (struct editor_command){.tag = cancel ? EDIT_PREVIEW_PREPARE_CANCEL : EDIT_PREVIEW_PREPARE,
       .preview_prepare = {a[0], a[1], a[2], a[3], path}};
   }
-  else if (strcmp(verb, "preview-search") == 0)
+  else if (strcmp(verb, "preview-search") == 0 || strcmp(verb,"preview-search-precise")==0)
   {
-    if (len != 5) goto arity;
+    bool precise=strcmp(verb,"preview-search-precise")==0;
+    if (precise ? (len!=6 && len!=7) : len!=5) goto arity;
     int a[3];
     for (int i = 0; i < 3; ++i) {
       val v = val_array_get(ctx, stack, command, i ? i + 2 : 1);
@@ -520,8 +547,17 @@ bool editor_parse(fz_context *ctx,
     }
     val path = val_array_get(ctx, stack, command, 2);
     if (!val_is_string(path) || val_string_length(ctx, stack, path) < 1 || val_string_length(ctx, stack, path) > 4096) goto arguments;
+    if (precise && memchr(val_string(ctx,stack,path),0,val_string_length(ctx,stack,path))) goto arguments;
+    int column=0; const char *word=NULL;
+    if (precise && (!int_arg(ctx,val_array_get(ctx,stack,command,5),&column) || column<0)) goto arguments;
+    if (precise && len==7) {
+      val v=val_array_get(ctx,stack,command,6);
+      if (!val_is_string(v) || val_string_length(ctx,stack,v)>256) goto arguments;
+      word=val_string(ctx,stack,v);
+      if (memchr(word,0,val_string_length(ctx,stack,v))) goto arguments;
+    }
     *out = (struct editor_command){.tag = EDIT_PREVIEW_SEARCH,
-      .preview_search = {a[0], a[1], a[2], val_string(ctx, stack, path)}};
+      .preview_search = {a[0], a[1], a[2], val_string(ctx, stack, path),precise,column,word}};
   }
   else if (strcmp(verb, "preview-cancel") == 0)
   {
@@ -842,6 +878,22 @@ void editor_synctex_word(const char *dirname,
 void editor_synctex(const char *dirname, const char *basename, int basename_len, int line, int column)
 {
   editor_synctex_word(dirname, basename, basename_len, line, column, NULL);
+}
+
+void editor_inverse_result(int request, int revision, int sequence, int page,
+                           const char *dirname, const synctex_location *hit, const char *word)
+{
+  printf("[\"preview-inverse-result\",%d,%d,%d,%d,",request,revision,sequence,page);
+  if (!hit) fputs("null]\n",stdout);
+  else {
+    fputs("{\"file\":\"",stdout);
+    if (hit->file[0]!='/') { output_data_string(stdout,dirname,strlen(dirname)); fputc('/',stdout); }
+    output_data_string(stdout,hit->file,hit->file_len);
+    printf("\",\"line\":%d,\"column\":%d,\"word\":\"",hit->line,hit->column);
+    if (word) output_data_string(stdout,word,strlen(word));
+    fputs("\"}]\n",stdout);
+  }
+  fflush(stdout);
 }
 
 void editor_reset_sync(void)

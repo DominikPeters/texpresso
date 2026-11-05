@@ -533,3 +533,27 @@ uint64_t incdvi_display_list_token(incdvi_t *d, fz_display_list *list)
   for (int i=0;i<PAGE_CACHE_ENTRIES;i++) if (d->cache[i].list==list) return d->cache[i].token;
   return 0;
 }
+
+fz_display_list *incdvi_cached_display_list(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int page)
+{
+  if (!buf || page<0 || page>=incdvi_page_count(d)) return NULL;
+  fz_buffer *key=NULL,*sources=NULL;
+  fz_display_list *list=NULL;
+  fz_var(key); fz_var(sources); fz_var(list);
+  fz_try(ctx) {
+    float w,h; uint32_t font;
+    incdvi_page_dim(ctx,d,buf,page,&w,&h,NULL);
+    incdvi_parse_fontdef(ctx,d,buf,d->pages[page*2]);
+    sources=fz_new_buffer(ctx,256);
+    key=page_key(ctx,d,buf,page,fz_make_rect(0,0,w,h),&font,sources);
+    if (key) for (int i=0;i<PAGE_CACHE_ENTRIES;i++) {
+      page_cache_entry *e=&d->cache[i];
+      if (e->key && e->key->len==key->len && !memcmp(e->key->data,key->data,key->len)) {
+        list=fz_keep_display_list(ctx,e->list); e->used=++d->cache_clock; break;
+      }
+    }
+  }
+  fz_always(ctx) { fz_drop_buffer(ctx,key); fz_drop_buffer(ctx,sources); }
+  fz_catch(ctx) { fz_drop_display_list(ctx,list); fz_rethrow(ctx); }
+  return list;
+}

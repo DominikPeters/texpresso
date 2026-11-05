@@ -3,6 +3,8 @@
 
 #include "driver.h"
 #include "vstack.h"
+#include "synctex.h"
+#define EDITOR_MAX_SYNCTEX_TAGS 4096
 
 void editor_set_protocol(enum editor_protocol protocol);
 void editor_set_line_output(bool line);
@@ -147,9 +149,9 @@ struct editor_command
 
     struct { int request, page, width, revision, sequence; bool region; float bounds[4]; bool svg, automatic; int vector_limit; bool patches; int patch_base; bool background; } preview_render;
     struct { int request, page; } preview_cancel;
-    struct { int request, line, sequence; const char *path; } preview_search;
+    struct { int request, line, sequence; const char *path; bool precise; int column; const char *word; } preview_search;
     struct { int request, offset, revision, sequence; const char *path; } preview_prepare;
-    struct { int revision, sequence, page; float x, y; } preview_inverse;
+    struct { int revision, sequence, page; float x, y; int request; bool precise, prepare, restricted; val tags; int tag_count; } preview_inverse;
     struct { int sequence; } preview_barrier;
     struct { int revision, sequence; const char *name; } preview_destination;
   };
@@ -179,6 +181,8 @@ void editor_truncate(enum EDITOR_INFO_BUFFER name, fz_buffer *buf);
 void editor_flush(void);
 void editor_synctex_word(const char *dirname, const char *basename, int basename_len, int line, int column, const char *word);
 void editor_synctex(const char *dirname, const char *basename, int basename_len, int line, int column);
+void editor_inverse_result(int request, int revision, int sequence, int page,
+                           const char *dirname, const synctex_location *hit, const char *word);
 void editor_reset_sync(void);
 void editor_notify_file_opened(int index, const char *path, int len);
 

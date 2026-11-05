@@ -944,16 +944,102 @@ bool txp_renderer_select_char(fz_context *ctx, txp_renderer *self, fz_point pt)
   return set_quads(ctx, self, &q, count);
 }
 
-char *txp_renderer_word_at(fz_context *ctx, txp_renderer *self, fz_point pt)
+static bool source_word_char(int c)
 {
-  fz_stext_page *page = get_stext(ctx, self);
+  return fz_isalpha(c) || (c >= '0' && c <= '9') ||
+    (c >= 0x0300 && c <= 0x036f) || (c >= 0x1ab0 && c <= 0x1aff) ||
+    (c >= 0x1dc0 && c <= 0x1dff) || (c >= 0x20d0 && c <= 0x20ff) ||
+    (c >= 0xfe20 && c <= 0xfe2f);
+}
+
+static char *word_from_text(fz_context *ctx, fz_stext_page *page, fz_point pt)
+{
   if (!page) return NULL;
-  fz_point a = pt, b = pt;
-  fz_quad quad = fz_snap_selection(ctx, page, &a, &b, FZ_SELECT_WORDS);
-  if (point_to_rect_dist(pt, fz_rect_from_quad(quad)) > 3) return NULL;
-  char *word = fz_copy_selection(ctx, page, a, b, 0);
-  if (strlen(word) > 256) { fz_free(ctx, word); return NULL; }
+  char best[257] = {0}; float distance = 3.001f;
+  // Read logical characters, including zero-width continuation characters of
+  // ligatures. Rectangle/endpoint copying can omit those characters or select
+  // an earlier prefix when clicking the last word on a transformed line.
+  for (fz_stext_block *block = page->first_block; block; block = block->next)
+    if (block->type == FZ_STEXT_BLOCK_TEXT)
+      for (fz_stext_line *line = block->u.t.first_line; line; line = line->next) {
+        fz_stext_char *ch = line->first_char;
+        while (ch) {
+          if (!source_word_char(ch->c)) { ch = ch->next; continue; }
+          char word[257]; int length = 0; bool overflow = false;
+          fz_rect bounds = fz_empty_rect;
+          while (ch && source_word_char(ch->c)) {
+            char utf8[4]; int bytes = fz_runetochar(utf8, ch->c);
+            if (length + bytes > 256) overflow = true;
+            else if (!overflow) { memcpy(word + length, utf8, bytes); length += bytes; }
+            bounds = fz_union_rect(bounds, fz_rect_from_quad(ch->quad));
+            ch = ch->next;
+          }
+          if (overflow || !length || fz_is_empty_rect(bounds)) continue;
+          word[length] = 0;
+          float d = point_to_rect_dist(pt, bounds);
+          if (d < distance) { distance = d; memcpy(best, word, length + 1); }
+          else if (d == distance) best[0] = 0; // No arbitrary choice between overlapping words.
+        }
+      }
+  return best[0] ? fz_strdup(ctx, best) : NULL;
+}
+
+char *txp_renderer_word_at(fz_context *ctx, txp_renderer *self, fz_point pt)
+{ return word_from_text(ctx,get_stext(ctx,self),pt); }
+
+static fz_stext_page *list_text(fz_context *ctx, fz_display_list *list)
+{
+  if (!list) return NULL;
+  fz_stext_page *text=NULL; fz_device *dev=NULL;
+  fz_var(text); fz_var(dev);
+  fz_try(ctx) {
+    fz_rect bounds=fz_bound_display_list(ctx,list);
+    text=fz_new_stext_page(ctx,bounds); dev=fz_new_stext_device(ctx,text,NULL);
+    fz_run_display_list(ctx,list,dev,fz_identity,bounds,NULL); fz_close_device(ctx,dev);
+  }
+  fz_always(ctx) { fz_drop_device(ctx,dev); }
+  fz_catch(ctx) { fz_drop_stext_page(ctx,text); fz_rethrow(ctx); }
+  return text;
+}
+
+char *txp_renderer_cached_word(fz_context *ctx, txp_renderer *self, fz_display_list *list, fz_point pt)
+{
+  if (list && list==self->contents) return txp_renderer_word_at(ctx,self,pt);
+  fz_stext_page *text=list_text(ctx,list); char *word=NULL;
+  fz_var(word);
+  fz_try(ctx) { word=word_from_text(ctx,text,pt); }
+  fz_always(ctx) { fz_drop_stext_page(ctx,text); }
+  fz_catch(ctx) { fz_free(ctx,word); fz_rethrow(ctx); }
   return word;
+}
+
+bool txp_renderer_find_source_word(fz_context *ctx, txp_renderer *self, fz_display_list *list,
+                                 const char *word, const fz_rect *areas, int count, fz_rect *found)
+{
+  if (!list || !word || !*word || count<=0) return false;
+  bool borrowed=list==self->contents, match=false;
+  fz_stext_page *text=borrowed?get_stext(ctx,self):list_text(ctx,list);
+  char *selected=NULL;
+  fz_var(match); fz_var(selected);
+  fz_try(ctx) {
+    fz_quad quads[256]; int marks[256], candidates=0;
+    int n=fz_search_stext_page(ctx,text,word,marks,quads,256);
+    for (int i=0;i<n;i++) {
+      fz_rect b=fz_rect_from_quad(quads[i]);
+      fz_point center=fz_make_point((b.x0+b.x1)/2,(b.y0+b.y1)/2);
+      bool inside=false;
+      for (int j=0;j<count;j++) if (center.x>=areas[j].x0 && center.x<=areas[j].x1 &&
+          center.y>=areas[j].y0 && center.y<=areas[j].y1) { inside=true; break; }
+      if (!inside) continue;
+      fz_free(ctx,selected); selected=NULL; selected=word_from_text(ctx,text,center);
+      if (!selected || fz_strcasecmp(selected,word)) continue; /* No substring guesses. */
+      *found=b; candidates++;
+    }
+    match=n<256 && candidates==1; /* Ambiguity keeps the compiler's line geometry. */
+  }
+  fz_always(ctx) { fz_free(ctx,selected); if (!borrowed) fz_drop_stext_page(ctx,text); }
+  fz_catch(ctx) { fz_rethrow(ctx); }
+  return match;
 }
 
 bool txp_renderer_select_word(fz_context *ctx, txp_renderer *self, fz_point pt)

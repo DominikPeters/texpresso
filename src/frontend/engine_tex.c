@@ -1932,6 +1932,14 @@ uint64_t txp_engine_page_token(txp_engine *_self, fz_display_list *list)
   return incdvi_display_list_token(self->dvi, list);
 }
 
+fz_display_list *txp_engine_cached_page(txp_engine *_self, fz_context *ctx, int page)
+{
+  if (_self->_class!=&_class) return NULL;
+  SELF;
+  if (!self->st.document.entry || !self->st.document.entry->saved.data) return NULL;
+  return incdvi_cached_display_list(ctx,self->dvi,self->st.document.entry->saved.data,page);
+}
+
 int txp_engine_completed_page_count(txp_engine *_self)
 {
   if (_self->_class != &_class) return -1;

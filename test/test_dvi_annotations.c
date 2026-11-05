@@ -31,7 +31,10 @@ static void test_figure_cache(fz_context *ctx)
   incdvi_t *d=incdvi_new(ctx,(dvi_reshooks){0});
   fz_buffer *a=figure_page(ctx,old), *b=figure_page(ctx,shifted), *c=figure_page(ctx,geometry);
   incdvi_update(ctx,d,a);
+  assert(!incdvi_cached_display_list(ctx,d,a,0)); /* A miss cannot interpret/render the page. */
   fz_display_list *first=incdvi_display_list(ctx,d,a,0);
+  fz_display_list *cached=incdvi_cached_display_list(ctx,d,a,0);
+  assert(cached==first); fz_drop_display_list(ctx,cached);
   uint64_t token=incdvi_display_list_token(d,first); assert(token);
   fz_buffer *before=incdvi_annotations(ctx,d); fz_terminate_buffer(ctx,before);
   assert(strstr((char *)before->data,"\"file\":\"main.tex\",\"line\":3,\"endLine\":8"));

@@ -64,6 +64,37 @@ static void forward_stream(fz_context *ctx)
   fz_drop_buffer(ctx, buf); synctex_free(ctx, stx);
 }
 
+static void precise_geometry_and_filter(fz_context *ctx)
+{
+  const char *records = "Input:1:main.tex\nInput:2:macro.sty\n{1\n"
+    "[1,99:0,1000:1000,1000,0\n"
+    "(1,20:100,300:800,10,3\nk1,20,4:200,300:10\nk1,20,25:500,300:10\n)\n"
+    "(1,20:100,320:800,10,3\nk1,20,40:200,320:10\n)\n"
+    "(2,50:100,500:800,10,3\nk2,50:200,500:10\n)\n]\n}1\n";
+  synctex_t *stx=synctex_new(ctx);
+  fz_buffer *buf=fz_new_buffer_from_copied_data(ctx,(const unsigned char *)records,strlen(records));
+  synctex_update(ctx,stx,buf);
+  synctex_location location;
+  assert(synctex_lookup(ctx,stx,buf,0,200,498,NULL,0,&location));
+  assert(location.line==50 && location.column==-1);
+  int allowed[]={1};
+  assert(synctex_lookup(ctx,stx,buf,0,200,498,allowed,1,&location));
+  assert(location.line==20); /* Filter before choosing: fall back to the next allowed file. */
+  assert(!synctex_lookup(ctx,stx,buf,0,200,498,allowed,0,&location));
+  assert(synctex_lookup(ctx,stx,buf,0,495,298,NULL,0,&location));
+  assert(location.column==25);
+  int page=-1,x=0,y=0; fz_irect rects[128];
+  synctex_set_target(stx,0,"main.tex",20);
+  assert(synctex_find_resolved_target(ctx,stx,buf,true,&page,&x,&y));
+  int n=synctex_target_rects(stx,buf,page,0,rects,128,&x,&y);
+  assert(n==2 && rects[0].x0==100 && rects[0].x1==900);
+  n=synctex_target_rects(stx,buf,page,24,rects,128,&x,&y);
+  assert(n==1 && x==500 && y==300); /* Nearest supplied column, not guessed from x. */
+  assert(synctex_target_rects(stx,buf,99,1,rects,128,&x,&y)==0);
+  assert(synctex_target_rects(stx,buf,page,1,rects,0,&x,&y)==0);
+  fz_drop_buffer(ctx,buf); synctex_free(ctx,stx);
+}
+
 int main(void)
 {
   const char *contents =
@@ -89,6 +120,7 @@ int main(void)
   fz_drop_buffer(ctx, buf);
   synctex_free(ctx, stx);
   forward_stream(ctx);
+  precise_geometry_and_filter(ctx);
   fz_drop_context(ctx);
   puts("PASS: inverse SyncTeX line geometry");
   return 0;

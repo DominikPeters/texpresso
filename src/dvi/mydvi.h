@@ -385,4 +385,7 @@ inlined void dvi_set_ctm(dvi_state *st, fz_matrix ctm)
 
 #undef inlined
 
+/* Decode a bounded Adobe glyph name into Unicode scalars; zero means unknown. */
+int dvi_glyph_unicode(const char *name, int *out, int capacity);
+
 #endif /*!MYDVI_H*/

@@ -42,6 +42,8 @@ fz_buffer *incdvi_annotations(fz_context *ctx, incdvi_t *d);
 int incdvi_destination_page(fz_context *ctx, incdvi_t *d, const char *name);
 uint64_t incdvi_display_list_token(incdvi_t *d, fz_display_list *list);
 fz_display_list *incdvi_display_list(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int page);
+/* Cache lookup only: never interprets a DVI drawing program. */
+fz_display_list *incdvi_cached_display_list(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int page);
 void incdvi_render_page(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int page, fz_device *dev);
 void incdvi_find_page_loc(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int page);
 float incdvi_tex_scale_factor(incdvi_t *d);
