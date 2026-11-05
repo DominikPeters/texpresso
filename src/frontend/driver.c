@@ -455,6 +455,11 @@ int main(int argc, const char **argv)
 
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE);
     if (!renderer) {
+      // Older software renderers support render targets but not vsync.
+      fprintf(stderr, "[warning] SDL renderer with vsync unavailable (%s); retrying without vsync\n", SDL_GetError());
+      renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_TARGETTEXTURE);
+    }
+    if (!renderer) {
       fprintf(stderr, "SDL renderer: %s\n", SDL_GetError());
       SDL_DestroyWindow(window); SDL_Quit(); fz_drop_context(ctx); free(inclusion_path);
       return 1;
