@@ -298,7 +298,8 @@ def real_engine(engine):
             f'\\section{{Page {i}}}\\input{{page-{i}}}\n' for i in range(1, 13)) + '\\end{document}\n')
         for i in range(1, 13):
             (folder / f'page-{i}.tex').write_text(f'Page {i}.\\par\n' + '\\relax\n' * 800)
-        env = {**os.environ, 'SDL_VIDEODRIVER': 'dummy', 'XDG_CACHE_HOME': str(folder / 'cache')}
+        env = {**os.environ, 'SDL_VIDEODRIVER': 'dummy', 'XDG_CACHE_HOME': str(folder / 'cache'),
+               'TEXPRESSO_PROFILE': '1'}
         sentinel = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'], start_new_session=True)
         try:
             for mode in ('eof', 'frontend-sigkill', 'supervisor-term', 'group-term', 'worker-exit-unread-edit'):
@@ -350,8 +351,21 @@ def real_engine(engine):
                                            and row[4].endswith('texpresso-xetex')]
                                 parents = {int(row[1]) for row in workers}
                                 leaves = [int(row[0]) for row in workers if int(row[0]) not in parents]
-                                assert len(leaves) == 1, leaves
-                                os.kill(leaves[0], signal.SIGKILL)
+                                # Decimation can also reparent live retained
+                                # checkpoints, so ancestry alone cannot identify
+                                # the current worker. Use its existing diagnostic
+                                # PID, then verify ownership against the live tree.
+                                worker_pid = None
+                                for raw in os.pread(log.fileno(), os.fstat(log.fileno()).st_size, 0).splitlines():
+                                    if not raw.startswith(b'[profile] '):
+                                        continue
+                                    record = json.loads(raw[len(b'[profile] '):])
+                                    if record['stage'] in ('compiler-spawn', 'compiler-fork'):
+                                        worker_pid = record['pid']
+                                    elif record['stage'] in ('compiler-burst', 'compiler-rollback'):
+                                        worker_pid = record['workerPid']
+                                assert worker_pid in leaves, (worker_pid, leaves)
+                                os.kill(worker_pid, signal.SIGKILL)
                                 p.stdin.write((json.dumps(['preview-destination', revision, 0, 'section.8'])+'\n').encode()); p.stdin.flush()
                                 receive_until(lambda m: m[0] == 'preview-stopped', 10)
                                 # The dead worker observed only a root prefix.
