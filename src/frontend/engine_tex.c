@@ -202,6 +202,14 @@ static pid_t exec_xelatex_generic(char **args, int *fd)
     perror("exec_xelatex socketpair");
     mabort();
   }
+  // Later worker/provider execs must not inherit a driver's endpoint for an
+  // earlier compiler root. Such a duplicate would hide frontend EOF.
+  if (fcntl(sockets[0], F_SETFD, FD_CLOEXEC) < 0)
+  {
+    close(sockets[0]); close(sockets[1]);
+    perror("exec_xelatex close-on-exec");
+    mabort();
+  }
 
   char buf[30];
   snprintf(buf, 30, "%d", sockets[1]);

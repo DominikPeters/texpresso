@@ -6,6 +6,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <fcntl.h>
 #include "../src/frontend/sprotocol.h"
 
 // driver.c provides this in the real binaries.
@@ -83,6 +84,7 @@ static void test_reset_discards_unparsed_descriptor(void)
   assert(channel_read_query(c, second[0], &q));
   assert(is_closed(orphan));
   assert(q.tag == Q_CHLD && q.chld.pid == 202 && q.chld.fd >= 0);
+  assert(fcntl(q.chld.fd, F_GETFD) & FD_CLOEXEC);
   send_bytes(kept, "x", 1);
   char byte;
   assert(read(q.chld.fd, &byte, 1) == 1 && byte == 'x');

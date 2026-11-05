@@ -241,3 +241,7 @@ build/test-activity: test/test_activity.c test/activity_worker.c src/include/txp
 .PHONY: test-parent-watch
 test-parent-watch:
 	python3 test/test-parent-watch.py
+
+.PHONY: test-checkpoint-cleanup
+test-checkpoint-cleanup:
+	python3 test/test-checkpoint-cleanup.py

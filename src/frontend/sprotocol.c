@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <fcntl.h>
 
 #define PACK(a,b,c,d) ((d << 24) | (c << 16) | (b << 8) | a)
 #define BUF_SIZE 4096
@@ -111,6 +112,14 @@ static ssize_t read_(channel_t *t, int fd, void *data, size_t len)
       close(fds0[i]);
     if (nfds < 1)
       return recvd;
+    // Received SCM_RIGHTS descriptors are inheritable by default. Do not let
+    // another compiler root or a provider subprocess keep this channel alive.
+    if (fcntl(fds0[0], F_SETFD, FD_CLOEXEC) < 0)
+    {
+      perror("checkpoint descriptor close-on-exec");
+      close(fds0[0]);
+      return 0;
+    }
     if (t->passed_fd != -1)
     {
       fprintf(stderr, "sprotocol: dropping unclaimed checkpoint descriptor\n");

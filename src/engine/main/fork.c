@@ -77,11 +77,19 @@ pid_t texpresso_fork_with_channel(int fd, uint32_t time, txp_activity *profile, 
   {
     // In child: replace channel with new socket
     PERROR(dup2(sockets[1], fd));
+    PERROR(close(sockets[0]));
+    PERROR(close(sockets[1]));
   }
   else
   {
     // In parent: send other end of new socket to driver
     send_child_fd(fd, child, time, sockets[0]);
+
+    // The driver owns the transferred endpoint, and the child owns the other
+    // one. Keeping either here while parked prevents EOF from reaching the
+    // child when the driver exits, stranding this entire checkpoint chain.
+    PERROR(close(sockets[0]));
+    PERROR(close(sockets[1]));
 
     // Wait for process to end
     int status;
@@ -105,6 +113,11 @@ pid_t texpresso_fork_with_channel(int fd, uint32_t time, txp_activity *profile, 
              answer[0] == 'F' && answer[1] == 'L' &&
              answer[2] == 'S' && answer[3] == 'H');
 
+    // A closed driver is normal session teardown. Unwind parked ancestors
+    // without an abort/backtrace or any signal from the departed frontend.
+    if (recvd == 0 || (recvd < 0 && errno == ECONNRESET))
+      _exit(0);
+
     if(profile) {
       txp_activity_add(profile,TXPA_PARK,park_start,txp_activity_clock(),query,0x444c4843,time,child);
       txp_activity_flush(profile,txp_activity_clock().wall);
@@ -112,14 +125,9 @@ pid_t texpresso_fork_with_channel(int fd, uint32_t time, txp_activity *profile, 
     PASSERT(recvd == 4 &&
             answer[0] == 'D' && answer[1] == 'O' &&
             answer[2] == 'N' && answer[3] == 'E',
-            "recvd: %d, answer: %C%C%C%C",
+            "recvd: %d, answer: %c%c%c%c",
             recvd,
             answer[0], answer[1], answer[2], answer[3]);
   }
-  PERROR(close(sockets[0]));
-
-  // Release temporary socket
-  PERROR(close(sockets[1]));
-
   return child;
 }

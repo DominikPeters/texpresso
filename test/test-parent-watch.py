@@ -50,7 +50,7 @@ with tempfile.TemporaryDirectory(prefix='texpresso-parent-watch-') as directory:
     bad = subprocess.run([str(fixture)], capture_output=True, timeout=5)
     assert bad.returncode == 1 and b'isolated process group' in bad.stderr
 
-    for mode in ('frontend-crash', 'frontend-eof', 'owner-crash'):
+    for mode in ('frontend-crash', 'frontend-eof', 'owner-crash', 'watcher-term', 'watcher-int', 'watcher-hup'):
         log = (folder / f'{mode}.log').open('wb')
         owner = None
         if mode == 'owner-crash':
@@ -76,6 +76,9 @@ time.sleep(30)
             workers = json.loads(child.stdout.readline())
             if mode == 'frontend-crash':
                 os.kill(workers['frontend'], signal.SIGKILL)
+            elif mode.startswith('watcher-'):
+                os.kill(group, {'watcher-term': signal.SIGTERM, 'watcher-int': signal.SIGINT,
+                                'watcher-hup': signal.SIGHUP}[mode])
             else:
                 child.stdin.close()
         try:

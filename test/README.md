@@ -43,6 +43,19 @@ watcher. It verifies isolated-group enforcement and cleanup after frontend
 crashes, stdin EOF, and a launcher crash. It creates only disposable processes
 and does not require TeX Live or MuPDF.
 
+`make test-checkpoint-cleanup` runs the production checkpoint fork/socket code
+with eight nested snapshots. It closes control channels, kills the frontend
+with SIGKILL, and rewinds before a frontend crash, checking every worker PID
+exits within five seconds while another session stays responsive. It exercises
+socket-driven cleanup without the parent watcher or cooperative TERM handlers,
+so a missing supervisor cannot conceal descriptor ownership bugs. It requires
+only Python and a C compiler, and targets only its own isolated fixture groups.
+Passing a built engine to `python3 test/test-checkpoint-cleanup.py build/texpresso`
+also compiles into the middle of a disposable 12-page document, retaining a real
+checkpoint tree, and checks actual compiler descendants
+after EOF, frontend SIGKILL, supervisor TERM and process-group TERM. That optional
+integration check requires TeX Live and process listing access.
+
 Headless clients can opt into `-watch-parent` when `parentWatch` is advertised.
 The launcher must create an isolated process group with the engine as its
 leader (for example, `setsid` before exec). A small pre-initialization supervisor
