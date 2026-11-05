@@ -66,6 +66,7 @@ void dvi_context_free(fz_context *ctx, dvi_context *dc)
   fz_drop_buffer(ctx, dc->annotation_links);
   fz_drop_buffer(ctx, dc->annotation_destinations);
   fz_drop_buffer(ctx, dc->annotation_figures);
+  fz_drop_buffer(ctx, dc->annotation_figure_bounds);
   pdf_drop_document(ctx, dc->annotation_pdf);
   dvi_fonttable_free(ctx, dc->root.fonts);
   dvi_resmanager_free(ctx, dc->resmanager);
@@ -88,7 +89,9 @@ void dvi_context_begin_frame(fz_context *ctx, dvi_context *dc, fz_device *dev)
   fz_drop_buffer(ctx, dc->annotation_links); fz_drop_buffer(ctx, dc->annotation_destinations);
   dc->annotation_links = fz_new_buffer(ctx, 256); dc->annotation_destinations = fz_new_buffer(ctx, 256);
   fz_drop_buffer(ctx, dc->annotation_figures);
+  fz_drop_buffer(ctx, dc->annotation_figure_bounds);
   dc->annotation_figures = fz_new_buffer(ctx, 256); dc->annotation_figure_count = 0;
+  dc->annotation_figure_bounds = fz_new_buffer(ctx, 256);
   dc->annotation_link_count = dc->annotation_destination_count = 0; dc->annotation_uri = NULL;
   dvi_context_set_device(ctx, dc, dev);
   // A PDF path left unfinished by a page's specials must not leak into the

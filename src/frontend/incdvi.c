@@ -36,7 +36,7 @@
 #define PAGE_PROGRAM_LIMIT (128u * 1024u)
 
 typedef struct {
-  fz_buffer *key, *annotations;
+  fz_buffer *key, *annotations, *figure_bounds;
   fz_display_list *list;
   size_t charge;
   unsigned long used;
@@ -95,6 +95,7 @@ void incdvi_free(fz_context *ctx, incdvi_t *d)
 {
   for (int i = 0; i < PAGE_CACHE_ENTRIES; i++) {
     fz_drop_buffer(ctx, d->cache[i].key); fz_drop_buffer(ctx, d->cache[i].annotations);
+    fz_drop_buffer(ctx, d->cache[i].figure_bounds);
     fz_drop_display_list(ctx, d->cache[i].list);
   }
   fz_drop_buffer(ctx, d->cache_annotations);
@@ -294,7 +295,9 @@ int incdvi_destination_page(fz_context *ctx, incdvi_t *d, const char *name)
 /* Cache interpreted pages, not source lines or page numbers. The interpreter's
  * font manager owns immutable loaded font/metric objects for this context's
  * lifetime. We validate their resolved identities and specs in addition to the
- * exact DVI program. Virtual fonts and external/unclassified specials bypass
+ * DVI drawing program. Figure routing is refreshed from current source fields;
+ * figure geometry and all positioning/transform instructions remain in the key.
+ * Virtual fonts and external/unclassified specials bypass
  * reuse: they can introduce dependencies not represented by that manifest.
  * BOP counters/back pointers do not draw; geometry and the post-BOP program do.
  * Links/destinations are cached only with their exact annotation program; fresh
@@ -355,8 +358,9 @@ static bool cache_font(fz_context *ctx, dvi_context *dc, fz_buffer *key, uint32_
   } else return false;
   return true;
 }
-static fz_buffer *page_key(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int page, fz_rect bounds, uint32_t *last_font)
+static fz_buffer *page_key(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int page, fz_rect bounds, uint32_t *last_font, fz_buffer *sources)
 {
+  sources->len=0;
   int first=d->pages[page*2]+45, end=d->pages[page*2+1];
   /* An unfinished PDF path can survive a frame in the existing interpreter.
    * Do not reuse or retain pages with that additional cross-page dependency. */
@@ -366,8 +370,11 @@ static fz_buffer *page_key(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int pag
   bool eligible=true, selected=false;
   unsigned char fonts[1250]={0};
   uint32_t font=0; /* dvi_context_begin_frame resets the font */
-  fz_var(key);
+  fz_buffer *program=NULL;
+  fz_var(program); fz_var(key);
   fz_try(ctx) {
+    program=fz_new_buffer(ctx,(size_t)(end-first)+64);
+    int run=first, figure_count=0, font_count=0;
     fz_append_data(ctx,key,&bounds,sizeof bounds);
     fz_append_data(ctx,key,&d->dc->scale,sizeof d->dc->scale);
     fz_append_data(ctx,key,&d->dc->root.version,sizeof d->dc->root.version);
@@ -375,9 +382,8 @@ static fz_buffer *page_key(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int pag
     fz_append_data(ctx,key,&d->dc->pdfcolorstacks.capacity,sizeof d->dc->pdfcolorstacks.capacity);
     for (int i=0;i<d->dc->pdfcolorstacks.capacity;i++)
       fz_append_data(ctx,key,&d->dc->pdfcolorstacks.stacks[i].origin,sizeof(dvi_colorstate));
-    int program_size=end-first;
-    fz_append_data(ctx,key,&program_size,sizeof program_size);
-    fz_append_data(ctx,key,buf->data+first,(size_t)program_size);
+    size_t font_count_at=key->len;
+    fz_append_data(ctx,key,&font_count,sizeof font_count);
     for (int pos=first;pos<end;) {
       int op=buf->data[pos], size=dvi_instr_size(buf->data+pos,end-pos,d->dc->root.version);
       if (size<=0 || size>end-pos) { eligible=false; break; }
@@ -390,6 +396,25 @@ static fz_buffer *page_key(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int pag
       }
       else if (op>=XXX1 && op<=XXX4) {
         int prefix=2+op-XXX1;
+        const char *special=(const char *)buf->data+pos+prefix;
+        size_t special_len=(size_t)(size-prefix);
+        if (cache_token((const unsigned char *)special,special_len,"texpresso:figure")) {
+          dvi_figure figure;
+          if (++figure_count>1024 || !dvi_parse_figure(special,special_len,&figure)) {
+            eligible=false; break;
+          }
+          /* Alternating length-prefixed raw runs and fixed-size geometry are
+           * unambiguous, including empty runs and changes in source digit/path
+           * lengths. Source identity never enters immutable drawing identity. */
+          int length=pos-run;
+          fz_append_data(ctx,program,&length,sizeof length);
+          fz_append_data(ctx,program,buf->data+run,(size_t)length);
+          fz_append_data(ctx,program,figure.geometry,sizeof figure.geometry);
+          run=pos+size;
+          int32_t record[3]={figure.line,figure.end_line,(int32_t)strlen(figure.file)};
+          fz_append_data(ctx,sources,record,sizeof record);
+          fz_append_data(ctx,sources,figure.file,(size_t)record[2]);
+        }
         if (!cache_special(buf->data+pos+prefix,(size_t)(size-prefix))) {
           if (txp_profile_now()) fprintf(stderr,"[cache] page %d bypass special: %.*s\n",page,size-prefix>48?48:size-prefix,buf->data+pos+prefix);
           eligible=false; break;
@@ -401,11 +426,23 @@ static fz_buffer *page_key(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int pag
         if (!(fonts[font/8] & (1u<<(font%8)))) {
           fonts[font/8] |= 1u<<(font%8);
           if (!cache_font(ctx,d->dc,key,font)) { eligible=false; break; }
+          font_count++;
         }
       }
       pos+=size;
     }
+    if (eligible) {
+      int length=end-run;
+      fz_append_data(ctx,program,&length,sizeof length);
+      fz_append_data(ctx,program,buf->data+run,(size_t)length);
+      memcpy(key->data+font_count_at,&font_count,sizeof font_count);
+      fz_append_data(ctx,key,&figure_count,sizeof figure_count);
+      uint32_t program_size=(uint32_t)program->len;
+      fz_append_data(ctx,key,&program_size,sizeof program_size);
+      fz_append_buffer(ctx,key,program);
+    }
   }
+  fz_always(ctx) { fz_drop_buffer(ctx,program); }
   fz_catch(ctx) { fz_drop_buffer(ctx,key); fz_rethrow(ctx); }
   *last_font=font;
   if (!eligible) { fz_drop_buffer(ctx,key); return NULL; }
@@ -415,7 +452,8 @@ static void cache_drop(fz_context *ctx, incdvi_t *d, int i)
 {
   page_cache_entry *e=&d->cache[i];
   d->cache_bytes-=e->charge;
-  fz_drop_buffer(ctx,e->key); fz_drop_buffer(ctx,e->annotations); fz_drop_display_list(ctx,e->list);
+  fz_drop_buffer(ctx,e->key); fz_drop_buffer(ctx,e->annotations);
+  fz_drop_buffer(ctx,e->figure_bounds); fz_drop_display_list(ctx,e->list);
   memset(e,0,sizeof *e);
 }
 fz_display_list *incdvi_display_list(fz_context *ctx, incdvi_t *d, fz_buffer *buf, int page)
@@ -425,17 +463,21 @@ fz_display_list *incdvi_display_list(fz_context *ctx, incdvi_t *d, fz_buffer *bu
   incdvi_page_dim(ctx,d,buf,page,&w,&h,NULL);
   fz_rect bounds=fz_make_rect(0,0,w,h);
   incdvi_parse_fontdef(ctx,d,buf,d->pages[page*2]);
-  fz_buffer *key=NULL;
+  fz_buffer *key=NULL, *sources=NULL;
   fz_display_list *list=NULL;
   fz_device *device=NULL;
   uint32_t last_font=d->dc->root.f;
   bool clean_state=!d->dc->path && !d->dc->text;
-  fz_var(key); fz_var(list); fz_var(device);
+  fz_var(key); fz_var(sources); fz_var(list); fz_var(device);
   fz_try(ctx) {
-    key=page_key(ctx,d,buf,page,bounds,&last_font);
+    sources=fz_new_buffer(ctx,256);
+    key=page_key(ctx,d,buf,page,bounds,&last_font,sources);
     if (key) for (int i=0;i<PAGE_CACHE_ENTRIES;i++) {
       page_cache_entry *e=&d->cache[i];
       if (e->key && e->key->len==key->len && !memcmp(e->key->data,key->data,key->len)) {
+        fz_buffer *fresh=dvi_annotations_refresh_figures(ctx,e->annotations,e->figure_bounds,sources);
+        if (!fresh) continue; /* Count/metadata limits changed: render afresh. */
+        fz_drop_buffer(ctx,d->cache_annotations); d->cache_annotations=fresh;
         /* Preserve font-definition and initializer effects for later pages. These
          * operations load immutable objects already validated by this key. */
         for (int pos=d->pages[page*2]+45,end=d->pages[page*2+1];pos<end;) {
@@ -445,7 +487,6 @@ fz_display_list *incdvi_display_list(fz_context *ctx, incdvi_t *d, fz_buffer *bu
           pos+=size;
         }
         d->dc->root.f=last_font;
-        fz_drop_buffer(ctx,d->cache_annotations); d->cache_annotations=fz_keep_buffer(ctx,e->annotations);
         e->used=++d->cache_clock; list=fz_keep_display_list(ctx,e->list);
         txp_profile_record("page-list-cache-hit",start,0,page,d->cache_bytes);
         break;
@@ -456,10 +497,10 @@ fz_display_list *incdvi_display_list(fz_context *ctx, incdvi_t *d, fz_buffer *bu
       list=fz_new_display_list(ctx,bounds); device=fz_new_list_device(ctx,list);
       incdvi_render_page(ctx,d,buf,page,device); fz_close_device(ctx,device);
       /* A first render can resolve fonts not loaded during the preflight. */
-      key=clean_state?page_key(ctx,d,buf,page,bounds,&last_font):NULL;
+      key=clean_state?page_key(ctx,d,buf,page,bounds,&last_font,sources):NULL;
       if (key) {
-        fz_buffer *annotations=incdvi_annotations(ctx,d);
-        size_t charge=4096+128u*(size_t)(d->pages[page*2+1]-d->pages[page*2]-45)+key->len+annotations->len;
+        fz_buffer *annotations=dvi_annotations_base(ctx,d->dc);
+        size_t charge=4096+128u*(size_t)(d->pages[page*2+1]-d->pages[page*2]-45)+key->len+annotations->len+d->dc->annotation_figure_bounds->len;
         if (charge<=PAGE_CACHE_BYTES/2) {
           int slot=-1;
           while (slot<0 || d->cache_bytes+charge>PAGE_CACHE_BYTES) {
@@ -471,7 +512,10 @@ fz_display_list *incdvi_display_list(fz_context *ctx, incdvi_t *d, fz_buffer *bu
             if (slot>=0 && d->cache_bytes+charge<=PAGE_CACHE_BYTES) break;
             cache_drop(ctx,d,oldest); slot=oldest;
           }
-          d->cache[slot]=(page_cache_entry){fz_keep_buffer(ctx,key),annotations,fz_keep_display_list(ctx,list),charge,++d->cache_clock,++next_content_token};
+          d->cache[slot]=(page_cache_entry){ .key=fz_keep_buffer(ctx,key), .annotations=annotations,
+            .figure_bounds=fz_keep_buffer(ctx,d->dc->annotation_figure_bounds),
+            .list=fz_keep_display_list(ctx,list), .charge=charge,
+            .used=++d->cache_clock, .token=++next_content_token };
           d->cache_bytes+=charge; annotations=NULL;
         }
         fz_drop_buffer(ctx,annotations);
@@ -479,7 +523,7 @@ fz_display_list *incdvi_display_list(fz_context *ctx, incdvi_t *d, fz_buffer *bu
       txp_profile_record(key?"page-list-cache-miss":"page-list-cache-bypass",start,0,page,d->cache_bytes);
     }
   }
-  fz_always(ctx) { fz_drop_buffer(ctx,key); fz_drop_device(ctx,device); }
+  fz_always(ctx) { fz_drop_buffer(ctx,key); fz_drop_buffer(ctx,sources); fz_drop_device(ctx,device); }
   fz_catch(ctx) { fz_drop_display_list(ctx,list); fz_rethrow(ctx); }
   return list;
 }

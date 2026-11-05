@@ -70,3 +70,11 @@ If the launcher disappears or the frontend exits, the supervisor releases its
 entire group, including itself. Consequently the supervised process reports a
 signal exit; clients must already distinguish requested shutdown from failures.
 Unwatched commands, including capability probes, retain their existing behavior.
+
+Figure routing is refreshed independently of immutable page drawing identity.
+`test-dvi-annotations` verifies display-list/content-token reuse across source
+line and UTF-8 path changes, fresh routing after revisiting an older source,
+unchanged transformed bounds, invalidation for figure geometry, and removal of
+figure metadata on a page without figures. The cache keeps link/destination
+programs, placement, transforms and font identities in visual validation; it
+never drops source fields from a key while serving old figure routing.
