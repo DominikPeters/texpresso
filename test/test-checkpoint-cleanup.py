@@ -340,9 +340,14 @@ def real_engine(engine):
                             reply = receive_until(lambda m: m[0] == 'preview-destination')
                             assert reply == ['preview-destination', 1, 0, 'section.6', 5], reply
                             if mode == 'worker-exit-unread-edit':
-                                rows = [row.split(None, 3) for row in subprocess.check_output(
-                                    ['ps', '-axo', 'pid=,ppid=,pgid=,comm='], text=True).splitlines()]
-                                workers = [row for row in rows if int(row[2]) == p.pid and row[3].endswith('texpresso-xetex')]
+                                rows = [row.split(None, 4) for row in subprocess.check_output(
+                                    ['ps', '-axo', 'pid=,ppid=,pgid=,stat=,comm='], text=True).splitlines()]
+                                # Decimation can leave exited descendants waiting
+                                # for Linux's subreaper. They are not live leaves
+                                # eligible for this failure injection.
+                                workers = [row for row in rows if int(row[2]) == p.pid
+                                           and not row[3].startswith('Z')
+                                           and row[4].endswith('texpresso-xetex')]
                                 parents = {int(row[1]) for row in workers}
                                 leaves = [int(row[0]) for row in workers if int(row[0]) not in parents]
                                 assert len(leaves) == 1, leaves
