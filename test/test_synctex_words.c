@@ -2,6 +2,7 @@
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
+#include <locale.h>
 #include "renderer.h"
 #include "mydvi.h"
 
@@ -21,6 +22,8 @@ static fz_display_list *text_page(fz_context *ctx, const char *content)
 }
 int main(void)
 {
+  // A GUI/application is not required to call setlocale for Unicode words.
+  assert(setlocale(LC_CTYPE, "C"));
   int code[32];
   assert(dvi_glyph_unicode("f_f_i", code, 32) == 3 && code[0] == 'f' && code[2] == 'i');
   assert(dvi_glyph_unicode("uni006600660069.alt", code, 32) == 3 && code[2] == 'i');
@@ -55,5 +58,6 @@ int main(void)
   assert(txp_renderer_find_source_word(ctx, renderer, first, "café", &all, 1, &found));
   fz_drop_display_list(ctx, ligature); fz_drop_display_list(ctx, first); fz_drop_display_list(ctx, second);
   txp_renderer_free(ctx, renderer); fz_drop_context(ctx);
+  assert(!strcmp(setlocale(LC_CTYPE, NULL), "C")); // The private locale was released, not installed globally.
   puts("PASS: cached source words, Unicode, ligatures, and ambiguous matches");
 }

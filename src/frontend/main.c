@@ -1140,9 +1140,14 @@ static void process_prepared_inverse(struct persistent_state *ps, ui_state *ui)
   fz_display_list *list=NULL;
   fz_var(word); fz_var(list);
   fz_try(ps->ctx) {
-    list=txp_engine_cached_page(ui->eng,ps->ctx,page);
-    word=txp_renderer_cached_word(ps->ctx,ui->doc_renderer,list,
-      fz_make_point(ui->prepared_inverse.x,ui->prepared_inverse.y));
+    if (ui->prepared_inverse.precise) {
+      list=txp_engine_cached_page(ui->eng,ps->ctx,page);
+      word=txp_renderer_cached_word(ps->ctx,ui->doc_renderer,list,
+        fz_make_point(ui->prepared_inverse.x,ui->prepared_inverse.y));
+    } else if (ui->preview.valid && !ui->preview.background && ui->page==page) {
+      word=txp_renderer_word_at(ps->ctx,ui->doc_renderer,
+        fz_make_point(ui->prepared_inverse.x,ui->prepared_inverse.y));
+    }
   }
   fz_always(ps->ctx) { fz_drop_display_list(ps->ctx,list); }
   fz_catch(ps->ctx) { fprintf(stderr, "[preview] Could not extract clicked word\n"); }

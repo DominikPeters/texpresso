@@ -26,6 +26,11 @@
 #include <math.h>
 #include <stdio.h>
 #include <time.h>
+#include <locale.h>
+#include <wctype.h>
+#ifdef __APPLE__
+#include <xlocale.h>
+#endif
 
 static float clampf(float x, float min, float max)
 {
@@ -56,6 +61,7 @@ struct txp_renderer_s
   fz_buffer *scratch;
   fz_display_list *contents;
   fz_stext_page *stext;
+  locale_t word_locale;
   int contents_bounds_valid;
   fz_rect contents_bounds;
   txp_renderer_config config;
@@ -98,6 +104,11 @@ txp_renderer *txp_renderer_new(fz_context *ctx, SDL_Renderer *sdl)
   {
     self = fz_malloc_struct(ctx, txp_renderer);
     self->sdl = sdl;
+    // Keep Unicode classification independent of both MuPDF's version and
+    // the process locale. C.UTF-8 is available on Linux; macOS uses UTF-8.
+    const char *locales[] = {"C.UTF-8", "en_US.UTF-8", "UTF-8", NULL};
+    for (int i = 0; locales[i] && !self->word_locale; ++i)
+      self->word_locale = newlocale(LC_CTYPE_MASK, locales[i], (locale_t)0);
     self->config.zoom = 1;
     self->config.background_color = 0xFFFFFF;
     self->config.foreground_color = 0x000000;
@@ -123,6 +134,7 @@ void txp_renderer_free(fz_context *ctx, txp_renderer *self)
     SDL_DestroyTexture(self->tex);
   if (self->scratch)
     fz_drop_buffer(ctx, self->scratch);
+  if (self->word_locale) freelocale(self->word_locale);
   fz_free(ctx, self);
 }
 
@@ -944,15 +956,18 @@ bool txp_renderer_select_char(fz_context *ctx, txp_renderer *self, fz_point pt)
   return set_quads(ctx, self, &q, count);
 }
 
-static bool source_word_char(int c)
+static bool source_word_char(txp_renderer *self, int c)
 {
-  return fz_isalpha(c) || (c >= '0' && c <= '9') ||
+  // A host without any UTF-8 locale still has a safe ASCII fallback. Unknown
+  // Unicode classifications leave optional refinement to the line geometry.
+  return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+    (self->word_locale && c >= 0 && c <= 0x10ffff && iswalnum_l((wint_t)c, self->word_locale)) ||
     (c >= 0x0300 && c <= 0x036f) || (c >= 0x1ab0 && c <= 0x1aff) ||
     (c >= 0x1dc0 && c <= 0x1dff) || (c >= 0x20d0 && c <= 0x20ff) ||
     (c >= 0xfe20 && c <= 0xfe2f);
 }
 
-static char *word_from_text(fz_context *ctx, fz_stext_page *page, fz_point pt)
+static char *word_from_text(fz_context *ctx, txp_renderer *self, fz_stext_page *page, fz_point pt)
 {
   if (!page) return NULL;
   char best[257] = {0}; float distance = 3.001f;
@@ -964,10 +979,10 @@ static char *word_from_text(fz_context *ctx, fz_stext_page *page, fz_point pt)
       for (fz_stext_line *line = block->u.t.first_line; line; line = line->next) {
         fz_stext_char *ch = line->first_char;
         while (ch) {
-          if (!source_word_char(ch->c)) { ch = ch->next; continue; }
+          if (!source_word_char(self, ch->c)) { ch = ch->next; continue; }
           char word[257]; int length = 0; bool overflow = false;
           fz_rect bounds = fz_empty_rect;
-          while (ch && source_word_char(ch->c)) {
+          while (ch && source_word_char(self, ch->c)) {
             char utf8[4]; int bytes = fz_runetochar(utf8, ch->c);
             if (length + bytes > 256) overflow = true;
             else if (!overflow) { memcpy(word + length, utf8, bytes); length += bytes; }
@@ -985,7 +1000,17 @@ static char *word_from_text(fz_context *ctx, fz_stext_page *page, fz_point pt)
 }
 
 char *txp_renderer_word_at(fz_context *ctx, txp_renderer *self, fz_point pt)
-{ return word_from_text(ctx,get_stext(ctx,self),pt); }
+{
+  // Preserve legacy selection/snapping behavior for native UI and old clients.
+  fz_stext_page *page = get_stext(ctx, self);
+  if (!page) return NULL;
+  fz_point a = pt, b = pt;
+  fz_quad quad = fz_snap_selection(ctx, page, &a, &b, FZ_SELECT_WORDS);
+  if (point_to_rect_dist(pt, fz_rect_from_quad(quad)) > 3) return NULL;
+  char *word = fz_copy_selection(ctx, page, a, b, 0);
+  if (strlen(word) > 256) { fz_free(ctx, word); return NULL; }
+  return word;
+}
 
 static fz_stext_page *list_text(fz_context *ctx, fz_display_list *list)
 {
@@ -1004,10 +1029,10 @@ static fz_stext_page *list_text(fz_context *ctx, fz_display_list *list)
 
 char *txp_renderer_cached_word(fz_context *ctx, txp_renderer *self, fz_display_list *list, fz_point pt)
 {
-  if (list && list==self->contents) return txp_renderer_word_at(ctx,self,pt);
+  if (list && list==self->contents) return word_from_text(ctx,self,get_stext(ctx,self),pt);
   fz_stext_page *text=list_text(ctx,list); char *word=NULL;
   fz_var(word);
-  fz_try(ctx) { word=word_from_text(ctx,text,pt); }
+  fz_try(ctx) { word=word_from_text(ctx,self,text,pt); }
   fz_always(ctx) { fz_drop_stext_page(ctx,text); }
   fz_catch(ctx) { fz_free(ctx,word); fz_rethrow(ctx); }
   return word;
@@ -1031,7 +1056,7 @@ bool txp_renderer_find_source_word(fz_context *ctx, txp_renderer *self, fz_displ
       for (int j=0;j<count;j++) if (center.x>=areas[j].x0 && center.x<=areas[j].x1 &&
           center.y>=areas[j].y0 && center.y<=areas[j].y1) { inside=true; break; }
       if (!inside) continue;
-      fz_free(ctx,selected); selected=NULL; selected=word_from_text(ctx,text,center);
+      fz_free(ctx,selected); selected=NULL; selected=word_from_text(ctx,self,text,center);
       if (!selected || fz_strcasecmp(selected,word)) continue; /* No substring guesses. */
       *found=b; candidates++;
     }
