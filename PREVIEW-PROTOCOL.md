@@ -203,6 +203,23 @@ PNG drawing/color/encoding, and pipe-write wall time in milliseconds. Export
 records include the request ID, page and encoded bytes. These diagnostics are
 disabled by default and do not add messages to stdout or change framing.
 
+`TEXPRESSO_PROFILE_FEATURES=1` separately enables optional, content-free
+`renderFeatures` metadata on full-page image headers. Schema 1 reports glyph and
+text-span counts, distinct font/glyph pairs (tracking capped at 8192 with
+`glyphOverflow`), distinct fonts (capped at 64 with `fontOverflow`), drawn paths,
+packed path bytes (including clip paths), image placements/source pixels, clips,
+groups, shades, the existing vector cost and SVG eligibility. These counters
+describe the display list, including imported PDF drawings; they do not contain
+text, filenames or font names. `imagePixels` saturates at JavaScript's maximum
+safe integer. Font pointers are compared locally and never serialized.
+
+Features are cached by immutable page content token independently of the codec
+and viewport. `featureMs` and `featureCached` report predictor acquisition cost;
+this opt-in analysis happens before the `exportMs` clock starts. SVG's ordinary
+eligibility preflight remains part of its existing export work. Region headers
+omit the counters. The metadata does not change codec selection or relax SVG
+fidelity/memory guards, and is absent unless explicitly enabled.
+
 Opaque device-RGB preview pixmaps use a streaming, lossless PNG writer with
 unfiltered scanlines and fast deflate. Scratch storage is one scanline, a 64 KiB
 output block and zlib state, rather than whole-image compression buffers.

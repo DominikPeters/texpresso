@@ -11,6 +11,14 @@
 
 typedef struct txp_preview_cache txp_preview_cache;
 
+/* Opt-in, content-only profiling counters. No strings or document content. */
+typedef struct {
+  size_t glyphs, unique_glyphs, text_spans, fonts, paths, path_bytes, images, clips, groups, shades, vector_cost;
+  uint64_t image_pixels;
+  bool font_overflow, glyph_overflow, svg_eligible;
+} txp_render_features;
+void txp_preview_render_features(fz_context *ctx, fz_display_list *list, txp_render_features *features);
+
 /* One current display-list snapshot and one replaceable render request. */
 typedef struct {
   int revision, sequence;

@@ -3,6 +3,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include "preview_compression.h"
 
 /* Measure text without rasterizing figures or segmenting words. The viewer only
@@ -41,10 +42,19 @@ fz_rect txp_preview_text_bounds(fz_context *ctx, fz_display_list *list)
 /* Audit against MuPDF 1.28.5 source/fitz/svg-device.c. Keep this cheap pass
  * independent of export: no glyph outlining, image decoding, or rasterization.
  * Conservative fallbacks preserve the draw device as the fidelity reference. */
-typedef struct { fz_device super; const char *reason; size_t cost; bool images; } svg_check;
+typedef struct { fz_font *font; int gid; } feature_glyph;
+typedef struct {
+  fz_device super; const char *reason; size_t cost; bool images;
+  txp_render_features *features;
+  fz_font *fonts[64];
+  feature_glyph *glyphs;
+} svg_check;
+static void drop_svg_check(fz_context *ctx, fz_device *dev)
+{ fz_free(ctx, ((svg_check *)dev)->glyphs); }
 static void check_group(fz_context *ctx, fz_device *dev, fz_rect b, fz_colorspace *cs,
                         int isolated, int knockout, int blend, float alpha)
 {
+  if (((svg_check *)dev)->features) ((svg_check *)dev)->features->groups++;
   if (knockout || !isolated || blend != FZ_BLEND_NORMAL ||
       (cs && cs != fz_device_rgb(ctx) && cs != fz_device_gray(ctx)))
     ((svg_check *)dev)->reason = "PDF transparency groups or blending";
@@ -53,7 +63,8 @@ static void check_mask(fz_context *ctx, fz_device *dev, fz_rect b, int luminosit
                        fz_colorspace *cs, const float *color, fz_color_params cp)
 { ((svg_check *)dev)->reason = "PDF soft masks"; }
 static void check_shade(fz_context *ctx, fz_device *dev, fz_shade *s, fz_matrix m, float alpha, fz_color_params cp)
-{ ((svg_check *)dev)->reason = "PDF shadings (SVG rasterizes these at a fixed resolution)"; }
+{ ((svg_check *)dev)->reason = "PDF shadings (SVG rasterizes these at a fixed resolution)";
+  if (((svg_check *)dev)->features) ((svg_check *)dev)->features->shades++; }
 static int check_tile(fz_context *ctx, fz_device *dev, fz_rect a, fz_rect v, float x, float y, fz_matrix m, int id
 #if FZ_VERSION_MAJOR > 1 || FZ_VERSION_MINOR >= 27
                       , int doc
@@ -66,22 +77,50 @@ static void check_text(fz_context *ctx, fz_device *dev, const fz_text *text, fz_
   if (cp.op || cp.opm) ((svg_check *)dev)->reason = "PDF overprint";
   for (const fz_text_span *span = text->head; span; span = span->next) {
     ((svg_check *)dev)->cost += (size_t)span->len * 20;
+    svg_check *check = (svg_check *)dev;
+    if (check->features) {
+      txp_render_features *f = check->features;
+      f->glyphs += span->len; f->text_spans++;
+      size_t i = 0; while (i < f->fonts && check->fonts[i] != span->font) i++;
+      if (i == f->fonts) {
+        if (f->fonts < 64) check->fonts[f->fonts++] = span->font;
+        else f->font_overflow = true;
+      }
+      for (int j = 0; j < span->len; j++) {
+        int gid = span->items[j].gid; if (gid < 0) continue;
+        if (f->unique_glyphs == 8192) { f->glyph_overflow = true; break; }
+        size_t slot = (((uintptr_t)span->font >> 4) ^ ((uint32_t)gid * UINT32_C(2654435761))) & 8191;
+        while (check->glyphs[slot].font &&
+               (check->glyphs[slot].font != span->font || check->glyphs[slot].gid != gid)) slot = (slot + 1) & 8191;
+        if (!check->glyphs[slot].font) {
+          check->glyphs[slot] = (feature_glyph){span->font, gid}; f->unique_glyphs++;
+        }
+      }
+    }
     if (fz_font_t3_procs(ctx, span->font)) ((svg_check *)dev)->reason = "Type 3 fonts";
   }
 }
 static void check_path(fz_context *ctx, fz_device *dev, const fz_path *path, int eo, fz_matrix m,
                        fz_colorspace *cs, const float *color, float alpha, fz_color_params cp)
 { ((svg_check *)dev)->cost += fz_packed_path_size(path);
+  if (((svg_check *)dev)->features) { ((svg_check *)dev)->features->paths++; ((svg_check *)dev)->features->path_bytes += fz_packed_path_size(path); }
   if (cp.op || cp.opm) ((svg_check *)dev)->reason = "PDF overprint"; }
 static void check_stroke(fz_context *ctx, fz_device *dev, const fz_path *path, const fz_stroke_state *stroke, fz_matrix m,
                          fz_colorspace *cs, const float *color, float alpha, fz_color_params cp)
 { ((svg_check *)dev)->cost += fz_packed_path_size(path);
+  if (((svg_check *)dev)->features) { ((svg_check *)dev)->features->paths++; ((svg_check *)dev)->features->path_bytes += fz_packed_path_size(path); }
   if (cp.op || cp.opm) ((svg_check *)dev)->reason = "PDF overprint"; }
 static void check_image(fz_context *ctx, fz_device *dev, fz_image *image, fz_matrix m, float alpha, fz_color_params cp)
 {
   if (cp.op || cp.opm) ((svg_check *)dev)->reason = "PDF overprint";
   ((svg_check *)dev)->cost += 100;
   ((svg_check *)dev)->images = true;
+  if (((svg_check *)dev)->features) {
+    txp_render_features *f = ((svg_check *)dev)->features;
+    f->images++;
+    uint64_t pixels = (uint64_t)image->w * image->h, limit = UINT64_C(9007199254740991);
+    f->image_pixels = pixels > limit - f->image_pixels ? limit : f->image_pixels + pixels;
+  }
   if (image->colorspace && image->colorspace != fz_device_rgb(ctx) && image->colorspace != fz_device_gray(ctx))
     ((svg_check *)dev)->reason = "PDF image color spaces";
   if (image->mask || image->use_decode || image->use_colorkey)
@@ -92,23 +131,38 @@ static void check_stroke_text(fz_context *ctx, fz_device *dev, const fz_text *te
                               fz_matrix m, fz_colorspace *cs, const float *color, float alpha, fz_color_params cp)
 { check_text(ctx, dev, text, m, cs, color, alpha, cp); }
 static void check_clip_text(fz_context *ctx, fz_device *dev, const fz_text *text, fz_matrix m, fz_rect scissor)
-{ check_text(ctx, dev, text, m, NULL, NULL, 1, fz_default_color_params); }
+{ if (((svg_check *)dev)->features) ((svg_check *)dev)->features->clips++;
+  check_text(ctx, dev, text, m, NULL, NULL, 1, fz_default_color_params); }
 static void check_clip_stroke_text(fz_context *ctx, fz_device *dev, const fz_text *text, const fz_stroke_state *stroke, fz_matrix m, fz_rect scissor)
 { check_clip_text(ctx, dev, text, m, scissor); }
 static void check_image_mask(fz_context *ctx, fz_device *dev, fz_image *image, fz_matrix m,
                              fz_colorspace *cs, const float *color, float alpha, fz_color_params cp)
 { check_image(ctx, dev, image, m, alpha, cp); }
 static void check_clip_image(fz_context *ctx, fz_device *dev, fz_image *image, fz_matrix m, fz_rect scissor)
-{ check_image(ctx, dev, image, m, 1, fz_default_color_params); }
+{ if (((svg_check *)dev)->features) ((svg_check *)dev)->features->clips++;
+  check_image(ctx, dev, image, m, 1, fz_default_color_params); }
+static void feature_clip_path(fz_context *ctx, fz_device *dev, const fz_path *path, int eo, fz_matrix m, fz_rect scissor)
+{ txp_render_features *f = ((svg_check *)dev)->features; if (f) { f->clips++; f->path_bytes += fz_packed_path_size(path); } }
+static void feature_clip_stroke_path(fz_context *ctx, fz_device *dev, const fz_path *path, const fz_stroke_state *stroke, fz_matrix m, fz_rect scissor)
+{ feature_clip_path(ctx, dev, path, 0, m, scissor); }
 static void bounded_svg_write(fz_context *ctx, void *state, const void *data, size_t size)
 {
   fz_buffer *buffer = state;
   if (size > 16 * 1024 * 1024 - buffer->len) fz_throw(ctx, FZ_ERROR_GENERIC, "SVG transfer budget");
   fz_append_data(ctx, buffer, data, size);
 }
-static const char *svg_analysis(fz_context *ctx, fz_display_list *list, size_t *cost, bool *images)
+static const char *svg_analysis(fz_context *ctx, fz_display_list *list, size_t *cost, bool *images, txp_render_features *features)
 {
   svg_check *check = fz_new_derived_device(ctx, svg_check);
+  check->features = features;
+  if (features) {
+    memset(features, 0, sizeof *features);
+    /* Fixed-size, opt-in glyph identities. The drop callback also covers errors. */
+    check->super.drop_device = drop_svg_check;
+    fz_try(ctx) { check->glyphs = fz_calloc(ctx, 8192, sizeof(feature_glyph)); }
+    fz_catch(ctx) { fz_drop_device(ctx, &check->super); fz_rethrow(ctx); }
+    check->super.clip_path = feature_clip_path; check->super.clip_stroke_path = feature_clip_stroke_path;
+  }
   check->super.begin_group = check_group; check->super.begin_mask = check_mask;
   check->super.fill_shade = check_shade; check->super.begin_tile = check_tile;
   check->super.fill_text = check_text; check->super.fill_path = check_path;
@@ -123,6 +177,10 @@ static const char *svg_analysis(fz_context *ctx, fz_display_list *list, size_t *
     if (cost) *cost = check->cost;
     if (images) *images = check->images;
     reason = check->cost > 2000000 ? "Vector complexity budget" : check->reason;
+    if (features) {
+      features->vector_cost = check->cost;
+      features->svg_eligible = !reason && !check->images && check->cost <= 200000;
+    }
     fz_close_device(ctx, &check->super);
   }
   fz_always(ctx) { fz_drop_device(ctx, &check->super); }
@@ -131,7 +189,10 @@ static const char *svg_analysis(fz_context *ctx, fz_display_list *list, size_t *
 }
 
 const char *txp_preview_svg_fallback(fz_context *ctx, fz_display_list *list)
-{ return svg_analysis(ctx, list, NULL, NULL); }
+{ return svg_analysis(ctx, list, NULL, NULL, NULL); }
+
+void txp_preview_render_features(fz_context *ctx, fz_display_list *list, txp_render_features *features)
+{ (void)svg_analysis(ctx, list, NULL, NULL, features); }
 
 /* Interactive RGB PNGs: one scanline and a bounded deflate buffer instead of
  * MuPDF's whole-image filtered/compressed scratch allocations. Unfiltered
@@ -261,7 +322,25 @@ typedef struct {
 struct txp_preview_cache {
   export_entry entries[EXPORT_CACHE_ENTRIES]; size_t bytes; unsigned long clock;
   struct { uint64_t token; fz_rect bounds; unsigned long used; } text[TEXT_BOUNDS_CACHE_ENTRIES];
+  struct { uint64_t token; txp_render_features value; unsigned long used; } features[TEXT_BOUNDS_CACHE_ENTRIES];
 };
+
+static bool cached_render_features(fz_context *ctx, txp_preview *p, fz_display_list *list, txp_render_features *features)
+{
+  if (!p->content_token) { txp_preview_render_features(ctx, list, features); return false; }
+  if (!p->export_cache) p->export_cache = fz_malloc_struct(ctx, txp_preview_cache);
+  txp_preview_cache *cache = p->export_cache;
+  int oldest = 0;
+  for (int i = 0; i < TEXT_BOUNDS_CACHE_ENTRIES; ++i) {
+    if (cache->features[i].token == p->content_token) {
+      cache->features[i].used = ++cache->clock; *features = cache->features[i].value; return true;
+    }
+    if (cache->features[i].used < cache->features[oldest].used) oldest = i;
+  }
+  txp_preview_render_features(ctx, list, features);
+  cache->features[oldest].token = p->content_token; cache->features[oldest].value = *features;
+  cache->features[oldest].used = ++cache->clock; return false;
+}
 
 static fz_rect cached_text_bounds(fz_context *ctx, txp_preview *p, fz_display_list *list)
 {
@@ -431,11 +510,24 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
   bool patch = false;
   fz_irect dirty = {0};
   int image_width = 0, image_height = 0;
+  const char *feature_flag = getenv("TEXPRESSO_PROFILE_FEATURES");
+  bool collect_features = !p->region && feature_flag && !strcmp(feature_flag, "1"), feature_cached = false;
+  txp_render_features features = {0};
+  double feature_ms = 0;
   fz_var(pix); fz_var(crop); fz_var(patch); fz_var(dirty);
   fz_var(png);
   fz_var(dev); fz_var(out); fz_var(fallback); fz_var(svg); fz_var(svg_eligible); fz_var(vector_cost);
   fz_try(ctx)
   {
+    if (collect_features) {
+      struct timespec start, end; clock_gettime(CLOCK_MONOTONIC, &start);
+      feature_cached = cached_render_features(ctx, p, list, &features);
+      clock_gettime(CLOCK_MONOTONIC, &end);
+      feature_ms = (end.tv_sec-start.tv_sec)*1000.0+(end.tv_nsec-start.tv_nsec)/1000000.0;
+      /* Instrumentation is a separately reported predictor acquisition cost,
+       * never a component of the codec's rendering-time training target. */
+      clock_gettime(CLOCK_MONOTONIC, &export_start);
+    }
     fz_rect b = fz_bound_display_list(ctx, list);
     if (p->region)
     {
@@ -460,7 +552,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
       double preflight_start = txp_profile_now();
       fallback = ceilf(w) > 8192 || ceilf(h) > 8192 || ceilf(w) * ceilf(h) > 4000000 ? "Oversized SVG page" : config->invert_color || (config->themed_color &&
         ((config->foreground_color & 0xFFFFFF) != 0 || (config->background_color & 0xFFFFFF) != 0xFFFFFF))
-        ? "Preview color theme" : svg_analysis(ctx, list, &vector_cost, &images);
+        ? "Preview color theme" : svg_analysis(ctx, list, &vector_cost, &images, NULL);
       txp_profile_record("svg-preflight", preflight_start, p->request, page, 0);
       /* Count existing display-list operations; do not export both codecs on
        * the interactive path. Raster images already have a good PNG representation.
@@ -564,6 +656,18 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
            b.x0, b.y0, b.x1, b.y1,
            image_width, image_height, svg ? "image/svg+xml" : "image/png", len);
     printf(",\"exportMs\":%.4f", export_ms);
+    if (collect_features) {
+      printf(",\"featureMs\":%.4f,\"featureCached\":%s,\"renderFeatures\":{\"schema\":1,"
+        "\"glyphs\":%zu,\"uniqueGlyphs\":%zu,\"glyphOverflow\":%s,\"textSpans\":%zu,\"fonts\":%zu,\"fontOverflow\":%s,"
+        "\"paths\":%zu,\"pathBytes\":%zu,\"images\":%zu,\"imagePixels\":%llu,"
+        "\"clips\":%zu,\"groups\":%zu,\"shades\":%zu,\"vectorCost\":%zu,\"svgEligible\":%s}",
+        feature_ms, feature_cached ? "true" : "false", features.glyphs, features.unique_glyphs,
+        features.glyph_overflow ? "true" : "false", features.text_spans, features.fonts,
+        features.font_overflow ? "true" : "false", features.paths, features.path_bytes, features.images,
+        (unsigned long long)features.image_pixels, features.clips, features.groups, features.shades,
+        features.vector_cost, features.svg_eligible ? "true" : "false");
+      if (!p->automatic && !p->svg) printf(",\"vectorCost\":%zu", features.vector_cost);
+    }
     if (!p->region && !fz_is_empty_rect(text_bounds) && !fz_is_infinite_rect(text_bounds) &&
         isfinite(text_bounds.x0) && isfinite(text_bounds.y0) && isfinite(text_bounds.x1) && isfinite(text_bounds.y1))
       printf(",\"textBounds\":[%.9g,%.9g,%.9g,%.9g]", text_bounds.x0, text_bounds.y0, text_bounds.x1, text_bounds.y1);

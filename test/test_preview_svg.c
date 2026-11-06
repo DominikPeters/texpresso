@@ -23,6 +23,11 @@ int main(void)
     fz_display_list *list = page(ctx, i != 0, i != 2, i == 3, i == 4 ? FZ_BLEND_MULTIPLY : FZ_BLEND_NORMAL);
     const char *reason = txp_preview_svg_fallback(ctx, list);
     assert((reason != NULL) == (i >= 2));
+    txp_render_features features;
+    txp_preview_render_features(ctx, list, &features);
+    assert(features.paths == 1 && features.path_bytes > 0 && features.glyphs == 0);
+    assert(features.groups == (i != 0));
+    assert(features.svg_eligible == (i < 2));
     fz_drop_display_list(ctx, list);
   }
   for (int flag = 0; flag < 4; flag++) {
@@ -36,6 +41,9 @@ int main(void)
     fz_fill_image(ctx, dev, image, fz_scale(100, 100), 1, fz_default_color_params);
     fz_close_device(ctx, dev); fz_drop_device(ctx, dev);
     assert((txp_preview_svg_fallback(ctx, list) != NULL) == (flag != 0));
+    txp_render_features features;
+    txp_preview_render_features(ctx, list, &features);
+    assert(features.images == 1 && features.image_pixels == 4 && !features.svg_eligible);
     fz_drop_display_list(ctx, list); fz_drop_image(ctx, image); fz_drop_pixmap(ctx, pix);
   }
   /* Text fitting ignores figures, preserves translated page coordinates, and
@@ -56,6 +64,11 @@ int main(void)
   fz_rect bounds = txp_preview_text_bounds(ctx, list);
   assert(bounds.x0 > 115 && bounds.x0 < 125 && bounds.x1 > 150 && bounds.x1 < 220);
   assert(bounds.y0 > 180 && bounds.y1 < 210);
+  txp_render_features features;
+  txp_preview_render_features(ctx, list, &features);
+  assert(features.glyphs == 10 && features.text_spans > 0 && features.fonts == 1);
+  assert(features.unique_glyphs > 0 && features.unique_glyphs < features.glyphs && !features.glyph_overflow);
+  assert(!features.font_overflow && features.paths == 1 && features.svg_eligible);
   fz_drop_path(ctx, path); fz_drop_text(ctx, text); fz_drop_font(ctx, font); fz_drop_display_list(ctx, list);
   fz_drop_context(ctx);
   puts("PASS: SVG keeps ordinary vectors and isolated opacity; falls back for non-isolation, knockout, blending");
