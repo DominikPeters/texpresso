@@ -9,6 +9,26 @@
 #include <stdlib.h>
 #include <errno.h>
 
+/* MuPDF's locale-independent %g uses PDF syntax (.5 and -.5). Preserve its
+ * float precision, but include the integer digit required by JSON. */
+static void json_number(fz_context *ctx, fz_buffer *out, float value)
+{
+  char text[64];
+  fz_snprintf(text, sizeof text, "%g", value);
+  const char *digits = text;
+  if (*digits == '-') { fz_append_byte(ctx, out, '-'); digits++; }
+  if (*digits == '.') fz_append_byte(ctx, out, '0');
+  fz_append_string(ctx, out, digits);
+}
+static void json_bounds(fz_context *ctx, fz_buffer *out, fz_rect b)
+{
+  fz_append_byte(ctx, out, '['); json_number(ctx, out, b.x0);
+  fz_append_byte(ctx, out, ','); json_number(ctx, out, b.y0);
+  fz_append_byte(ctx, out, ','); json_number(ctx, out, b.x1);
+  fz_append_byte(ctx, out, ','); json_number(ctx, out, b.y1);
+  fz_append_byte(ctx, out, ']');
+}
+
 static int unhex(unsigned char c)
 {
   if (c >= '0' && c <= '9') return c - '0';
@@ -61,8 +81,10 @@ static bool figure(fz_context *ctx, dvi_context *dc, dvi_state *st, const char *
       fabsf(b.x1)>=1e9f || fabsf(b.y1)>=1e9f) return true;
   fz_append_data(ctx,dc->annotation_figure_bounds,&b,sizeof b);
   fz_append_printf(ctx,dc->annotation_figures,
-    "%s{\"bounds\":[%g,%g,%g,%g],\"file\":%q,\"line\":%d,\"endLine\":%d}",
-    dc->annotation_figure_count++ ? ",":"",b.x0,b.y0,b.x1,b.y1,source.file,source.line,source.end_line);
+    "%s{\"bounds\":", dc->annotation_figure_count++ ? ",":"");
+  json_bounds(ctx, dc->annotation_figures, b);
+  fz_append_printf(ctx, dc->annotation_figures, ",\"file\":%q,\"line\":%d,\"endLine\":%d}",
+    source.file, source.line, source.end_line);
   return true;
 }
 
@@ -113,8 +135,9 @@ void dvi_annotation_bounds(fz_context *ctx, dvi_context *dc, fz_rect b)
       !isfinite(b.x0) || !isfinite(b.y0) || !isfinite(b.x1) || !isfinite(b.y1) ||
       fabsf(b.x0) >= 1e9f || fabsf(b.y0) >= 1e9f || fabsf(b.x1) >= 1e9f || fabsf(b.y1) >= 1e9f ||
       fz_is_empty_rect(b) || fz_is_infinite_rect(b)) return;
-  fz_append_printf(ctx, dc->annotation_links, "%s{\"bounds\":[%g,%g,%g,%g],\"uri\":%q}",
-    dc->annotation_link_count++ ? "," : "", b.x0, b.y0, b.x1, b.y1, dc->annotation_uri);
+  fz_append_printf(ctx, dc->annotation_links, "%s{\"bounds\":", dc->annotation_link_count++ ? "," : "");
+  json_bounds(ctx, dc->annotation_links, b);
+  fz_append_printf(ctx, dc->annotation_links, ",\"uri\":%q}", dc->annotation_uri);
 }
 bool dvi_annotation_special(fz_context *ctx, dvi_context *dc, dvi_state *st, const char *data, size_t len)
 {
@@ -146,8 +169,14 @@ bool dvi_annotation_special(fz_context *ctx, dvi_context *dc, dvi_state *st, con
   if (name) {
     if (dc->annotation_destinations && dc->annotation_destination_count < 4096 && dc->annotation_destinations->len + 6 * strlen(name) + 100 < 128 * 1024 - 128) {
       fz_point p = fz_transform_point(fz_make_point(0, 0), dvi_get_ctm(dc, st));
-      fz_append_printf(ctx, dc->annotation_destinations, "%s{\"name\":%q,\"x\":%g,\"y\":%g}",
-        dc->annotation_destination_count++ ? "," : "", name, p.x, p.y);
+      if (isfinite(p.x) && isfinite(p.y) && fabsf(p.x)<1e9f && fabsf(p.y)<1e9f) {
+        fz_append_printf(ctx, dc->annotation_destinations, "%s{\"name\":%q,\"x\":",
+          dc->annotation_destination_count++ ? "," : "", name);
+        json_number(ctx, dc->annotation_destinations, p.x);
+        fz_append_string(ctx, dc->annotation_destinations, ",\"y\":");
+        json_number(ctx, dc->annotation_destinations, p.y);
+        fz_append_byte(ctx, dc->annotation_destinations, '}');
+      }
     }
     fz_free(ctx, name); return true;
   }
@@ -209,8 +238,10 @@ fz_buffer *dvi_annotations_refresh_figures(fz_context *ctx, fz_buffer *base,
       memcpy(file,sources->data+pos,(size_t)record[2]); file[record[2]]=0; pos+=(size_t)record[2];
       memcpy(&b,bounds->data+i*sizeof b,sizeof b);
       fz_append_printf(ctx,result,
-        "%s{\"bounds\":[%g,%g,%g,%g],\"file\":%q,\"line\":%d,\"endLine\":%d}",
-        i ? ",":"",b.x0,b.y0,b.x1,b.y1,file,record[0],record[1]);
+        "%s{\"bounds\":", i ? ",":"");
+      json_bounds(ctx, result, b);
+      fz_append_printf(ctx, result, ",\"file\":%q,\"line\":%d,\"endLine\":%d}",
+        file, record[0], record[1]);
       if (result->len-figure_start>256*1024) {
         fz_drop_buffer(ctx,result); result=NULL; break;
       }

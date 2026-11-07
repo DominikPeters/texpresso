@@ -79,9 +79,41 @@ static void test_figure_cache(fz_context *ctx)
   fz_drop_buffer(ctx,before); fz_drop_buffer(ctx,after); fz_drop_buffer(ctx,restored);
   fz_drop_buffer(ctx,a); fz_drop_buffer(ctx,b); fz_drop_buffer(ctx,c); incdvi_free(ctx,d);
 }
+static void test_json_fractions(fz_context *ctx)
+{
+  dvi_context *dc=dvi_context_new(ctx,(dvi_reshooks){0});
+  dvi_context_begin_frame(ctx,dc,NULL);
+  dc->annotation_uri="#fraction";
+  fz_rect bounds=fz_make_rect(.25f,-.5f,.75f,.5f);
+  dvi_annotation_bounds(ctx,dc,bounds);
+  dc->root.gs.ctm=fz_translate(.25f,-.5f);
+  const char *dest="pdf:dest (fraction) [@thispage /XYZ @xpos @ypos null]";
+  assert(dvi_annotation_special(ctx,dc,&dc->root,dest,strlen(dest)));
+  const char *fig="texpresso:figure 0 0 65536 131072 3 7 6d61696e2e746578";
+  assert(dvi_annotation_special(ctx,dc,&dc->root,fig,strlen(fig)));
+  fz_buffer *json=dvi_annotations(ctx,dc); fz_terminate_buffer(ctx,json);
+  assert(strstr((char *)json->data,"\"bounds\":[0.25,-0.5,0.75,0.5]"));
+  assert(strstr((char *)json->data,"\"x\":0.25,\"y\":-0.5"));
+  assert(strstr((char *)json->data,"\"figures\":[{\"bounds\":[0.25,-0.5,"));
+  fz_drop_buffer(ctx,json);
+  /* Figure routing refresh must use the same JSON formatting on a cache hit. */
+  fz_buffer *base=dvi_annotations_base(ctx,dc), *rects=fz_new_buffer(ctx,32), *sources=fz_new_buffer(ctx,32);
+  const int32_t record[]={3,8,8};
+  fz_append_data(ctx,rects,&bounds,sizeof bounds);
+  fz_append_data(ctx,sources,record,sizeof record); fz_append_string(ctx,sources,"main.tex");
+  json=dvi_annotations_refresh_figures(ctx,base,rects,sources); assert(json); fz_terminate_buffer(ctx,json);
+  assert(strstr((char *)json->data,"\"figures\":[{\"bounds\":[0.25,-0.5,0.75,0.5]"));
+  fz_drop_buffer(ctx,json); fz_drop_buffer(ctx,base); fz_drop_buffer(ctx,rects); fz_drop_buffer(ctx,sources);
+  /* Invalid transformed destinations must not put NaN or infinity on the wire. */
+  dvi_context_begin_frame(ctx,dc,NULL); dc->root.gs.ctm=fz_translate(NAN,INFINITY);
+  assert(dvi_annotation_special(ctx,dc,&dc->root,dest,strlen(dest)));
+  assert(dc->annotation_destination_count==0);
+  dvi_context_free(ctx,dc);
+}
 int main(void)
 {
   fz_context *ctx=fz_new_context(NULL,NULL,FZ_STORE_DEFAULT);assert(ctx);
+  test_json_fractions(ctx);
   test_figure_cache(ctx);
   incdvi_t *d=incdvi_new(ctx,(dvi_reshooks){0});
   assert(incdvi_destination_page(ctx,d,"unread")==-1);
