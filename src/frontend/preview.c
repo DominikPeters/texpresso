@@ -248,7 +248,8 @@ bool txp_preview_dirty_rect(fz_context *ctx, fz_pixmap *before, fz_pixmap *after
 typedef struct {
   uint64_t token;
   int width, mode, vector_limit, image_width, image_height;
-  bool themed, inverted, svg, eligible;
+  bool themed, inverted, svg, eligible, surface;
+  fz_irect clip;
   uint32_t foreground, background;
   size_t vector_cost, charge;
   unsigned long used;
@@ -285,6 +286,7 @@ static fz_rect cached_text_bounds(fz_context *ctx, txp_preview *p, fz_display_li
 
 void txp_preview_drop_cache(fz_context *ctx, txp_preview *p)
 {
+  txp_preview_release(ctx, p, 0);
   if (!p->export_cache) return;
   for (int i=0;i<EXPORT_CACHE_ENTRIES;i++) {
     fz_drop_buffer(ctx,p->export_cache->entries[i].bytes);
@@ -292,12 +294,14 @@ void txp_preview_drop_cache(fz_context *ctx, txp_preview *p)
   }
   fz_free(ctx,p->export_cache); p->export_cache=NULL;
 }
+
 static bool export_key(export_entry *e, txp_preview *p, fz_rect bounds, txp_renderer_config *c)
 {
   return e->token && e->token==p->content_token && e->width==p->width &&
     e->mode==(p->svg?1:p->automatic?2:0) && e->vector_limit==p->vector_limit &&
     e->themed==c->themed_color && e->inverted==c->invert_color &&
     e->foreground==c->foreground_color && e->background==c->background_color &&
+    e->surface==p->surface && (!p->surface || !memcmp(&e->clip,&p->clip,sizeof p->clip)) &&
     !memcmp(&e->bounds,&bounds,sizeof bounds);
 }
 static export_entry *export_lookup(txp_preview *p, fz_rect bounds, txp_renderer_config *c)
@@ -341,6 +345,7 @@ static void export_remember(fz_context *ctx, txp_preview *p, fz_rect bounds, txp
     .vector_limit=p->vector_limit,.image_width=width,.image_height=height,.themed=c->themed_color,.inverted=c->invert_color,
     .svg=svg,.eligible=eligible,.foreground=c->foreground_color,.background=c->background_color,.vector_cost=cost,
     .charge=charge,.used=++cache->clock,.bounds=bounds,.fallback=fallback,
+    .surface=p->surface,.clip=p->surface?p->clip:(fz_irect){0,0,0,0},
     .bytes=fz_keep_buffer(ctx,bytes),.pixels=fz_keep_pixmap(ctx,pixels)};
   cache->bytes+=charge;
 }
@@ -350,6 +355,7 @@ void txp_preview_init(txp_preview *p)
   memset(p, 0, sizeof *p);
   p->revision = 1;
   p->max_pixels = TXP_PREVIEW_DEFAULT_PIXELS;
+  p->surface_pixels = TXP_PREVIEW_MAX_PIXELS;
   p->last_count = p->last_page = p->last_revision = p->last_sequence = p->last_complete = -1;
   p->stopped_revision = p->stopped_sequence = -1;
 }
@@ -385,6 +391,12 @@ void txp_preview_stopped(txp_preview *p, int count)
   p->stopped_sequence = p->sequence;
 }
 
+/* Rows of a page that is `width` device pixels wide. The last row may be
+ * partly covered; the tolerance keeps float noise in the page size from adding
+ * a row that the same page has not got at a neighbouring zoom. */
+static double grid_height(float w, float h, int width)
+{ return fmax(1.0, ceil((double)h * width / (double)w - 1e-4)); }
+
 /* Allocate exact integer bounds: shrinking every image by 0.1% caused needless
  * resampling even below the area cap. The requested width is already in device
  * pixels. Keep the dimension/area guards for large zooms and unusual page sizes. */
@@ -402,6 +414,142 @@ fz_irect txp_preview_raster_size(float w, float h, int requested_width, int max_
     } else height = max_pixels;
   }
   return (fz_irect){0, 0, width, height};
+}
+
+bool txp_preview_page_grid(fz_rect page, int grid_width, txp_preview_grid *grid)
+{
+  float w = page.x1 - page.x0, h = page.y1 - page.y0;
+  if (!isfinite(w) || !isfinite(h) || w < 0.01f || h < 0.01f || grid_width < 1 || grid_width > TXP_PREVIEW_MAX_GRID)
+    return false;
+  double height = grid_height(w, h, grid_width);
+  if (height > 1048576.0) return false; /* MuPDF's edge list clamps at 2^20. */
+  /* One expression for every caller: a clip never derives its own scale. */
+  *grid = (txp_preview_grid){(float)((double)grid_width / (double)w), grid_width, (int)height};
+  return true;
+}
+
+static fz_matrix grid_matrix(fz_rect page, const txp_preview_grid *grid)
+{ return fz_concat(fz_translate(-page.x0, -page.y0), fz_scale(grid->scale, grid->scale)); }
+
+fz_irect txp_preview_surface_clip(const txp_preview_grid *grid, fz_irect requested, int max_pixels)
+{
+  max_pixels = fz_clampi(max_pixels, 1, TXP_PREVIEW_MAX_PIXELS);
+  fz_irect clip = {fz_maxi(requested.x0, 0), fz_maxi(requested.y0, 0),
+    fz_mini(requested.x1, grid->width), fz_mini(requested.y1, grid->height)};
+  if (clip.x1 <= clip.x0 || clip.y1 <= clip.y0) return (fz_irect){0, 0, 0, 0};
+  /* Density is never reduced to fit: the rectangle is. */
+  if (clip.x1 - clip.x0 > 8192) clip.x1 = clip.x0 + 8192;
+  if (clip.y1 - clip.y0 > 8192) clip.y1 = clip.y0 + 8192;
+  if (clip.x1 - clip.x0 > max_pixels) clip.x1 = clip.x0 + max_pixels;
+  int rows = max_pixels / (clip.x1 - clip.x0);
+  if (clip.y1 - clip.y0 > rows) clip.y1 = clip.y0 + rows;
+  return clip;
+}
+
+/* MuPDF's scan converter is not invariant under its clip: an edge that
+ * crosses the clip boundary is re-interpolated there, which shifts antialiased
+ * coverage along the rest of that edge by a few levels. Glyph bitmaps are
+ * unaffected. A rectangle drawn in one pass therefore differs from the same
+ * pixels of a larger rectangle wherever a path crosses its border.
+ *
+ * Each pixel is instead produced by rasterizing its cell of a fixed lattice
+ * anchored at the page origin, clipped only by the page itself. A request is
+ * a union of cells, so every rectangle of a grid agrees with every other one
+ * exactly, and unchanged content keeps its pixels when the rectangle moves. */
+fz_pixmap *txp_preview_draw_cells(fz_context *ctx, fz_display_list *list, fz_rect page,
+                                  const txp_preview_grid *grid, fz_irect clip, int cell)
+{
+  fz_pixmap *pix = NULL, *view = NULL;
+  fz_device *dev = NULL;
+  fz_matrix ctm = grid_matrix(page, grid);
+  fz_var(pix); fz_var(view); fz_var(dev);
+  fz_try(ctx) {
+    /* Allocate only the clip. Device origins stay in the pixmaps, so the
+     * rasterizer sees page coordinates, never clip-relative ones. */
+    pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), clip, NULL, 0);
+    fz_clear_pixmap_with_value(ctx, pix, 255);
+    for (int y = clip.y0 / cell * cell; y < clip.y1; y += cell)
+      for (int x = clip.x0 / cell * cell; x < clip.x1; x += cell) {
+        fz_irect whole = {x, y, fz_mini(x + cell, grid->width), fz_mini(y + cell, grid->height)};
+        fz_irect part = fz_intersect_irect(whole, clip);
+        if (fz_is_empty_irect(part)) continue;
+        bool direct = part.x0 == whole.x0 && part.y0 == whole.y0 && part.x1 == whole.x1 && part.y1 == whole.y1;
+        if (direct) {
+          /* A view with the destination's stride, at the cell's device origin. */
+          view = fz_new_pixmap_with_data(ctx, fz_device_rgb(ctx), whole.x1 - whole.x0, whole.y1 - whole.y0, NULL, 0,
+            pix->stride, pix->samples + (size_t)(whole.y0 - clip.y0) * pix->stride + (size_t)(whole.x0 - clip.x0) * 3);
+          view->x = whole.x0; view->y = whole.y0;
+        } else {
+          /* A rectangle off the lattice still gets canonical pixels. */
+          view = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), whole, NULL, 0);
+          fz_clear_pixmap_with_value(ctx, view, 255);
+        }
+        dev = fz_new_draw_device(ctx, fz_identity, view);
+        fz_run_display_list(ctx, list, dev, ctm, fz_rect_from_irect(whole), NULL);
+        fz_close_device(ctx, dev);
+        fz_drop_device(ctx, dev); dev = NULL;
+        if (!direct) for (int row = part.y0; row < part.y1; row++)
+          memcpy(pix->samples + (size_t)(row - clip.y0) * pix->stride + (size_t)(part.x0 - clip.x0) * 3,
+                 view->samples + (size_t)(row - whole.y0) * view->stride + (size_t)(part.x0 - whole.x0) * 3,
+                 (size_t)(part.x1 - part.x0) * 3);
+        fz_drop_pixmap(ctx, view); view = NULL;
+      }
+  }
+  fz_always(ctx) { fz_drop_device(ctx, dev); fz_drop_pixmap(ctx, view); }
+  fz_catch(ctx) { fz_drop_pixmap(ctx, pix); fz_rethrow(ctx); }
+  return pix;
+}
+
+fz_pixmap *txp_preview_draw(fz_context *ctx, fz_display_list *list, fz_rect page,
+                            const txp_preview_grid *grid, fz_irect clip)
+{
+  return txp_preview_draw_cells(ctx, list, page, grid, clip, TXP_PREVIEW_CELL);
+}
+
+txp_preview_raster *txp_preview_retained(txp_preview *p, int id)
+{
+  if (id > 0) for (int i = 0; i < TXP_PREVIEW_RETAINED; i++)
+    if (p->retained[i].id == id && p->retained[i].pixels) {
+      p->retained[i].used = ++p->retained_clock;
+      return &p->retained[i];
+    }
+  return NULL;
+}
+
+void txp_preview_release(fz_context *ctx, txp_preview *p, int id)
+{
+  for (int i = 0; i < TXP_PREVIEW_RETAINED; i++) if (!id || p->retained[i].id == id) {
+    fz_drop_pixmap(ctx, p->retained[i].pixels);
+    p->retained[i] = (txp_preview_raster){0};
+  }
+}
+
+static size_t raster_bytes(fz_pixmap *pix) { return pix ? (size_t)pix->stride * pix->h : 0; }
+
+/* The set is bounded by one budget's worth of RGB samples, however it is
+ * divided between surfaces. Least recently named rasters leave first. */
+void txp_preview_retain(fz_context *ctx, txp_preview *p, int id, int page, fz_rect bounds,
+                        int grid_width, fz_pixmap *pixels)
+{
+  size_t budget = (size_t)fz_clampi(fz_maxi(p->max_pixels, p->surface_pixels), 1, TXP_PREVIEW_MAX_PIXELS) * 3;
+  if (id <= 0 || !pixels || raster_bytes(pixels) > budget) return;
+  txp_preview_release(ctx, p, id);
+  for (;;) {
+    size_t total = raster_bytes(pixels);
+    int slot = -1, oldest = -1;
+    for (int i = 0; i < TXP_PREVIEW_RETAINED; i++) {
+      if (!p->retained[i].pixels) { slot = i; continue; }
+      total += raster_bytes(p->retained[i].pixels);
+      if (oldest < 0 || p->retained[i].used < p->retained[oldest].used) oldest = i;
+    }
+    if (slot >= 0 && total <= budget) {
+      p->retained[slot] = (txp_preview_raster){id, page, grid_width, bounds,
+        fz_pixmap_bbox(ctx, pixels), fz_keep_pixmap(ctx, pixels), ++p->retained_clock};
+      return;
+    }
+    fz_drop_pixmap(ctx, p->retained[oldest].pixels);
+    p->retained[oldest] = (txp_preview_raster){0};
+  }
 }
 
 void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, int page, txp_renderer *renderer)
@@ -422,6 +570,8 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
   struct timespec export_start;
   clock_gettime(CLOCK_MONOTONIC, &export_start);
   fz_pixmap *pix = NULL, *crop = NULL;
+  txp_preview_grid grid = {0};
+  fz_irect clip = {0};
   fz_buffer *png = NULL;
   fz_device *dev = NULL;
   fz_output *out = NULL;
@@ -431,7 +581,7 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
   bool patch = false;
   fz_irect dirty = {0};
   int image_width = 0, image_height = 0;
-  fz_var(pix); fz_var(crop); fz_var(patch); fz_var(dirty);
+  fz_var(pix); fz_var(crop); fz_var(patch); fz_var(dirty); fz_var(grid); fz_var(clip);
   fz_var(png);
   fz_var(dev); fz_var(out); fz_var(fallback); fz_var(svg); fz_var(svg_eligible); fz_var(vector_cost);
   fz_try(ctx)
@@ -498,17 +648,30 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     if (p->automatic) fallback = NULL; /* PNG is an ordinary Auto choice. */
     if (!svg)
     {
+      /* Only the opt-in surface protocol uses canonical lattice pixels.
+       * Keep legacy pages and magnifier regions byte-compatible with clients
+       * such as TeXstudio that have not adopted surfaces. */
+      if (p->surface) {
+        if (!txp_preview_page_grid(b, p->width, &grid)) fz_throw(ctx, FZ_ERROR_GENERIC, "Invalid surface grid");
+        clip = txp_preview_surface_clip(&grid, p->clip, p->surface_pixels);
+        if (fz_is_empty_irect(clip)) fz_throw(ctx, FZ_ERROR_GENERIC, "Surface is outside the page");
+      } else if (!p->region) {
+        clip = txp_preview_raster_size(w, h, p->width, p->max_pixels);
+        if (!txp_preview_page_grid(b, clip.x1, &grid)) fz_throw(ctx, FZ_ERROR_GENERIC, "Invalid page grid");
+      }
       if (!pix && !png) {
       double draw_start = txp_profile_now();
-      fz_irect bbox = txp_preview_raster_size(w, h, p->width, p->max_pixels);
-      float scale = fminf((float)bbox.x1 / w, (float)bbox.y1 / h);
-      fz_matrix ctm = fz_concat(fz_translate(-b.x0, -b.y0), fz_scale(scale, scale));
-      /* Allocate only the clipped region, never a full page at loupe resolution. */
-      pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), bbox, NULL, 0);
-      fz_clear_pixmap_with_value(ctx, pix, 255);
-      dev = fz_new_draw_device(ctx, fz_identity, pix);
-      fz_run_display_list(ctx, list, dev, ctm, fz_rect_from_irect(bbox), NULL);
-      fz_close_device(ctx, dev);
+      if (!p->surface) {
+        fz_irect bbox = txp_preview_raster_size(w, h, p->width, p->max_pixels);
+        float scale = fminf((float)bbox.x1 / w, (float)bbox.y1 / h);
+        fz_matrix ctm = fz_concat(fz_translate(-b.x0, -b.y0), fz_scale(scale, scale));
+        /* Allocate only the clipped region, never a full page at loupe resolution. */
+        pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), bbox, NULL, 0);
+        fz_clear_pixmap_with_value(ctx, pix, 255);
+        dev = fz_new_draw_device(ctx, fz_identity, pix);
+        fz_run_display_list(ctx, list, dev, ctm, fz_rect_from_irect(bbox), NULL);
+        fz_close_device(ctx, dev);
+      } else pix = txp_preview_draw(ctx, list, b, &grid, clip);
       txp_profile_record("png-draw", draw_start, p->request, page, 0);
       double color_start = txp_profile_now();
       txp_renderer_colorize_rgb(ctx, renderer, pix);
@@ -516,10 +679,14 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
       }
       if (pix) { image_width = fz_pixmap_width(ctx, pix); image_height = fz_pixmap_height(ctx, pix); }
       double compare_start = txp_profile_now();
-      patch = pix && p->patches && !p->background && !p->region && p->patch_base > 0 && p->patch_base == p->previous_id &&
-        page == p->previous_page && b.x0 == p->previous_bounds.x0 && b.y0 == p->previous_bounds.y0 &&
-        b.x1 == p->previous_bounds.x1 && b.y1 == p->previous_bounds.y1 &&
-        txp_preview_dirty_rect(ctx, p->previous_png, pix, &dirty) &&
+      /* Compare at the resolution being displayed, against the raster the
+       * client names. Any difference in page, grid or rectangle is a keyframe. */
+      txp_preview_raster *base = pix && p->patches && !p->region && (p->surface || !p->background)
+        ? txp_preview_retained(p, p->patch_base) : NULL;
+      patch = base && page == base->page && grid.width == base->grid_width &&
+        b.x0 == base->bounds.x0 && b.y0 == base->bounds.y0 &&
+        b.x1 == base->bounds.x1 && b.y1 == base->bounds.y1 &&
+        txp_preview_dirty_rect(ctx, base->pixels, pix, &dirty) &&
         (double)(dirty.x1 - dirty.x0) * (dirty.y1 - dirty.y0) <= (double)image_width * image_height * 0.4;
       txp_profile_record("png-compare", compare_start, p->request, page, patch ? (dirty.x1-dirty.x0)*(dirty.y1-dirty.y0) : 0);
       double encode_start = txp_profile_now();
@@ -544,7 +711,8 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
     else if (!patch && !cached->bytes) export_remember(ctx,p,b,config,png,pix,svg,svg_eligible,vector_cost,fallback,image_width,image_height);
     unsigned char *data;
     size_t len = fz_buffer_storage(ctx, png, &data);
-    if (len > (svg || p->max_pixels <= TXP_PREVIEW_DEFAULT_PIXELS ? 16u * 1024u * 1024u : TXP_PREVIEW_PNG_BYTES))
+    int frame_pixels = p->surface ? p->surface_pixels : p->max_pixels;
+    if (len > (svg || frame_pixels <= TXP_PREVIEW_DEFAULT_PIXELS ? 16u * 1024u * 1024u : TXP_PREVIEW_PNG_BYTES))
       fz_throw(ctx, FZ_ERROR_GENERIC, "Preview image exceeds the transfer budget");
     fz_rect text_bounds = fz_empty_rect;
     if (!p->region) {
@@ -569,7 +737,10 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
       printf(",\"textBounds\":[%.9g,%.9g,%.9g,%.9g]", text_bounds.x0, text_bounds.y0, text_bounds.x1, text_bounds.y1);
     if ((p->automatic || p->svg) && !p->region)
       printf(",\"svgEligible\":%s,\"vectorCost\":%zu", svg_eligible ? "true" : "false", vector_cost);
-    if (!svg && !p->region && !p->background && p->patches) printf(",\"rasterId\":%d", p->request);
+    bool identified = !svg && !p->region && p->patches && (p->surface || !p->background);
+    if (!svg && p->surface) printf(",\"grid\":[%d,%d],\"clip\":[%d,%d,%d,%d]",
+      grid.width, grid.height, clip.x0, clip.y0, clip.x1, clip.y1);
+    if (identified) printf(",\"rasterId\":%d", p->request);
     if (patch) printf(",\"patch\":{\"base\":%d,\"rect\":[%d,%d,%d,%d]}",
       p->patch_base, dirty.x0, dirty.y0, dirty.x1-dirty.x0, dirty.y1-dirty.y0);
     if (fallback) printf(",\"fallback\":\"%s\"", fallback);
@@ -581,12 +752,15 @@ void txp_preview_export(fz_context *ctx, txp_preview *p, fz_display_list *list, 
       _Exit(1); /* A partial binary frame cannot be recovered. */
     if (fflush(stdout) != 0) _Exit(1);
     txp_profile_record("pipe-write", transfer_start, p->request, page, len);
-    if (!p->region && !p->background) {
-      fz_drop_pixmap(ctx, p->previous_png); p->previous_png = NULL; p->previous_id = 0;
-      if (!svg && p->patches) {
-        p->previous_png = fz_keep_pixmap(ctx, pix); p->previous_bounds = b;
-        p->previous_page = page; p->previous_id = p->request;
-      }
+    if (p->surface) {
+      /* The named base is superseded whether it was patched or replaced. Other
+       * surfaces stay available until the budget needs their room. */
+      if (p->patch_base > 0) txp_preview_release(ctx, p, p->patch_base);
+      if (identified) txp_preview_retain(ctx, p, p->request, page, b, grid.width, pix);
+    } else if (!p->region && !p->background) {
+      /* Legacy pages keep a single comparison raster. */
+      txp_preview_release(ctx, p, 0);
+      if (identified) txp_preview_retain(ctx, p, p->request, page, b, grid.width, pix);
     }
   }
   fz_always(ctx)

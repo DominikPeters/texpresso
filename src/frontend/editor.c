@@ -1,3 +1,4 @@
+#include "preview.h"
 #include "editor.h"
 #include "driver.h"
 #include "vstack.h"
@@ -475,16 +476,17 @@ bool editor_parse(fz_context *ctx,
       .preview_inverse={.revision=a[1],.sequence=a[2],.page=a[3],.x=xy[0],.y=xy[1],
         .request=a[0],.precise=true,.prepare=val_bool(ctx,prepare),.restricted=restricted,.tags=tags,.tag_count=count}};
   }
-  else if (strcmp(verb, "preview-background") == 0 || strcmp(verb, "preview-png") == 0 || strcmp(verb, "preview-auto") == 0 || strcmp(verb, "preview-svg") == 0 || strcmp(verb, "preview-render") == 0 || strcmp(verb, "preview-region") == 0 || strcmp(verb, "preview-inverse") == 0)
+  else if (strcmp(verb, "preview-background") == 0 || strcmp(verb, "preview-png") == 0 || strcmp(verb, "preview-auto") == 0 || strcmp(verb, "preview-svg") == 0 || strcmp(verb, "preview-render") == 0 || strcmp(verb, "preview-region") == 0 || strcmp(verb, "preview-surface") == 0 || strcmp(verb, "preview-inverse") == 0)
   {
+    bool surface = strcmp(verb, "preview-surface") == 0;
     bool background = strcmp(verb, "preview-background") == 0;
     bool region = strcmp(verb, "preview-region") == 0;
     bool png = strcmp(verb, "preview-png") == 0;
     bool automatic = strcmp(verb, "preview-auto") == 0;
     bool svg = strcmp(verb, "preview-svg") == 0;
-    bool render = background || png || automatic || svg || region || strcmp(verb, "preview-render") == 0;
-    if (background ? len != 8 : automatic ? (len != 7 && len != 8) : len != (region ? 10 : png ? 7 : 6)) goto arity;
-    double a[9] = {0};
+    bool render = background || png || automatic || svg || region || surface || strcmp(verb, "preview-render") == 0;
+    if (surface ? len != 14 : background ? len != 8 : automatic ? (len != 7 && len != 8) : len != (region ? 10 : png ? 7 : 6)) goto arity;
+    double a[13] = {0};
     for (int i = 0; i < len - 1; ++i)
     {
       val v = val_array_get(ctx, stack, command, i + 1);
@@ -493,7 +495,20 @@ bool editor_parse(fz_context *ctx,
       if (!isfinite(a[i]) || fabs(a[i]) > INT_MAX || (i < 5 && a[i] < 0)) goto arguments;
       if ((render ? i < 5 : i < 3) && floor(a[i]) != a[i]) goto arguments;
     }
-    if (render)
+    if (surface)
+    {
+      /* requestId, page, gridWidth, revision, sequence, x0, y0, x1, y1,
+       * codec, vectorLimit, baseRasterId, background. */
+      for (int i = 5; i < 13; ++i) if (a[i] < 0 || floor(a[i]) != a[i]) goto arguments;
+      if (a[2] < 1 || a[2] > TXP_PREVIEW_MAX_GRID || a[1] > 100000 || a[7] <= a[5] || a[8] <= a[6] ||
+          a[9] > 2 || a[10] > 200000 || a[12] > 1) goto arguments;
+      *out = (struct editor_command){.tag = EDIT_PREVIEW_RENDER,
+        .preview_render = {.request = a[0], .page = a[1], .width = a[2], .revision = a[3], .sequence = a[4],
+          .svg = a[9] == 1, .automatic = a[9] == 2, .vector_limit = a[9] == 2 ? a[10] : 0,
+          .patches = true, .patch_base = a[11], .background = a[12] == 1, .surface = true,
+          .clip = {a[5], a[6], a[7], a[8]}}};
+    }
+    else if (render)
     {
       if (background) {
         if (a[5] < 0 || a[5] > 2 || floor(a[5]) != a[5] ||

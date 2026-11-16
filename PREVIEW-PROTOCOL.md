@@ -2,7 +2,7 @@
 
 `texpresso -capabilities` prints a JSON object and exits before initializing SDL
 or opening a document. Current features are `previewProtocol: 1`, `codecs:
-["png", "svg"]`, `synctex: true`, `regions: true`, `links: true`, `adaptiveRendering: true`, `pngPatches: true`, and `backgroundRendering: true`. Existing editor clients and the default native
+["png", "svg"]`, `synctex: true`, `regions: true`, `links: true`, `adaptiveRendering: true`, `pngPatches: true`, `surfaces: 1`, and `backgroundRendering: true`. Existing editor clients and the default native
 window are unchanged. This protocol is enabled only with `-headless -json`.
 Headless mode initializes SDL events/timers, never video/window/texture APIs.
 
@@ -64,6 +64,14 @@ Headless input additions are positional JSON arrays:
   and limits as `preview-render`; `bounds` describes the clipped rectangle.
   Allocates only its pixel region and clips display-list replay to that area.
   Clients must check the optional `regions` capability before using this command.
+* `["preview-surface", requestId, page, gridWidth, revision, sequence, x0, y0, x1, y1, codec, vectorLimit, baseRasterId, background]`:
+  render an integer device rectangle of a page at display density. Check the
+  `surfaces` capability first. See [Page grids and surfaces](#page-grids-and-surfaces).
+  All arguments are nonnegative integers. `gridWidth` is 1–65536. `codec` is 0
+  for PNG, 1 for SVG or 2 for Auto, with `vectorLimit` as for `preview-auto`
+  (0 otherwise). `baseRasterId` is a retained raster to compare against, or 0.
+  `background` is 1 for a speculative request with the lifecycle of
+  `preview-background`, else 0. It shares the single request slot.
 * `["preview-inverse", revision, sequence, page, x, y]`: run native SyncTeX
   against the current snapshot. Coordinates are MuPDF page-space points.
   Stale snapshots are ignored. The existing `synctex` notification returns
@@ -172,6 +180,67 @@ for preview color remapping, excessive vector complexity or embedded image size,
 failed export, or more than 16 MiB of SVG. Regions always use bounded PNGs.
 A client-side SVG decode failure can retry the same snapshot with PNG.
 
+## Page grids and surfaces
+
+A page's **grid** is named by one integer, `gridWidth`: the width of the
+complete page in device pixels. It fixes the scale `gridWidth / pageWidth` and
+the transform that maps the page's top-left corner to device `(0, 0)`. The grid
+is `gridWidth` columns by `ceil(pageHeight * gridWidth / pageWidth)` rows; a
+tolerance of 1e-4 rows keeps float noise in the page size from adding a row.
+Clients choose `gridWidth` as the page's displayed width in physical pixels and
+lay the page out at exactly that width, so one raster pixel is one device pixel.
+
+A **surface** is a rectangle `[x0, y0, x1, y1]` of that grid, with integer
+device coordinates and exclusive far edges. The engine clamps it to the page.
+Density is never reduced to fit a budget: a rectangle wider or taller than 8192
+pixels, or larger than the surface budget, loses columns and then rows from its
+far edges instead. The surface budget is the advertised `maxPreviewPixels`
+unless the engine was launched with `-preview-max-pixels N`, which bounds
+surfaces and whole pages alike. Without that option whole pages and regions
+keep their four-megapixel default, so a client that asks for both never
+receives a larger legacy page than before. Clients size rectangles within the
+surface budget and must use the returned `clip`. A PNG surface body may be up
+to 64 MiB when the surface budget exceeds four megapixels.
+
+A PNG surface frame is an ordinary `preview-image` with two more fields:
+
+```json
+{"bounds":[0,0,612,792],"grid":[3404,4405],"clip":[0,1024,2048,2560],"width":2048,"height":1536,"rasterId":7}
+```
+
+`bounds` is the **complete page** in page space, as for any full-page frame, so
+page geometry, `textBounds` and `annotations` do not depend on the rectangle.
+`grid` is the grid's size, `clip` the rectangle actually rendered, and `width`
+and `height` its pixel size. When Auto or SVG selects SVG the frame is an
+ordinary full-page SVG without `grid` or `clip`; when SVG falls back, the PNG
+is the requested surface, not a reduced whole page.
+
+**Every rectangle of a grid has the same pixels as the corresponding part of
+any other rectangle of that grid.** A shared transform is necessary for this
+but not sufficient: MuPDF's scan converter re-interpolates an edge where it
+crosses the clip, which shifts antialiased coverage along the rest of that edge
+by a few levels (glyph bitmaps are unaffected). The engine therefore produces
+each pixel by rasterizing its cell of a fixed 512-pixel lattice anchored at the
+grid origin, clipped only by the page. A surface is a union of cells, or of
+parts of cells copied from complete ones. Rectangles aligned to multiples of
+512 avoid rasterizing pixels that are then discarded. Legacy full-page PNGs keep
+their existing single-pass rasterizer and rounding, so their pixels need not
+match surfaces at the same nominal width. `preview-region` is a
+magnifier image with its own page-space rectangle and scale; it is **not** a
+grid rectangle and must not be composed with surfaces.
+
+Surface PNGs always carry `rasterId`. The engine retains the rasters it has
+identified, up to four and at most one surface budget of RGB samples in total;
+the least recently named leave first. A request naming a retained base
+with the same page, page bounds, grid and rectangle may be answered with a
+`patch`, computed by comparing the two rasters **at display density**; its
+`rect` is relative to the surface's own pixels. Any other base, including one
+whose rectangle differs, yields a complete surface. The named base is released
+once the response is sent, whether it was patched or replaced, because the
+client's pixels now correspond to the new `rasterId`. Other retained surfaces,
+for example those of other visible pages, are unaffected. Background surfaces
+can be identified and patched in the same way.
+
 ## PNG patches
 
 Opted-in full-page PNGs include `rasterId`. When the named base matches the
@@ -188,7 +257,8 @@ than 40% of the raster sends a full PNG. A mismatched or unknown base also sends
 a full PNG. Only one previous RGB raster is retained (at most 12,000,000 sample
 bytes under the four-megapixel budget). Source invalidation deliberately keeps
 it for the next comparison. Region renders do not replace it. A successful SVG
-or legacy full-page render releases it, and session teardown frees it.
+or legacy full-page render releases it, and session teardown frees it. Surface
+requests extend this single raster to a small identified set, described above.
 
 The client must acknowledge successful application before requesting dependent
 patches. A skipped frame, canvas eviction or webview reload can use base 0 to

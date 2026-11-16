@@ -151,7 +151,8 @@ static void usage(void)
           " -headless Export preview images over stdout (requires -json)\n"
           " -watch-parent Release isolated compiler group when its editor exits (headless only)\n"
           " -capabilities Print supported preview features as JSON and exit\n"
-          " -preview-max-pixels N Set PNG area budget (1..16000000; default 4000000)\n");
+          " -preview-max-pixels N Set PNG area budget (1..16000000; default 4000000,\n"
+          "                       or 16000000 for surface rectangles)\n");
 }
 
 int main(int argc, const char **argv)
@@ -189,6 +190,9 @@ int main(int argc, const char **argv)
   bool capabilities = 0;
   bool watch_parent = 0;
   int preview_max_pixels = TXP_PREVIEW_DEFAULT_PIXELS;
+  /* Whole pages keep the default unless a budget is given. Surfaces are sized
+   * by the client to its viewport, so their ceiling is the engine's own. */
+  int preview_surface_pixels = TXP_PREVIEW_MAX_PIXELS;
 
   size_t inclusion_path_size = 1;
   for (int i = 1; i < argc; i++)
@@ -216,7 +220,7 @@ int main(int argc, const char **argv)
           fprintf(stderr, "[error] -preview-max-pixels expects an integer in 1..%d\n", TXP_PREVIEW_MAX_PIXELS);
           return 1;
         }
-        preview_max_pixels = (int)pixels;
+        preview_max_pixels = preview_surface_pixels = (int)pixels;
       }
       else if (strcmp(arg, "-I") == 0)
       {
@@ -288,7 +292,7 @@ int main(int argc, const char **argv)
 
   if (capabilities)
   {
-    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"synctexPrecision\":1,\"regions\":true,\"links\":true,\"tikzFigures\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true,\"parentWatch\":true,\"packageProviders\":[\"texlive\",\"miktex\",\"miktex-windows\",\"tectonic\"],\"miktexAutoInstall\":true,\"miktexWindowsBridge\":true,\"pngCompression\":%s}\n", TXP_PREVIEW_MAX_PIXELS, TXP_PNG_COMPRESSION);
+    printf("{\"previewProtocol\":1,\"maxPreviewPixels\":%d,\"codecs\":[\"png\",\"svg\"],\"synctex\":true,\"synctexPrecision\":1,\"regions\":true,\"links\":true,\"tikzFigures\":true,\"adaptiveRendering\":true,\"pngPatches\":true,\"surfaces\":1,\"backgroundRendering\":true,\"prepareEdit\":true,\"requestLifecycle\":true,\"parentWatch\":true,\"packageProviders\":[\"texlive\",\"miktex\",\"miktex-windows\",\"tectonic\"],\"miktexAutoInstall\":true,\"miktexWindowsBridge\":true,\"pngCompression\":%s}\n", TXP_PREVIEW_MAX_PIXELS, TXP_PNG_COMPRESSION);
     return 0;
   }
   if (headless && protocol != EDITOR_JSON)
@@ -490,6 +494,7 @@ int main(int argc, const char **argv)
       .stream_mode = stream_mode,
       .headless = headless,
       .preview_max_pixels = preview_max_pixels,
+      .preview_surface_pixels = preview_surface_pixels,
       // In stream mode, start paused: editor primes the VFS before (resume).
       .paused = stream_mode,
       .rerun_enabled = false,
