@@ -1457,6 +1457,9 @@ static void interpret_command(struct persistent_state *ps,
         p->patch_base = cmd.preview_render.patch_base;
         float *bounds = cmd.preview_render.bounds;
         p->bounds = (fz_rect){bounds[0], bounds[1], bounds[2], bounds[3]};
+        p->surface = cmd.preview_render.surface;
+        p->clip = (fz_irect){cmd.preview_render.clip[0], cmd.preview_render.clip[1],
+          cmd.preview_render.clip[2], cmd.preview_render.clip[3]};
         p->expected_revision = cmd.preview_render.revision;
         p->expected_sequence = cmd.preview_render.sequence;
         if (p->page != ui->page || !p->valid)
@@ -1560,6 +1563,7 @@ bool texpresso_main(struct persistent_state *ps)
   ui_state raw_ui = {0}, *ui = &raw_ui;
   txp_preview_init(&ui->preview);
   ui->preview.max_pixels = ps->preview_max_pixels;
+  ui->preview.surface_pixels = ps->preview_surface_pixels;
 
   ui->window = ps->window;
 
@@ -2198,7 +2202,7 @@ bool texpresso_main(struct persistent_state *ps)
   fz_drop_buffer(ps->ctx, ui->preview.foreground_annotations);
   fz_drop_display_list(ps->ctx, ui->preview.background_list);
   txp_preview_drop_cache(ps->ctx, &ui->preview);
-  fz_drop_pixmap(ps->ctx, ui->preview.previous_png);
+  txp_preview_release(ps->ctx, &ui->preview, 0);
   txp_renderer_free(ps->ctx, ui->doc_renderer);
   send(destroy, ui->eng, ps->ctx);
 
