@@ -736,7 +736,9 @@ static void answer_query_impl(fz_context *ctx, struct tex_engine *self, query_t 
           {
             if (fs_path == q->open.path)
               fs_path = e->path;
-            e->fs_data = fz_read_file(ctx, fs_path);
+            fz_buffer *data = fz_read_file(ctx, fs_path);
+            fz_drop_buffer(ctx, e->fs_data);
+            e->fs_data = data;
             e->saved.level = FILE_READ;
             e->saved.read_from_filesystem = e->edit_data == NULL;
             stat(fs_path, &e->fs_stat);
@@ -745,7 +747,10 @@ static void answer_query_impl(fz_context *ctx, struct tex_engine *self, query_t 
       }
       else
       {
-        e->saved.data = fz_new_buffer(ctx, 1024);
+        fz_buffer *data = fz_new_buffer(ctx, 1024);
+        // The rollback log holds a separate reference when it needs this buffer.
+        fz_drop_buffer(ctx, e->saved.data);
+        e->saved.data = data;
         e->saved.level = level;
       }
 
