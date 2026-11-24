@@ -26,7 +26,7 @@ jobs:
               sudo snap install tectonic
 
           - label: macos
-            os: macos-14
+            os: macos-15
             container: ''
             install: |
               brew update
