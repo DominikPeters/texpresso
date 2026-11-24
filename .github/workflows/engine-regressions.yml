@@ -1,0 +1,48 @@
+name: Engine regressions
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native dependencies and TeX Live
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential libsdl2-dev libmupdf-dev libmujs-dev \
+            libfreetype-dev libgumbo-dev libjbig2dec0-dev libjpeg-dev \
+            libopenjp2-7-dev libfontconfig-dev libharfbuzz-dev \
+            libgraphite2-dev libicu-dev libpng-dev libleptonica-dev libtesseract-dev \
+            texlive-xetex texlive-pictures texlive-latex-extra python3-pil
+      - name: Build and run native regressions
+        run: |
+          make -j2 all
+          make test-dvi-strokes test-dvi-annotations test-preview-safety test-preview-png test-synctex test-engine-lifecycle
+      - name: Test TeX Live preview and rollback
+        run: |
+          make test-texpresso-texlive test-rerun
+          python3 test/test-checkpoint-cleanup.py build/texpresso
+          python3 test/test-synctex-beamer.py build/texpresso
+          /usr/bin/python3 test/test-graphics-preview.py build/texpresso texlive
+      - name: Install Tectonic
+        run: |
+          asset=tectonic-0.17.0-x86_64-unknown-linux-gnu.tar.gz
+          curl --fail --silent --show-error --location --retry 2 \
+            "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%400.17.0/$asset" \
+            --output "$RUNNER_TEMP/$asset"
+          echo "1a715688baf591e650c8aeb160ae934e181685eecbb38b317de30b269ac5d606  $RUNNER_TEMP/$asset" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP" tectonic
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Test Tectonic worker and preview
+        run: |
+          make fill-tectonic-cache test-tectonic test-texpresso-tectonic
+          /usr/bin/python3 test/test-graphics-preview.py build/texpresso tectonic

@@ -122,6 +122,11 @@ void dvi_context_end_frame(fz_context *ctx, dvi_context *dc)
 {
   dvi_context_flush_text(ctx, dc, &dc->root); dc->annotation_uri = NULL;
   dvi_scratch_clear(ctx, &dc->scratch);
+  // A page can end with a clip opened by an unsupported or malformed special.
+  if (dc->dev)
+    for (int i = 0; i < dc->root.gs.clip_depth; ++i)
+      fz_pop_clip(ctx, dc->dev);
+  dc->root.gs.clip_depth = 0;
   dvi_context_set_device(ctx, dc, NULL);
 
   if (dc->colorstack.depth > 0)

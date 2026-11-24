@@ -45,6 +45,7 @@ static void engine_destroy(txp_engine *_self, fz_context *ctx)
   SELF;
   fz_drop_buffer(ctx, self->buffer);
   incdvi_free(ctx, self->dvi);
+  fz_free(ctx, self);
 }
 
 static fz_display_list *engine_render_page(txp_engine *_self,

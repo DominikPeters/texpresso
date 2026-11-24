@@ -246,6 +246,16 @@ test-parent-watch:
 test-checkpoint-cleanup:
 	python3 test/test-checkpoint-cleanup.py
 
+.PHONY: test-engine-lifecycle
+test-engine-lifecycle: texpresso
+	$(MAKE) -f Makefile.config -f Makefile build/test-engine-lifecycle
+	build/test-engine-lifecycle build/test-engine-lifecycle.pdf build/test-engine-lifecycle.dvi
+
+LIFECYCLE_OBJECTS = $(addprefix build/frontend/,engine_tex.o engine_pdf.o engine_dvi.o state.o fs.o incdvi.o sprotocol.o editor.o synctex.o myabort.o libmydvi.a)
+build/test-engine-lifecycle: test/test_engine_lifecycle.c $(LIFECYCLE_OBJECTS) build/common/libcommon.a
+	$(CC) -Isrc/frontend -Isrc/dvi -c -o build/test-engine-lifecycle.o $<
+	$(LDCC) -o $@ build/test-engine-lifecycle.o $(filter-out $<,$^) $(LIBS)
+
 .PHONY: test-synctex-words
 test-synctex-words: texpresso
 	$(MAKE) -f Makefile.config -f Makefile build/test-synctex-words

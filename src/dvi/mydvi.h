@@ -75,7 +75,7 @@ typedef struct
 typedef struct tex_vf tex_vf;
 
 tex_vf *tex_vf_load(fz_context *ctx, dvi_resmanager *manager, fz_stream *stm);
-void tex_vf_free(tex_vf *vf);
+void tex_vf_free(fz_context *ctx, tex_vf *vf);
 tex_vf_char *tex_vf_get(tex_vf *vf, int code);
 int tex_vf_default_font(tex_vf *vf);
 

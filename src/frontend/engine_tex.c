@@ -488,9 +488,12 @@ static void engine_destroy(txp_engine *_self, fz_context *ctx)
   while (self->process_count > 0)
     pop_process(ctx, self);
   reap_root_children(self, true);
-  channel_profile_finish(self->c);
+  channel_free(self->c);
   incdvi_free(ctx, self->dvi);
   synctex_free(ctx, self->stex);
+  log_free(ctx, self->log);
+  filesystem_free(ctx, self->fs);
+  free(self->trace);
   fz_free(ctx, self->name);
   fz_free(ctx, self->engine_path);
   fz_free(ctx, self->inclusion_path);
@@ -736,7 +739,9 @@ static void answer_query_impl(fz_context *ctx, struct tex_engine *self, query_t 
           {
             if (fs_path == q->open.path)
               fs_path = e->path;
-            e->fs_data = fz_read_file(ctx, fs_path);
+            fz_buffer *data = fz_read_file(ctx, fs_path);
+            fz_drop_buffer(ctx, e->fs_data);
+            e->fs_data = data;
             e->saved.level = FILE_READ;
             e->saved.read_from_filesystem = e->edit_data == NULL;
             stat(fs_path, &e->fs_stat);
@@ -745,7 +750,10 @@ static void answer_query_impl(fz_context *ctx, struct tex_engine *self, query_t 
       }
       else
       {
-        e->saved.data = fz_new_buffer(ctx, 1024);
+        fz_buffer *data = fz_new_buffer(ctx, 1024);
+        // The rollback log holds a separate reference when it needs this buffer.
+        fz_drop_buffer(ctx, e->saved.data);
+        e->saved.data = data;
         e->saved.level = level;
       }
 
@@ -1981,6 +1989,15 @@ static fileentry_t *engine_find_file(txp_engine *_self, fz_context *ctx, const c
 {
   SELF;
   return filesystem_lookup_or_create(ctx, self->fs, path);
+}
+
+bool txp_engine_generated_input(void *engine, const char *path, int len)
+{
+  txp_engine *_self = engine;
+  if (_self->_class != &_class) return false;
+  SELF;
+  fileentry_t *entry = filesystem_lookup_span(self->fs, path, len);
+  return entry && entry->saved.level == FILE_WRITE;
 }
 
 txp_engine *txp_create_tex_engine(fz_context *ctx,

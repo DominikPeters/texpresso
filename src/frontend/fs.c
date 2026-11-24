@@ -27,13 +27,12 @@
 #include "fz_util.h"
 
 static unsigned long
-sdbm_hash(const unsigned char *str)
+sdbm_hash(const unsigned char *str, size_t len)
 {
   unsigned long hash = 0;
-  int c;
 
-  while ((c = *str++))
-    hash = c + (hash << 6) + (hash << 16) - hash;
+  while (len--)
+    hash = *str++ + (hash << 6) + (hash << 16) - hash;
 
   return hash * 2654435761;
 }
@@ -52,13 +51,15 @@ struct filesystem_s
   tablecell *table;
 };
 
-static const char *normalize_path(const char *path)
+static const char *normalize_path(const char *path, size_t *len)
 {
-  if (path[0] == '.' && path[1] == '/')
+  if (*len >= 2 && path[0] == '.' && path[1] == '/')
   {
+    const char *end = path + *len;
     path += 2;
-    while (*path == '/')
-      path += 1;
+    while (path < end && *path == '/')
+      ++path;
+    *len = end - path;
   }
   return path;
 }
@@ -107,16 +108,18 @@ void filesystem_free(fz_context *ctx, filesystem_t *fs)
   fz_free(ctx, fs);
 }
 
-static tablecell *table_get(int cap, tablecell *table, const char *path)
+static tablecell *table_get(int cap, tablecell *table, const char *path, size_t len)
 {
   unsigned long mask = cap - 1;
-  unsigned long hash = str_hash((const unsigned char*)path);
+  unsigned long hash = str_hash((const unsigned char*)path, len);
 
   int index = hash & mask;
 
   while (table[index].entry)
   {
-    if (table[index].hash == hash && strcmp(table[index].entry->path, path) == 0)
+    const char *candidate = table[index].entry->path;
+    if (table[index].hash == hash && strlen(candidate) == len &&
+        memcmp(candidate, path, len) == 0)
       break;
     index = (index + 1) & mask;
   }
@@ -151,13 +154,20 @@ static tablecell *table_resize(fz_context *ctx, int oldcap, tablecell *oldtab, i
 
 fileentry_t *filesystem_lookup(filesystem_t *fs, const char *path)
 {
-  return table_get(fs->cap, fs->table, normalize_path(path))->entry;
+  return filesystem_lookup_span(fs, path, strlen(path));
+}
+
+fileentry_t *filesystem_lookup_span(filesystem_t *fs, const char *path, size_t len)
+{
+  path = normalize_path(path, &len);
+  return table_get(fs->cap, fs->table, path, len)->entry;
 }
 
 fileentry_t *filesystem_lookup_or_create(fz_context *ctx, filesystem_t *fs, const char *path)
 {
-  path = normalize_path(path);
-  tablecell *cell = table_get(fs->cap, fs->table, path);
+  size_t len = strlen(path);
+  path = normalize_path(path, &len);
+  tablecell *cell = table_get(fs->cap, fs->table, path, len);
   fileentry_t *entry = cell->entry;
 
   if (entry != NULL) return entry;

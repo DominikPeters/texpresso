@@ -38,6 +38,8 @@ enum log_action {
   LOG_OVERWRITE
 };
 
+enum { LOG_START = 1 }; /* The first byte is a sentinel. */
+
 struct log_s
 {
   mark_t snap;
@@ -53,7 +55,7 @@ log_t *log_new(fz_context *ctx)
     log = fz_malloc_struct(ctx, log_t);
     data = fz_new_buffer(ctx, 512);
     log->data = data;
-    log->snap = 1;
+    log->snap = LOG_START;
     fz_append_byte(ctx, log->data, 0);
   }
   fz_catch(ctx)
@@ -69,6 +71,8 @@ log_t *log_new(fz_context *ctx)
 
 void log_free(fz_context *ctx, log_t *log)
 {
+  /* Entries and overwrite records hold buffer references of their own. */
+  log_rollback(ctx, log, LOG_START);
   fz_drop_buffer(ctx, log->data);
   fz_free(ctx, log);
 }

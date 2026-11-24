@@ -1447,6 +1447,8 @@ static struct xform_spec xform_spec()
 static bool
 embed_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, struct xform_spec *xf, const char *filename)
 {
+  pdf_page *page = NULL;
+  fz_var(page);
   fz_try(ctx)
   {
     pdf_document *doc = dvi_resmanager_get_pdf(ctx, dc->resmanager, filename);
@@ -1454,7 +1456,7 @@ embed_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, struct xform_spec *xf
       return 0;
 
     // from mupdf/source/pdf/pdf-page.c: pdf_page_obj_transform
-    pdf_page *page = pdf_load_page(ctx, doc, xf->page ? xf->page - 1 : 0);
+    page = pdf_load_page(ctx, doc, xf->page > 0 ? xf->page - 1 : 0);
     pdf_obj *pageobj = page ? page->obj : NULL;
 
     fz_rect mediabox = pdf_to_rect(ctx, pdf_dict_get_inheritable(ctx, pageobj, PDF_NAME(MediaBox)));
@@ -1476,6 +1478,10 @@ embed_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, struct xform_spec *xf
     if (dc->annotation_uri) dvi_annotation_bounds(ctx, dc, fz_transform_rect(fz_bound_page(ctx, (fz_page *)page), ctm));
     pdf_run_page(ctx, page, dc->dev, ctm, NULL);
   }
+  fz_always(ctx)
+  {
+    fz_drop_page(ctx, (fz_page *)page);
+  }
   fz_catch(ctx)
   {
     return 0;
@@ -1483,41 +1489,99 @@ embed_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, struct xform_spec *xf
   return 1;
 }
 
+static uint32_t read_be32(const unsigned char *data)
+{
+  return (uint32_t)data[0] << 24 | (uint32_t)data[1] << 16 |
+         (uint32_t)data[2] << 8 | (uint32_t)data[3];
+}
+
+static void image_size_in_bp(fz_context *ctx, fz_image *img, float *width, float *height)
+{
+  fz_compressed_buffer *compressed = fz_compressed_image_buffer(ctx, img);
+  if (compressed && compressed->params.type == FZ_IMAGE_PNG)
+  {
+    // XeTeX uses the PNG's pixels-per-meter values directly, or 72 dpi
+    // when absent. MuPDF's default DPI and rounded resolution can differ.
+    *width = img->w;
+    *height = img->h;
+    unsigned char *bytes;
+    size_t size = fz_buffer_storage(ctx, compressed->buffer, &bytes);
+    size_t offset = 8; // PNG signature
+    while (offset <= size && size - offset >= 12)
+    {
+      const unsigned char *chunk = bytes + offset;
+      uint32_t length = read_be32(chunk);
+      if (length > size - offset - 12 || !memcmp(chunk + 4, "IDAT", 4))
+        break;
+      if (length == 9 && !memcmp(chunk + 4, "pHYs", 4) && chunk[16] == 1)
+      {
+        uint32_t xppm = read_be32(chunk + 8), yppm = read_be32(chunk + 12);
+        if (xppm) *width = img->w * (72.0 / 0.0254 / xppm);
+        if (yppm) *height = img->h * (72.0 / 0.0254 / yppm);
+        break;
+      }
+      offset += (size_t)length + 12;
+    }
+  }
+  else
+  {
+    int xres, yres;
+    fz_image_resolution(img, &xres, &yres);
+    *width = img->w * (72.f / xres);
+    *height = img->h * (72.f / yres);
+  }
+}
+
 static bool
 embed_image(fz_context *ctx, dvi_context *dc, dvi_state *st, struct xform_spec *xf, const char *filename)
 {
-
-  fz_image *img = NULL;
-  fz_var(img);
+  fz_path *clip = NULL;
+  bool clipped = false;
+  fz_var(clip);
+  fz_var(clipped);
 
   fz_try(ctx)
   {
     fz_image *img = dvi_resmanager_get_img(ctx, dc->resmanager, filename);
     fz_matrix ctm = fz_concat(xf->ctm, dvi_get_ctm(dc, st));
-    // int xres, yres;
-    // fz_image_resolution(img, &xres, &yres);
-    // fprintf(stderr, "RENDERING IMAGE, size: %d %d, res: %d %d\n",
-    //         img->w, img->h, xres, yres);
-    //
-    float ar = (float)img->w / (float)img->h;
+    fz_rect box = xf->bbox;
+    float natural_width = img->w, natural_height = img->h;
+    if (!fz_is_infinite_rect(box) && !fz_is_empty_rect(box))
+      image_size_in_bp(ctx, img, &natural_width, &natural_height);
+    else
+      box = fz_make_rect(0, 0, natural_width, natural_height);
+    float box_width = box.x1 - box.x0, box_height = box.y1 - box.y0;
     float w = xf->width, h = xf->height;
-    if (w != w && h != h)
+    if (isnan(w) && isnan(h))
     {
-      w = img->w;
-      h = img->h;
+      w = box_width;
+      h = box_height;
     }
-    else if (w != w)
-      w = h * ar;
-    else if (h != h)
-      h = w / ar;
-    ctm = fz_pre_scale(fz_pre_translate(ctm, 0, h), w, -h);
-    if (dc->annotation_uri) dvi_annotation_bounds(ctx, dc, fz_transform_rect(fz_unit_rect, ctm));
-    fz_fill_image(ctx, dc->dev, img, ctm, 1.0, color_params);
+    else if (isnan(w))
+      w = h * box_width / box_height;
+    else if (isnan(h))
+      h = w * box_height / box_width;
+    float sx = w / box_width, sy = h / box_height;
+    fz_rect aperture = fz_make_rect(0, 0, w, h);
+    if (xf->clip)
+    {
+      clip = fz_new_path(ctx);
+      fz_rectto(ctx, clip, aperture.x0, aperture.y0, aperture.x1, aperture.y1);
+      fz_clip_path(ctx, dc->dev, clip, 0, ctm, fz_infinite_rect);
+      clipped = true;
+    }
+    fz_matrix image = fz_pre_translate(ctm, -box.x0 * sx, (natural_height - box.y0) * sy);
+    image = fz_pre_scale(image, natural_width * sx, -natural_height * sy);
+    if (dc->annotation_uri)
+      dvi_annotation_bounds(ctx, dc, xf->clip ? fz_transform_rect(aperture, ctm)
+                                           : fz_transform_rect(fz_unit_rect, image));
+    fz_fill_image(ctx, dc->dev, img, image, 1.0, color_params);
   }
   fz_always(ctx)
   {
-    if (img)
-      fz_drop_image(ctx, img);
+    fz_drop_path(ctx, clip);
+    if (clipped)
+      fz_pop_clip(ctx, dc->dev);
   }
   fz_catch(ctx)
   {
@@ -1555,7 +1619,7 @@ parse_xform_or_dim(struct xform_spec *xf, cursor_t cur, cursor_t lim)
   while (cur < lim)
   {
     
-#line 1559 "dvi_special.c"
+#line 1623 "dvi_special.c"
 {
 	int yych;
 	mar = cur;
@@ -1576,14 +1640,14 @@ parse_xform_or_dim(struct xform_spec *xf, cursor_t cur, cursor_t lim)
 		default: goto yy80;
 	}
 yy80:
-#line 661 "dvi_special.re2c.c"
+#line 725 "dvi_special.re2c.c"
 	{ break; }
-#line 1582 "dvi_special.c"
+#line 1646 "dvi_special.c"
 yy81:
 	++cur;
-#line 552 "dvi_special.re2c.c"
+#line 616 "dvi_special.re2c.c"
 	{ continue; }
-#line 1587 "dvi_special.c"
+#line 1651 "dvi_special.c"
 yy82:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -2090,12 +2154,12 @@ yy142:
 	}
 yy143:
 	f0 = yyt1;
-#line 561 "dvi_special.re2c.c"
+#line 625 "dvi_special.re2c.c"
 	{
       xf->clip = pint(f0, lim);
       continue;
     }
-#line 2099 "dvi_special.c"
+#line 2163 "dvi_special.c"
 yy144:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -2150,12 +2214,12 @@ yy147:
 	}
 yy148:
 	f0 = yyt1;
-#line 615 "dvi_special.re2c.c"
+#line 679 "dvi_special.re2c.c"
 	{
       xf->page = pint(f0, lim);
       continue;
     }
-#line 2159 "dvi_special.c"
+#line 2223 "dvi_special.c"
 yy149:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -2413,12 +2477,12 @@ yy164:
 	}
 yy165:
 	f0 = yyt1;
-#line 567 "dvi_special.re2c.c"
+#line 631 "dvi_special.re2c.c"
 	{
       sx = sy = pfloat(f0, lim);
       continue;
     }
-#line 2422 "dvi_special.c"
+#line 2486 "dvi_special.c"
 yy166:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -2713,12 +2777,12 @@ yy183:
 	}
 yy184:
 	f0 = yyt1;
-#line 555 "dvi_special.re2c.c"
+#line 619 "dvi_special.re2c.c"
 	{
       r = pfloat(f0, lim);
       continue;
     }
-#line 2722 "dvi_special.c"
+#line 2786 "dvi_special.c"
 yy185:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -2819,12 +2883,12 @@ yy192:
 	}
 yy193:
 	f0 = yyt1;
-#line 573 "dvi_special.re2c.c"
+#line 637 "dvi_special.re2c.c"
 	{
       sx = pfloat(f0, lim);
       continue;
     }
-#line 2828 "dvi_special.c"
+#line 2892 "dvi_special.c"
 yy194:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -2860,12 +2924,12 @@ yy195:
 	}
 yy196:
 	f0 = yyt1;
-#line 579 "dvi_special.re2c.c"
+#line 643 "dvi_special.re2c.c"
 	{
       sy = pfloat(f0, lim);
       continue;
     }
-#line 2869 "dvi_special.c"
+#line 2933 "dvi_special.c"
 yy197:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -2908,12 +2972,12 @@ yy198:
 yy199:
 	++cur;
 	f0 = yyt1;
-#line 597 "dvi_special.re2c.c"
+#line 661 "dvi_special.re2c.c"
 	{
       xf->depth = pdim(f0, lim);
       continue;
     }
-#line 2917 "dvi_special.c"
+#line 2981 "dvi_special.c"
 yy200:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -3063,12 +3127,12 @@ yy213:
 yy214:
 	++cur;
 	f0 = yyt1;
-#line 585 "dvi_special.re2c.c"
+#line 649 "dvi_special.re2c.c"
 	{
       xf->width = pdim(f0, lim);
       continue;
     }
-#line 3072 "dvi_special.c"
+#line 3136 "dvi_special.c"
 yy215:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -3152,12 +3216,12 @@ yy220:
 yy221:
 	++cur;
 	f0 = yyt1;
-#line 591 "dvi_special.re2c.c"
+#line 655 "dvi_special.re2c.c"
 	{
       xf->height = pdim(f0, lim);
       continue;
     }
-#line 3161 "dvi_special.c"
+#line 3225 "dvi_special.c"
 yy222:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -3419,15 +3483,15 @@ yy245:
 	f1 = yyt2;
 	f2 = yyt3;
 	f3 = yyt4;
-#line 606 "dvi_special.re2c.c"
+#line 670 "dvi_special.re2c.c"
 	{
       xf->bbox.x0 = pfloat(f0, lim);
-      xf->bbox.x1 = pfloat(f1, lim);
-      xf->bbox.y0 = pfloat(f2, lim);
+      xf->bbox.y0 = pfloat(f1, lim);
+      xf->bbox.x1 = pfloat(f2, lim);
       xf->bbox.y1 = pfloat(f3, lim);
       continue;
     }
-#line 3431 "dvi_special.c"
+#line 3495 "dvi_special.c"
 yy246:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -3592,7 +3656,7 @@ yy257:
 yy258:
 	++cur;
 	f0 = yyt1;
-#line 621 "dvi_special.re2c.c"
+#line 685 "dvi_special.re2c.c"
 	{
       int c = f0[0];
       switch (c)
@@ -3615,7 +3679,7 @@ yy258:
       }
       continue;
     }
-#line 3619 "dvi_special.c"
+#line 3683 "dvi_special.c"
 yy259:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -3768,7 +3832,7 @@ yy267:
 	f3 = yyt4;
 	f4 = yyt5;
 	f5 = yyt6;
-#line 650 "dvi_special.re2c.c"
+#line 714 "dvi_special.re2c.c"
 	{
       xf->ctm.a = pfloat(f0, lim);
       xf->ctm.b = pfloat(f1, lim);
@@ -3778,7 +3842,7 @@ yy267:
       xf->ctm.f = pfloat(f5, lim);
       continue;
     }
-#line 3782 "dvi_special.c"
+#line 3846 "dvi_special.c"
 yy268:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
@@ -3796,7 +3860,7 @@ yy268:
 		default: goto yy267;
 	}
 }
-#line 663 "dvi_special.re2c.c"
+#line 727 "dvi_special.re2c.c"
 
   }
 
@@ -3835,12 +3899,17 @@ pdf_btrans(dvi_context *dc, dvi_state *st, cursor_t cur, cursor_t lim)
 }
 
 static bool
-pdf_etrans(dvi_context *dc, dvi_state *st)
+pdf_etrans(fz_context *ctx, dvi_context *dc, dvi_state *st)
 {
   if (st->gs_stack.depth == 0)
     return 0;
+  dvi_context_flush_text(ctx, dc, st);
+  int clip_depth = st->gs.clip_depth;
   st->gs_stack.depth -= 1;
   st->gs = st->gs_stack.base[st->gs_stack.depth];
+  if (dc->dev)
+    for (int i = st->gs.clip_depth; i < clip_depth; ++i)
+      fz_pop_clip(ctx, dc->dev);
   return 1;
 }
 
@@ -3910,21 +3979,15 @@ pdf_code(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t cur, cursor_t
         {
           if (st->gs_stack.depth >= st->gs_stack.limit)
             fz_throw(ctx, 0, "PDF q: stack overflow");
+          dvi_context_flush_text(ctx, dc, st);
           st->gs_stack.base[st->gs_stack.depth] = st->gs;
           st->gs_stack.depth += 1;
           break;
         }
         case PDF_OP_Q:
         {
-          if (st->gs_stack.depth == 0)
+          if (!pdf_etrans(ctx, dc, st))
             fz_throw(ctx, 0, "PDF Q: stack underflow");
-          st->gs_stack.depth -= 1;
-
-          int clip_depth0 = st->gs.clip_depth;
-          st->gs = st->gs_stack.base[st->gs_stack.depth];
-          if (dc->dev)
-            for (int i = st->gs.clip_depth; i < clip_depth0; ++i)
-              fz_pop_clip(ctx, dc->dev);
           break;
         }
         case PDF_OP_G:
@@ -4285,7 +4348,7 @@ dvi_exec_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t cur, curs
   cursor_t mar, i, f0, f1, f2, f3, f4, f5, pxform = NULL, pstart, pend;
 
   
-#line 4289 "dvi_special.c"
+#line 4352 "dvi_special.c"
 {
 	int yych;
 	unsigned int yyaccept = 0;
@@ -4298,152 +4361,169 @@ dvi_exec_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t cur, curs
 		case 'i':
 			yyt1 = cur;
 			goto yy275;
-		case 'p': goto yy276;
+		case 'l': goto yy276;
+		case 'p': goto yy277;
 		default: goto yy270;
 	}
 yy270:
-#line 1214 "dvi_special.re2c.c"
+#line 1291 "dvi_special.re2c.c"
 	{ return unhandled("pdf special", cur, lim, 0); }
-#line 4308 "dvi_special.c"
+#line 4372 "dvi_special.c"
 yy271:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'c': goto yy277;
-		case 'e': goto yy278;
-		case 't': goto yy279;
+		case 'c': goto yy278;
+		case 'e': goto yy279;
+		case 't': goto yy280;
 		default: goto yy272;
 	}
 yy272:
 	cur = mar;
 	switch (yyaccept) {
 		case 0: goto yy270;
-		case 1: goto yy280;
-		case 2: goto yy283;
-		default: goto yy286;
+		case 1: goto yy281;
+		case 2: goto yy284;
+		case 3: goto yy287;
+		default: goto yy374;
 	}
 yy273:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'o': goto yy281;
+		case 'o': goto yy282;
 		default: goto yy272;
 	}
 yy274:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'c': goto yy282;
-		case 'n': goto yy284;
-		case 't': goto yy285;
+		case 'c': goto yy283;
+		case 'n': goto yy285;
+		case 't': goto yy286;
 		default: goto yy272;
 	}
 yy275:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'm': goto yy287;
+		case 'm': goto yy288;
 		default: goto yy272;
 	}
 yy276:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'a': goto yy288;
+		case 'i': goto yy289;
 		default: goto yy272;
 	}
 yy277:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'o': goto yy295;
-		default: goto yy290;
+		case 'a': goto yy290;
+		default: goto yy272;
 	}
 yy278:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'g': goto yy296;
-		default: goto yy272;
+		case 'o': goto yy297;
+		default: goto yy292;
 	}
 yy279:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'g': goto yy298;
+		default: goto yy272;
+	}
+yy280:
 	yyaccept = 1;
 	++cur;
 	mar = cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy299;
-		default: goto yy298;
+		case 'r': goto yy301;
+		default: goto yy300;
 	}
-yy280:
-#line 1178 "dvi_special.re2c.c"
-	{ return pdf_btrans(dc, st, cur, lim); }
-#line 4382 "dvi_special.c"
 yy281:
+#line 1241 "dvi_special.re2c.c"
+	{ return pdf_btrans(dc, st, cur, lim); }
+#line 4454 "dvi_special.c"
+yy282:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'd': goto yy300;
+		case 'd': goto yy302;
+		case 'n': goto yy303;
 		default: goto yy272;
 	}
-yy282:
+yy283:
 	yyaccept = 2;
 	++cur;
 	mar = cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'o': goto yy301;
-		default: goto yy283;
+		case 'o': goto yy304;
+		default: goto yy284;
 	}
-yy283:
-#line 1206 "dvi_special.re2c.c"
+yy284:
+#line 1269 "dvi_special.re2c.c"
 	{
     return colorstack_pop(ctx, dc, st, -1);
   }
-#line 4404 "dvi_special.c"
-yy284:
+#line 4477 "dvi_special.c"
+yy285:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'd': goto yy302;
+		case 'd': goto yy305;
 		default: goto yy272;
 	}
-yy285:
+yy286:
 	yyaccept = 3;
 	++cur;
 	mar = cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy303;
-		default: goto yy286;
+		case 'r': goto yy306;
+		default: goto yy287;
 	}
-yy286:
-#line 1181 "dvi_special.re2c.c"
-	{ return pdf_etrans(dc, st); }
-#line 4424 "dvi_special.c"
 yy287:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'a': goto yy304;
-		default: goto yy272;
-	}
+#line 1244 "dvi_special.re2c.c"
+	{ return pdf_etrans(ctx, dc, st); }
+#line 4497 "dvi_special.c"
 yy288:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'g': goto yy305;
+		case 'a': goto yy307;
 		default: goto yy272;
 	}
 yy289:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
-yy290:
 	switch (yych) {
-		case ' ': goto yy289;
+		case 't': goto yy308;
+		default: goto yy272;
+	}
+yy290:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'g': goto yy309;
+		default: goto yy272;
+	}
+yy291:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+yy292:
+	switch (yych) {
+		case ' ': goto yy291;
 		case '-':
 			yyt1 = cur;
-			goto yy291;
+			goto yy293;
 		case '0':
 		case '1':
 		case '2':
@@ -4455,11 +4535,11 @@ yy290:
 		case '8':
 		case '9':
 			yyt1 = cur;
-			goto yy292;
-		case '[': goto yy294;
+			goto yy294;
+		case '[': goto yy296;
 		default: goto yy272;
 	}
-yy291:
+yy293:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
@@ -4472,14 +4552,14 @@ yy291:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy292;
+		case '9': goto yy294;
 		default: goto yy272;
 	}
-yy292:
+yy294:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case '.': goto yy306;
+		case '.': goto yy310;
 		case '0':
 		case '1':
 		case '2':
@@ -4489,21 +4569,21 @@ yy292:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy292;
+		case '9': goto yy294;
 		default:
 			yyt2 = NULL;
 			yyt3 = NULL;
 			yyt4 = NULL;
 			yyt5 = NULL;
-			goto yy293;
+			goto yy295;
 	}
-yy293:
+yy295:
 	f4 = yyt1;
 	f0 = yyt2;
 	f1 = yyt3;
 	f2 = yyt4;
 	f3 = yyt5;
-#line 1193 "dvi_special.re2c.c"
+#line 1256 "dvi_special.re2c.c"
 	{
     if (!colorstack_push(ctx, dc, st, -1))
       return 0;
@@ -4515,15 +4595,15 @@ yy293:
       color_set_gray(st->gs.colors.fill, pfloat(f4 ? f4 : f0, lim));
     return 1;
   }
-#line 4519 "dvi_special.c"
-yy294:
+#line 4599 "dvi_special.c"
+yy296:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy294;
+		case ' ': goto yy296;
 		case '-':
 			yyt2 = cur;
-			goto yy307;
+			goto yy311;
 		case '0':
 		case '1':
 		case '2':
@@ -4535,230 +4615,101 @@ yy294:
 		case '8':
 		case '9':
 			yyt2 = cur;
-			goto yy308;
-		default: goto yy272;
-	}
-yy295:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'l': goto yy309;
-		case 'n': goto yy310;
-		default: goto yy272;
-	}
-yy296:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'i': goto yy311;
+			goto yy312;
 		default: goto yy272;
 	}
 yy297:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
-yy298:
 	switch (yych) {
-		case ' ': goto yy297;
-		default: goto yy280;
+		case 'l': goto yy313;
+		case 'n': goto yy314;
+		default: goto yy272;
+	}
+yy298:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'i': goto yy315;
+		default: goto yy272;
 	}
 yy299:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'a': goto yy312;
-		default: goto yy272;
-	}
 yy300:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy313;
-		default: goto yy272;
+		case ' ': goto yy299;
+		default: goto yy281;
 	}
 yy301:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'l': goto yy314;
-		case 'n': goto yy310;
+		case 'a': goto yy316;
 		default: goto yy272;
 	}
 yy302:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'c': goto yy315;
-		case 't': goto yy316;
+		case 'e': goto yy317;
 		default: goto yy272;
 	}
 yy303:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'a': goto yy317;
+		case 't': goto yy318;
 		default: goto yy272;
 	}
 yy304:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'g': goto yy318;
+		case 'l': goto yy319;
+		case 'n': goto yy314;
 		default: goto yy272;
 	}
 yy305:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy319;
+		case 'c': goto yy320;
+		case 't': goto yy321;
 		default: goto yy272;
 	}
 yy306:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9': goto yy306;
-		default:
-			yyt2 = NULL;
-			yyt3 = NULL;
-			yyt4 = NULL;
-			yyt5 = NULL;
-			goto yy293;
+		case 'a': goto yy322;
+		default: goto yy272;
 	}
 yy307:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9': goto yy308;
+		case 'g': goto yy323;
 		default: goto yy272;
 	}
 yy308:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ':
-			yyt3 = NULL;
-			yyt4 = NULL;
-			yyt5 = NULL;
-			goto yy320;
-		case '.': goto yy321;
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9': goto yy308;
-		case ']':
-			yyt3 = NULL;
-			yyt4 = NULL;
-			yyt5 = NULL;
-			goto yy322;
+		case 'e': goto yy324;
 		default: goto yy272;
 	}
 yy309:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'o': goto yy323;
+		case 'e': goto yy325;
 		default: goto yy272;
 	}
 yy310:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy324;
-		default: goto yy272;
-	}
-yy311:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'n': goto yy325;
-		default: goto yy272;
-	}
-yy312:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'n': goto yy326;
-		default: goto yy272;
-	}
-yy313:
-	++cur;
-#line 1211 "dvi_special.re2c.c"
-	{ return pdf_code(ctx, dc, st, cur, lim); }
-#line 4712 "dvi_special.c"
-yy314:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'o': goto yy327;
-		default: goto yy272;
-	}
-yy315:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'o': goto yy328;
-		default: goto yy272;
-	}
-yy316:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'r': goto yy329;
-		default: goto yy272;
-	}
-yy317:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'n': goto yy330;
-		default: goto yy272;
-	}
-yy318:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'e': goto yy331;
-		default: goto yy272;
-	}
-yy319:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 's': goto yy332;
-		default: goto yy272;
-	}
-yy320:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy320;
-		case '-':
-			yyt3 = cur;
-			goto yy333;
 		case '0':
 		case '1':
 		case '2':
@@ -4768,13 +4719,31 @@ yy320:
 		case '6':
 		case '7':
 		case '8':
-		case '9':
-			yyt3 = cur;
-			goto yy334;
-		case ']': goto yy322;
+		case '9': goto yy310;
+		default:
+			yyt2 = NULL;
+			yyt3 = NULL;
+			yyt4 = NULL;
+			yyt5 = NULL;
+			goto yy295;
+	}
+yy311:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9': goto yy312;
 		default: goto yy272;
 	}
-yy321:
+yy312:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
@@ -4782,7 +4751,8 @@ yy321:
 			yyt3 = NULL;
 			yyt4 = NULL;
 			yyt5 = NULL;
-			goto yy320;
+			goto yy326;
+		case '.': goto yy327;
 		case '0':
 		case '1':
 		case '2':
@@ -4792,111 +4762,245 @@ yy321:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy321;
+		case '9': goto yy312;
 		case ']':
 			yyt3 = NULL;
 			yyt4 = NULL;
 			yyt5 = NULL;
-			goto yy322;
+			goto yy328;
+		default: goto yy272;
+	}
+yy313:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'o': goto yy329;
+		default: goto yy272;
+	}
+yy314:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 't': goto yy330;
+		default: goto yy272;
+	}
+yy315:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'n': goto yy331;
+		default: goto yy272;
+	}
+yy316:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'n': goto yy332;
+		default: goto yy272;
+	}
+yy317:
+	++cur;
+#line 1274 "dvi_special.re2c.c"
+	{ return pdf_code(ctx, dc, st, cur, lim); }
+#line 4806 "dvi_special.c"
+yy318:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'e': goto yy333;
+		default: goto yy272;
+	}
+yy319:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'o': goto yy334;
+		default: goto yy272;
+	}
+yy320:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'o': goto yy335;
+		default: goto yy272;
+	}
+yy321:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'r': goto yy336;
 		default: goto yy272;
 	}
 yy322:
 	++cur;
-	yyt1 = NULL;
-	goto yy293;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'n': goto yy337;
+		default: goto yy272;
+	}
 yy323:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy289;
+		case 'e': goto yy338;
 		default: goto yy272;
 	}
 yy324:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy335;
+		case 'r': goto yy339;
 		default: goto yy272;
 	}
 yy325:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'c': goto yy336;
-		case 't': goto yy337;
+		case 's': goto yy340;
 		default: goto yy272;
 	}
 yy326:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 's': goto yy297;
+		case ' ': goto yy326;
+		case '-':
+			yyt3 = cur;
+			goto yy341;
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9':
+			yyt3 = cur;
+			goto yy342;
+		case ']': goto yy328;
 		default: goto yy272;
 	}
 yy327:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy338;
+		case ' ':
+			yyt3 = NULL;
+			yyt4 = NULL;
+			yyt5 = NULL;
+			goto yy326;
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9': goto yy327;
+		case ']':
+			yyt3 = NULL;
+			yyt4 = NULL;
+			yyt5 = NULL;
+			goto yy328;
 		default: goto yy272;
 	}
 yy328:
 	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'l': goto yy314;
-		default: goto yy272;
-	}
+	yyt1 = NULL;
+	goto yy295;
 yy329:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'a': goto yy339;
+		case 'r': goto yy291;
 		default: goto yy272;
 	}
 yy330:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 's': goto yy340;
+		case 'e': goto yy343;
 		default: goto yy272;
 	}
 yy331:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy341;
+		case 'c': goto yy344;
+		case 't': goto yy345;
 		default: goto yy272;
 	}
 yy332:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'i': goto yy342;
+		case 's': goto yy299;
 		default: goto yy272;
 	}
 yy333:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9': goto yy334;
+		case 'n': goto yy346;
 		default: goto yy272;
 	}
 yy334:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy343;
-		case '.': goto yy344;
+		case 'r': goto yy347;
+		default: goto yy272;
+	}
+yy335:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'l': goto yy319;
+		default: goto yy272;
+	}
+yy336:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'a': goto yy348;
+		default: goto yy272;
+	}
+yy337:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 's': goto yy349;
+		default: goto yy272;
+	}
+yy338:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy350;
+		default: goto yy272;
+	}
+yy339:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'a': goto yy351;
+		default: goto yy272;
+	}
+yy340:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'i': goto yy352;
+		default: goto yy272;
+	}
+yy341:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
 		case '0':
 		case '1':
 		case '2':
@@ -4906,54 +5010,79 @@ yy334:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy334;
+		case '9': goto yy342;
 		default: goto yy272;
 	}
-yy335:
+yy342:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'n': goto yy345;
+		case ' ': goto yy353;
+		case '.': goto yy354;
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9': goto yy342;
 		default: goto yy272;
 	}
-yy336:
+yy343:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'o': goto yy346;
+		case 'n': goto yy355;
 		default: goto yy272;
 	}
-yy337:
+yy344:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy347;
+		case 'o': goto yy356;
 		default: goto yy272;
 	}
-yy338:
-	++cur;
-	goto yy283;
-yy339:
+yy345:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'n': goto yy348;
+		case 'r': goto yy357;
 		default: goto yy272;
 	}
-yy340:
-	++cur;
-	goto yy286;
-yy341:
+yy346:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy341;
+		case 't': goto yy358;
+		default: goto yy272;
+	}
+yy347:
+	++cur;
+	goto yy284;
+yy348:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'n': goto yy359;
+		default: goto yy272;
+	}
+yy349:
+	++cur;
+	goto yy287;
+yy350:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy350;
 		case '(':
 			yyt2 = cur;
-			goto yy349;
+			goto yy360;
 		case '-':
 			yyt2 = cur;
-			goto yy350;
+			goto yy361;
 		case '0':
 		case '1':
 		case '2':
@@ -4965,7 +5094,7 @@ yy341:
 		case '8':
 		case '9':
 			yyt2 = cur;
-			goto yy351;
+			goto yy362;
 		case 'a':
 		case 'b':
 		case 'c':
@@ -4993,24 +5122,31 @@ yy341:
 		case 'y':
 		case 'z':
 			yyt2 = cur;
-			goto yy352;
+			goto yy363;
 		default: goto yy272;
 	}
-yy342:
+yy351:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'z': goto yy353;
+		case 'l': goto yy364;
 		default: goto yy272;
 	}
-yy343:
+yy352:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy343;
+		case 'z': goto yy365;
+		default: goto yy272;
+	}
+yy353:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy353;
 		case '-':
 			yyt4 = cur;
-			goto yy354;
+			goto yy366;
 		case '0':
 		case '1':
 		case '2':
@@ -5022,14 +5158,14 @@ yy343:
 		case '8':
 		case '9':
 			yyt4 = cur;
-			goto yy355;
+			goto yy367;
 		default: goto yy272;
 	}
-yy344:
+yy354:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy343;
+		case ' ': goto yy353;
 		case '0':
 		case '1':
 		case '2':
@@ -5039,44 +5175,51 @@ yy344:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy344;
+		case '9': goto yy354;
 		default: goto yy272;
 	}
-yy345:
+yy355:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy356;
+		case 't': goto yy368;
 		default: goto yy272;
 	}
-yy346:
+yy356:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'l': goto yy309;
+		case 'l': goto yy313;
 		default: goto yy272;
 	}
-yy347:
+yy357:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'a': goto yy357;
+		case 'a': goto yy369;
 		default: goto yy272;
 	}
-yy348:
+yy358:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 's': goto yy358;
+		case ' ': goto yy370;
 		default: goto yy272;
 	}
-yy349:
+yy359:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 's': goto yy372;
+		default: goto yy272;
+	}
+yy360:
 	++cur;
 	f0 = yyt1;
 	pxform = yyt2;
 	pstart = cur;
 	pstart += -1;
-#line 1160 "dvi_special.re2c.c"
+#line 1223 "dvi_special.re2c.c"
 	{
     struct xform_spec xf = xform_spec();
     pxform = parse_xform_or_dim(&xf, pxform, pstart);
@@ -5093,8 +5236,8 @@ yy349:
     else
       return 1;
   }
-#line 5097 "dvi_special.c"
-yy350:
+#line 5240 "dvi_special.c"
+yy361:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
@@ -5107,10 +5250,10 @@ yy350:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy351;
+		case '9': goto yy362;
 		default: goto yy272;
 	}
-yy351:
+yy362:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
@@ -5141,9 +5284,9 @@ yy351:
 		case 'w':
 		case 'x':
 		case 'y':
-		case 'z': goto yy352;
-		case '(': goto yy349;
-		case '-': goto yy350;
+		case 'z': goto yy363;
+		case '(': goto yy360;
+		case '-': goto yy361;
 		case '0':
 		case '1':
 		case '2':
@@ -5153,10 +5296,10 @@ yy351:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy351;
+		case '9': goto yy362;
 		default: goto yy272;
 	}
-yy352:
+yy363:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
@@ -5186,9 +5329,9 @@ yy352:
 		case 'w':
 		case 'x':
 		case 'y':
-		case 'z': goto yy352;
-		case '(': goto yy349;
-		case '-': goto yy350;
+		case 'z': goto yy363;
+		case '(': goto yy360;
+		case '-': goto yy361;
 		case '0':
 		case '1':
 		case '2':
@@ -5198,179 +5341,27 @@ yy352:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy351;
-		default: goto yy272;
-	}
-yy353:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'e': goto yy359;
-		default: goto yy272;
-	}
-yy354:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9': goto yy355;
-		default: goto yy272;
-	}
-yy355:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ':
-			yyt5 = NULL;
-			goto yy360;
-		case '.': goto yy361;
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9': goto yy355;
-		case ']':
-			yyt5 = NULL;
-			goto yy322;
-		default: goto yy272;
-	}
-yy356:
-	++cur;
-	f0 = cur;
-	f0 += -8;
-	f1 = cur;
-#line 1184 "dvi_special.re2c.c"
-	{
-    if (f1 != lim)
-      fprintf(stderr, "unhandled pdf content: %.*s\n",
-              (int)(lim - f0), f0);
-    return 1;
-  }
-#line 5263 "dvi_special.c"
-yy357:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'n': goto yy362;
-		default: goto yy272;
-	}
-yy358:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'f': goto yy363;
-		default: goto yy272;
-	}
-yy359:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy364;
-		default: goto yy272;
-	}
-yy360:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy360;
-		case '-':
-			yyt5 = cur;
-			goto yy365;
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9':
-			yyt5 = cur;
-			goto yy366;
-		case ']': goto yy322;
-		default: goto yy272;
-	}
-yy361:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ':
-			yyt5 = NULL;
-			goto yy360;
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9': goto yy361;
-		case ']':
-			yyt5 = NULL;
-			goto yy322;
-		default: goto yy272;
-	}
-yy362:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 's': goto yy367;
-		default: goto yy272;
-	}
-yy363:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'o': goto yy368;
+		case '9': goto yy362;
 		default: goto yy272;
 	}
 yy364:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy364;
-		case 'd': goto yy369;
-		case 'w': goto yy370;
+		case ' ': goto yy373;
 		default: goto yy272;
 	}
 yy365:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9': goto yy366;
+		case 'e': goto yy375;
 		default: goto yy272;
 	}
 yy366:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy371;
-		case '.': goto yy372;
 		case '0':
 		case '1':
 		case '2':
@@ -5380,51 +5371,17 @@ yy366:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy366;
-		case ']': goto yy322;
+		case '9': goto yy367;
 		default: goto yy272;
 	}
 yy367:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'f': goto yy373;
-		default: goto yy272;
-	}
-yy368:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'r': goto yy374;
-		default: goto yy272;
-	}
-yy369:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'e': goto yy375;
-		default: goto yy272;
-	}
-yy370:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'i': goto yy376;
-		default: goto yy272;
-	}
-yy371:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy371;
-		case ']': goto yy322;
-		default: goto yy272;
-	}
-yy372:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy371;
+		case ' ':
+			yyt5 = NULL;
+			goto yy376;
+		case '.': goto yy377;
 		case '0':
 		case '1':
 		case '2':
@@ -5434,109 +5391,87 @@ yy372:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy372;
-		case ']': goto yy322;
+		case '9': goto yy367;
+		case ']':
+			yyt5 = NULL;
+			goto yy328;
+		default: goto yy272;
+	}
+yy368:
+	++cur;
+	f0 = cur;
+	f0 += -8;
+	f1 = cur;
+#line 1247 "dvi_special.re2c.c"
+	{
+    if (f1 != lim)
+      fprintf(stderr, "unhandled pdf content: %.*s\n",
+              (int)(lim - f0), f0);
+    return 1;
+  }
+#line 5413 "dvi_special.c"
+yy369:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'n': goto yy378;
+		default: goto yy272;
+	}
+yy370:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy370;
+		default: goto yy371;
+	}
+yy371:
+#line 1280 "dvi_special.re2c.c"
+	{
+    // dvipdfmx wraps these operators in q/Q. An explicit q in the
+    // content can leave the outer scope open for a later literal Q.
+    static const char save[] = "q";
+    if (!pdf_code(ctx, dc, st, save, save + 1))
+      return 0;
+    bool ok = pdf_code(ctx, dc, st, cur, lim);
+    return pdf_etrans(ctx, dc, st) && ok;
+  }
+#line 5439 "dvi_special.c"
+yy372:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'f': goto yy379;
 		default: goto yy272;
 	}
 yy373:
+	yyaccept = 4;
 	++cur;
+	mar = cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'o': goto yy377;
-		default: goto yy272;
+		case ' ': goto yy373;
+		case 'd': goto yy380;
+		default: goto yy374;
 	}
 yy374:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'm': goto yy340;
-		default: goto yy272;
-	}
+#line 1277 "dvi_special.re2c.c"
+	{ return pdf_code(ctx, dc, st, cur, lim); }
+#line 5460 "dvi_special.c"
 yy375:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'f': goto yy378;
+		case ' ': goto yy381;
 		default: goto yy272;
 	}
 yy376:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'd': goto yy379;
-		default: goto yy272;
-	}
-yy377:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'r': goto yy380;
-		default: goto yy272;
-	}
-yy378:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'a': goto yy381;
-		default: goto yy272;
-	}
-yy379:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 't': goto yy382;
-		default: goto yy272;
-	}
-yy380:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'm': goto yy297;
-		default: goto yy272;
-	}
-yy381:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'u': goto yy383;
-		default: goto yy272;
-	}
-yy382:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'h': goto yy384;
-		default: goto yy272;
-	}
-yy383:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'l': goto yy385;
-		default: goto yy272;
-	}
-yy384:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy386;
-		default: goto yy272;
-	}
-yy385:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 't': goto yy387;
-		default: goto yy272;
-	}
-yy386:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy386;
+		case ' ': goto yy376;
 		case '-':
-			yyt1 = cur;
-			goto yy388;
+			yyt5 = cur;
+			goto yy382;
 		case '0':
 		case '1':
 		case '2':
@@ -5547,16 +5482,64 @@ yy386:
 		case '7':
 		case '8':
 		case '9':
-			yyt1 = cur;
-			goto yy389;
+			yyt5 = cur;
+			goto yy383;
+		case ']': goto yy328;
 		default: goto yy272;
 	}
-yy387:
+yy377:
 	++cur;
-#line 1157 "dvi_special.re2c.c"
-	{ return 1; }
-#line 5559 "dvi_special.c"
-yy388:
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ':
+			yyt5 = NULL;
+			goto yy376;
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9': goto yy377;
+		case ']':
+			yyt5 = NULL;
+			goto yy328;
+		default: goto yy272;
+	}
+yy378:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 's': goto yy384;
+		default: goto yy272;
+	}
+yy379:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'o': goto yy385;
+		default: goto yy272;
+	}
+yy380:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'i': goto yy386;
+		default: goto yy272;
+	}
+yy381:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy381;
+		case 'd': goto yy387;
+		case 'w': goto yy388;
+		default: goto yy272;
+	}
+yy382:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
@@ -5569,13 +5552,14 @@ yy388:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy389;
+		case '9': goto yy383;
 		default: goto yy272;
 	}
-yy389:
+yy383:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
+		case ' ': goto yy389;
 		case '.': goto yy390;
 		case '0':
 		case '1':
@@ -5586,15 +5570,225 @@ yy389:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy389;
-		case 'c':
-		case 'm': goto yy391;
-		case 'i': goto yy392;
-		case 'p': goto yy393;
-		case 't': goto yy394;
+		case '9': goto yy383;
+		case ']': goto yy328;
+		default: goto yy272;
+	}
+yy384:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'f': goto yy391;
+		default: goto yy272;
+	}
+yy385:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'r': goto yy392;
+		default: goto yy272;
+	}
+yy386:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'r': goto yy393;
+		default: goto yy272;
+	}
+yy387:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'e': goto yy394;
+		default: goto yy272;
+	}
+yy388:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'i': goto yy395;
+		default: goto yy272;
+	}
+yy389:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy389;
+		case ']': goto yy328;
 		default: goto yy272;
 	}
 yy390:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy389;
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9': goto yy390;
+		case ']': goto yy328;
+		default: goto yy272;
+	}
+yy391:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'o': goto yy396;
+		default: goto yy272;
+	}
+yy392:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'm': goto yy349;
+		default: goto yy272;
+	}
+yy393:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'e': goto yy397;
+		default: goto yy272;
+	}
+yy394:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'f': goto yy398;
+		default: goto yy272;
+	}
+yy395:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'd': goto yy399;
+		default: goto yy272;
+	}
+yy396:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'r': goto yy400;
+		default: goto yy272;
+	}
+yy397:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'c': goto yy401;
+		default: goto yy272;
+	}
+yy398:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'a': goto yy402;
+		default: goto yy272;
+	}
+yy399:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 't': goto yy403;
+		default: goto yy272;
+	}
+yy400:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'm': goto yy299;
+		default: goto yy272;
+	}
+yy401:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 't': goto yy404;
+		default: goto yy272;
+	}
+yy402:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'u': goto yy405;
+		default: goto yy272;
+	}
+yy403:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'h': goto yy406;
+		default: goto yy272;
+	}
+yy404:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy407;
+		default: goto yy272;
+	}
+yy405:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'l': goto yy408;
+		default: goto yy272;
+	}
+yy406:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy409;
+		default: goto yy272;
+	}
+yy407:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy407;
+		default: goto yy374;
+	}
+yy408:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 't': goto yy410;
+		default: goto yy272;
+	}
+yy409:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy409;
+		case '-':
+			yyt1 = cur;
+			goto yy411;
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9':
+			yyt1 = cur;
+			goto yy412;
+		default: goto yy272;
+	}
+yy410:
+	++cur;
+#line 1220 "dvi_special.re2c.c"
+	{ return 1; }
+#line 5791 "dvi_special.c"
+yy411:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
@@ -5607,131 +5801,169 @@ yy390:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy390;
+		case '9': goto yy412;
+		default: goto yy272;
+	}
+yy412:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case '.': goto yy413;
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9': goto yy412;
 		case 'c':
-		case 'm': goto yy391;
-		case 'i': goto yy392;
-		case 'p': goto yy393;
-		case 't': goto yy394;
+		case 'm': goto yy414;
+		case 'i': goto yy415;
+		case 'p': goto yy416;
+		case 't': goto yy417;
 		default: goto yy272;
 	}
-yy391:
+yy413:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'm': goto yy395;
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9': goto yy413;
+		case 'c':
+		case 'm': goto yy414;
+		case 'i': goto yy415;
+		case 'p': goto yy416;
+		case 't': goto yy417;
 		default: goto yy272;
 	}
-yy392:
+yy414:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'n': goto yy395;
+		case 'm': goto yy418;
 		default: goto yy272;
 	}
-yy393:
+yy415:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy395;
+		case 'n': goto yy418;
 		default: goto yy272;
 	}
-yy394:
+yy416:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy396;
+		case 't': goto yy418;
 		default: goto yy272;
 	}
-yy395:
+yy417:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy397;
+		case 'r': goto yy419;
 		default: goto yy272;
 	}
-yy396:
+yy418:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'u': goto yy398;
+		case ' ': goto yy420;
 		default: goto yy272;
 	}
-yy397:
+yy419:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy397;
-		case 'h': goto yy399;
+		case 'u': goto yy421;
 		default: goto yy272;
 	}
-yy398:
+yy420:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy400;
+		case ' ': goto yy420;
+		case 'h': goto yy422;
 		default: goto yy272;
 	}
-yy399:
+yy421:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy401;
+		case 'e': goto yy423;
 		default: goto yy272;
 	}
-yy400:
+yy422:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'e': goto yy424;
+		default: goto yy272;
+	}
+yy423:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
 		case 'c':
-		case 'm': goto yy391;
-		case 'i': goto yy392;
-		case 'p': goto yy393;
+		case 'm': goto yy414;
+		case 'i': goto yy415;
+		case 'p': goto yy416;
 		default: goto yy272;
 	}
-yy401:
+yy424:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'i': goto yy402;
+		case 'i': goto yy425;
 		default: goto yy272;
 	}
-yy402:
+yy425:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'g': goto yy403;
+		case 'g': goto yy426;
 		default: goto yy272;
 	}
-yy403:
+yy426:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'h': goto yy404;
+		case 'h': goto yy427;
 		default: goto yy272;
 	}
-yy404:
+yy427:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy405;
+		case 't': goto yy428;
 		default: goto yy272;
 	}
-yy405:
+yy428:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy406;
+		case ' ': goto yy429;
 		default: goto yy272;
 	}
-yy406:
+yy429:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy406;
+		case ' ': goto yy429;
 		case '-':
 			yyt2 = cur;
-			goto yy407;
+			goto yy430;
 		case '0':
 		case '1':
 		case '2':
@@ -5743,10 +5975,10 @@ yy406:
 		case '8':
 		case '9':
 			yyt2 = cur;
-			goto yy408;
+			goto yy431;
 		default: goto yy272;
 	}
-yy407:
+yy430:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
@@ -5759,14 +5991,14 @@ yy407:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy408;
+		case '9': goto yy431;
 		default: goto yy272;
 	}
-yy408:
+yy431:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case '.': goto yy409;
+		case '.': goto yy432;
 		case '0':
 		case '1':
 		case '2':
@@ -5776,15 +6008,15 @@ yy408:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy408;
+		case '9': goto yy431;
 		case 'c':
-		case 'm': goto yy410;
-		case 'i': goto yy411;
-		case 'p': goto yy412;
-		case 't': goto yy413;
+		case 'm': goto yy433;
+		case 'i': goto yy434;
+		case 'p': goto yy435;
+		case 't': goto yy436;
 		default: goto yy272;
 	}
-yy409:
+yy432:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
@@ -5797,75 +6029,75 @@ yy409:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy409;
+		case '9': goto yy432;
 		case 'c':
-		case 'm': goto yy410;
-		case 'i': goto yy411;
-		case 'p': goto yy412;
-		case 't': goto yy413;
+		case 'm': goto yy433;
+		case 'i': goto yy434;
+		case 'p': goto yy435;
+		case 't': goto yy436;
 		default: goto yy272;
 	}
-yy410:
+yy433:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'm': goto yy414;
+		case 'm': goto yy437;
 		default: goto yy272;
 	}
-yy411:
+yy434:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'n': goto yy414;
+		case 'n': goto yy437;
 		default: goto yy272;
 	}
-yy412:
+yy435:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy414;
+		case 't': goto yy437;
 		default: goto yy272;
 	}
-yy413:
+yy436:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy415;
+		case 'r': goto yy438;
 		default: goto yy272;
 	}
-yy414:
+yy437:
 	++cur;
 	f0 = yyt1;
 	f1 = yyt2;
-#line 1154 "dvi_special.re2c.c"
+#line 1217 "dvi_special.re2c.c"
 	{ return 1; }
-#line 5843 "dvi_special.c"
-yy415:
+#line 6075 "dvi_special.c"
+yy438:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'u': goto yy416;
+		case 'u': goto yy439;
 		default: goto yy272;
 	}
-yy416:
+yy439:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy417;
+		case 'e': goto yy440;
 		default: goto yy272;
 	}
-yy417:
+yy440:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
 		case 'c':
-		case 'm': goto yy410;
-		case 'i': goto yy411;
-		case 'p': goto yy412;
+		case 'm': goto yy433;
+		case 'i': goto yy434;
+		case 'p': goto yy435;
 		default: goto yy272;
 	}
 }
-#line 1216 "dvi_special.re2c.c"
+#line 1293 "dvi_special.re2c.c"
 
 }
 
@@ -5878,83 +6110,93 @@ bool dvi_exec_special(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t 
   for (;;)
   {
     
-#line 5882 "dvi_special.c"
+#line 6114 "dvi_special.c"
 {
 	int yych;
+	unsigned int yyaccept = 0;
 	mar = cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy420;
-		case 'c': goto yy421;
-		case 'l': goto yy423;
-		case 'p': goto yy424;
-		case 'x': goto yy425;
-		default: goto yy419;
+		case ' ': goto yy443;
+		case 'c': goto yy444;
+		case 'l': goto yy446;
+		case 'p': goto yy447;
+		case 'x': goto yy448;
+		default: goto yy442;
 	}
-yy419:
-#line 1280 "dvi_special.re2c.c"
+yy442:
+#line 1366 "dvi_special.re2c.c"
 	{ return unhandled("special", cur, lim, 0); }
-#line 5898 "dvi_special.c"
-yy420:
+#line 6131 "dvi_special.c"
+yy443:
 	++cur;
-#line 1230 "dvi_special.re2c.c"
+#line 1307 "dvi_special.re2c.c"
 	{ continue; }
-#line 5903 "dvi_special.c"
-yy421:
+#line 6136 "dvi_special.c"
+yy444:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'o': goto yy426;
-		default: goto yy422;
+		case 'o': goto yy449;
+		default: goto yy445;
 	}
-yy422:
+yy445:
 	cur = mar;
-	goto yy419;
-yy423:
+	if (yyaccept == 0) goto yy442;
+	else goto yy453;
+yy446:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'a': goto yy427;
-		default: goto yy422;
+		case 'a': goto yy450;
+		default: goto yy445;
 	}
-yy424:
+yy447:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'd': goto yy428;
-		default: goto yy422;
+		case 'd': goto yy451;
+		default: goto yy445;
 	}
-yy425:
+yy448:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ':': goto yy429;
-		default: goto yy422;
+		case ':': goto yy452;
+		default: goto yy445;
 	}
-yy426:
+yy449:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'l': goto yy430;
-		default: goto yy422;
+		case 'l': goto yy454;
+		default: goto yy445;
 	}
-yy427:
+yy450:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'n': goto yy431;
-		default: goto yy422;
+		case 'n': goto yy455;
+		default: goto yy445;
 	}
-yy428:
+yy451:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'f': goto yy432;
-		default: goto yy422;
+		case 'f': goto yy456;
+		default: goto yy445;
 	}
-yy429:
+yy452:
+	yyaccept = 1;
 	++cur;
-#line 1267 "dvi_special.re2c.c"
+	mar = cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'g': goto yy457;
+		default: goto yy453;
+	}
+yy453:
+#line 1353 "dvi_special.re2c.c"
 	{
       struct xform_spec xf = xform_spec();
       cur = parse_xform_or_dim(&xf, cur, lim);
@@ -5963,342 +6205,329 @@ yy429:
         return unhandled("pdf x", cur, lim, 0);
       return 1;
     }
-#line 5967 "dvi_special.c"
-yy430:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'o': goto yy433;
-		default: goto yy422;
-	}
-yy431:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'd': goto yy434;
-		default: goto yy422;
-	}
-yy432:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ':': goto yy435;
-		case 'c': goto yy437;
-		default: goto yy422;
-	}
-yy433:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'r': goto yy438;
-		default: goto yy422;
-	}
-yy434:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 's': goto yy439;
-		default: goto yy422;
-	}
-yy435:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy435;
-		default: goto yy436;
-	}
-yy436:
-#line 1277 "dvi_special.re2c.c"
-	{ return dvi_exec_pdf(ctx, dc, st, cur, lim); }
-#line 6014 "dvi_special.c"
-yy437:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'o': goto yy440;
-		default: goto yy422;
-	}
-yy438:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy441;
-		default: goto yy422;
-	}
-yy439:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'c': goto yy442;
-		default: goto yy422;
-	}
-yy440:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'l': goto yy443;
-		default: goto yy422;
-	}
-yy441:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy441;
-		case 'p': goto yy444;
-		default: goto yy422;
-	}
-yy442:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'a': goto yy445;
-		default: goto yy422;
-	}
-yy443:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'o': goto yy446;
-		default: goto yy422;
-	}
-yy444:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'o': goto yy447;
-		case 'u': goto yy448;
-		default: goto yy422;
-	}
-yy445:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'p': goto yy449;
-		default: goto yy422;
-	}
-yy446:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'r': goto yy450;
-		default: goto yy422;
-	}
-yy447:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'p': goto yy451;
-		default: goto yy422;
-	}
-yy448:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 's': goto yy452;
-		default: goto yy422;
-	}
-yy449:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'e': goto yy453;
-		default: goto yy422;
-	}
-yy450:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 's': goto yy454;
-		default: goto yy422;
-	}
-yy451:
-	++cur;
-#line 1258 "dvi_special.re2c.c"
-	{ return colorstack_pop(ctx, dc, st, -1); }
-#line 6119 "dvi_special.c"
-yy452:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'h': goto yy455;
-		default: goto yy422;
-	}
-yy453:
-	++cur;
-#line 1233 "dvi_special.re2c.c"
-	{ return 1; }
-#line 6131 "dvi_special.c"
+#line 6209 "dvi_special.c"
 yy454:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy456;
-		default: goto yy422;
+		case 'o': goto yy458;
+		default: goto yy445;
 	}
 yy455:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy457;
-		default: goto yy422;
+		case 'd': goto yy459;
+		default: goto yy445;
 	}
 yy456:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'a': goto yy459;
-		default: goto yy422;
+		case ':': goto yy460;
+		case 'c': goto yy462;
+		default: goto yy445;
 	}
 yy457:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy457;
-		default: goto yy458;
+		case 'r': goto yy463;
+		case 's': goto yy464;
+		default: goto yy445;
 	}
 yy458:
-#line 1261 "dvi_special.re2c.c"
-	{
-      return colorstack_push(ctx, dc, st, -1) &&
-             parse_color(&st->gs.colors, cur, lim);
-    }
-#line 6166 "dvi_special.c"
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'r': goto yy465;
+		default: goto yy445;
+	}
 yy459:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'c': goto yy460;
-		default: goto yy422;
+		case 's': goto yy466;
+		default: goto yy445;
 	}
 yy460:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'k': goto yy461;
-		default: goto yy422;
+		case ' ': goto yy460;
+		default: goto yy461;
 	}
 yy461:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy462;
-		case 'i': goto yy463;
-		default: goto yy422;
-	}
+#line 1363 "dvi_special.re2c.c"
+	{ return dvi_exec_pdf(ctx, dc, st, cur, lim); }
+#line 6264 "dvi_special.c"
 yy462:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy462;
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9':
-			yyt1 = cur;
-			goto yy464;
-		default: goto yy422;
+		case 'o': goto yy467;
+		default: goto yy445;
 	}
 yy463:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'n': goto yy465;
-		default: goto yy422;
+		case 'e': goto yy468;
+		default: goto yy445;
 	}
 yy464:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy466;
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9': goto yy464;
-		default: goto yy422;
+		case 'a': goto yy469;
+		default: goto yy445;
 	}
 yy465:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'i': goto yy467;
-		default: goto yy422;
+		case ' ': goto yy470;
+		default: goto yy445;
 	}
 yy466:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy466;
-		case 'c': goto yy468;
-		case 'p': goto yy469;
-		default: goto yy422;
+		case 'c': goto yy471;
+		default: goto yy445;
 	}
 yy467:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy470;
-		default: goto yy422;
+		case 'l': goto yy472;
+		default: goto yy445;
 	}
 yy468:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'u': goto yy471;
-		default: goto yy422;
+		case 's': goto yy473;
+		default: goto yy445;
 	}
 yy469:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'o': goto yy472;
-		case 'u': goto yy473;
-		default: goto yy422;
+		case 'v': goto yy474;
+		default: goto yy445;
 	}
 yy470:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy474;
-		default: goto yy422;
+		case ' ': goto yy470;
+		case 'p': goto yy475;
+		default: goto yy445;
 	}
 yy471:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy475;
-		default: goto yy422;
+		case 'a': goto yy476;
+		default: goto yy445;
 	}
 yy472:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'p': goto yy476;
-		default: goto yy422;
+		case 'o': goto yy477;
+		default: goto yy445;
 	}
 yy473:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 's': goto yy477;
-		default: goto yy422;
+		case 't': goto yy478;
+		default: goto yy445;
 	}
 yy474:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy474;
+		case 'e': goto yy479;
+		default: goto yy445;
+	}
+yy475:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'o': goto yy481;
+		case 'u': goto yy482;
+		default: goto yy445;
+	}
+yy476:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'p': goto yy483;
+		default: goto yy445;
+	}
+yy477:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'r': goto yy484;
+		default: goto yy445;
+	}
+yy478:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'o': goto yy485;
+		default: goto yy445;
+	}
+yy479:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy479;
+		default: goto yy480;
+	}
+yy480:
+#line 1344 "dvi_special.re2c.c"
+	{
+      static const char save[] = "q";
+      return cur == lim && pdf_code(ctx, dc, st, save, save + 1);
+    }
+#line 6399 "dvi_special.c"
+yy481:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'p': goto yy486;
+		default: goto yy445;
+	}
+yy482:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 's': goto yy487;
+		default: goto yy445;
+	}
+yy483:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'e': goto yy488;
+		default: goto yy445;
+	}
+yy484:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 's': goto yy489;
+		default: goto yy445;
+	}
+yy485:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'r': goto yy490;
+		default: goto yy445;
+	}
+yy486:
+	++cur;
+#line 1335 "dvi_special.re2c.c"
+	{ return colorstack_pop(ctx, dc, st, -1); }
+#line 6439 "dvi_special.c"
+yy487:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'h': goto yy491;
+		default: goto yy445;
+	}
+yy488:
+	++cur;
+#line 1310 "dvi_special.re2c.c"
+	{ return 1; }
+#line 6451 "dvi_special.c"
+yy489:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 't': goto yy492;
+		default: goto yy445;
+	}
+yy490:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'e': goto yy493;
+		default: goto yy445;
+	}
+yy491:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy495;
+		default: goto yy445;
+	}
+yy492:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'a': goto yy497;
+		default: goto yy445;
+	}
+yy493:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy493;
+		default: goto yy494;
+	}
+yy494:
+#line 1350 "dvi_special.re2c.c"
+	{ return cur == lim && pdf_etrans(ctx, dc, st); }
+#line 6490 "dvi_special.c"
+yy495:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy495;
+		default: goto yy496;
+	}
+yy496:
+#line 1338 "dvi_special.re2c.c"
+	{
+      return colorstack_push(ctx, dc, st, -1) &&
+             parse_color(&st->gs.colors, cur, lim);
+    }
+#line 6504 "dvi_special.c"
+yy497:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'c': goto yy498;
+		default: goto yy445;
+	}
+yy498:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'k': goto yy499;
+		default: goto yy445;
+	}
+yy499:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy500;
+		case 'i': goto yy501;
+		default: goto yy445;
+	}
+yy500:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy500;
 		case '0':
 		case '1':
 		case '2':
@@ -6310,34 +6539,21 @@ yy474:
 		case '8':
 		case '9':
 			yyt1 = cur;
-			goto yy478;
-		default: goto yy422;
+			goto yy502;
+		default: goto yy445;
 	}
-yy475:
+yy501:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy479;
-		default: goto yy422;
+		case 'n': goto yy503;
+		default: goto yy445;
 	}
-yy476:
-	++cur;
-	i = yyt1;
-#line 1241 "dvi_special.re2c.c"
-	{ return colorstack_pop(ctx, dc, st, pint(i, lim)); }
-#line 6329 "dvi_special.c"
-yy477:
+yy502:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'h': goto yy480;
-		default: goto yy422;
-	}
-yy478:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy481;
+		case ' ': goto yy504;
 		case '0':
 		case '1':
 		case '2':
@@ -6347,165 +6563,287 @@ yy478:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy478;
-		default: goto yy422;
+		case '9': goto yy502;
+		default: goto yy445;
 	}
-yy479:
+yy503:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy482;
-		default: goto yy422;
+		case 'i': goto yy505;
+		default: goto yy445;
 	}
-yy480:
+yy504:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy483;
-		default: goto yy422;
+		case ' ': goto yy504;
+		case 'c': goto yy506;
+		case 'p': goto yy507;
+		default: goto yy445;
 	}
-yy481:
+yy505:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy481;
-		case 'p': goto yy484;
-		default: goto yy422;
+		case 't': goto yy508;
+		default: goto yy445;
 	}
-yy482:
+yy506:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'n': goto yy485;
-		default: goto yy422;
+		case 'u': goto yy509;
+		default: goto yy445;
 	}
-yy483:
+yy507:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy483;
-		case '(': goto yy486;
-		default: goto yy422;
+		case 'o': goto yy510;
+		case 'u': goto yy511;
+		default: goto yy445;
 	}
-yy484:
+yy508:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'a': goto yy487;
-		default: goto yy422;
+		case ' ': goto yy512;
+		default: goto yy445;
 	}
-yy485:
+yy509:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy488;
-		default: goto yy422;
+		case 'r': goto yy513;
+		default: goto yy445;
 	}
-yy486:
+yy510:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'p': goto yy514;
+		default: goto yy445;
+	}
+yy511:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 's': goto yy515;
+		default: goto yy445;
+	}
+yy512:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy512;
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9':
+			yyt1 = cur;
+			goto yy516;
+		default: goto yy445;
+	}
+yy513:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'r': goto yy517;
+		default: goto yy445;
+	}
+yy514:
 	++cur;
 	i = yyt1;
-#line 1245 "dvi_special.re2c.c"
+#line 1318 "dvi_special.re2c.c"
+	{ return colorstack_pop(ctx, dc, st, pint(i, lim)); }
+#line 6667 "dvi_special.c"
+yy515:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'h': goto yy518;
+		default: goto yy445;
+	}
+yy516:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy519;
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9': goto yy516;
+		default: goto yy445;
+	}
+yy517:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'e': goto yy520;
+		default: goto yy445;
+	}
+yy518:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy521;
+		default: goto yy445;
+	}
+yy519:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy519;
+		case 'p': goto yy522;
+		default: goto yy445;
+	}
+yy520:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'n': goto yy523;
+		default: goto yy445;
+	}
+yy521:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy521;
+		case '(': goto yy524;
+		default: goto yy445;
+	}
+yy522:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'a': goto yy525;
+		default: goto yy445;
+	}
+yy523:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 't': goto yy526;
+		default: goto yy445;
+	}
+yy524:
+	++cur;
+	i = yyt1;
+#line 1322 "dvi_special.re2c.c"
 	{
       return colorstack_push(ctx, dc, st, pint(i, lim)) &&
              parse_pdfcolor(&st->gs.colors, cur, lim);
     }
-#line 6413 "dvi_special.c"
-yy487:
+#line 6751 "dvi_special.c"
+yy525:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'g': goto yy489;
-		default: goto yy422;
+		case 'g': goto yy527;
+		default: goto yy445;
 	}
-yy488:
+yy526:
 	++cur;
 	i = yyt1;
-#line 1237 "dvi_special.re2c.c"
+#line 1314 "dvi_special.re2c.c"
 	{ return pdfcolorstack_current(ctx, dc, st, pint(i, lim)); }
-#line 6426 "dvi_special.c"
-yy489:
+#line 6764 "dvi_special.c"
+yy527:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy490;
-		default: goto yy422;
+		case 'e': goto yy528;
+		default: goto yy445;
 	}
-yy490:
+yy528:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy491;
-		default: goto yy422;
+		case ' ': goto yy529;
+		default: goto yy445;
 	}
-yy491:
+yy529:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy491;
-		case 'd': goto yy492;
-		default: goto yy422;
+		case ' ': goto yy529;
+		case 'd': goto yy530;
+		default: goto yy445;
 	}
-yy492:
+yy530:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'i': goto yy493;
-		default: goto yy422;
+		case 'i': goto yy531;
+		default: goto yy445;
 	}
-yy493:
+yy531:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy494;
-		default: goto yy422;
+		case 'r': goto yy532;
+		default: goto yy445;
 	}
-yy494:
+yy532:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy495;
-		default: goto yy422;
+		case 'e': goto yy533;
+		default: goto yy445;
 	}
-yy495:
+yy533:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'c': goto yy496;
-		default: goto yy422;
+		case 'c': goto yy534;
+		default: goto yy445;
 	}
-yy496:
+yy534:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy497;
-		default: goto yy422;
+		case 't': goto yy535;
+		default: goto yy445;
 	}
-yy497:
+yy535:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy498;
-		default: goto yy422;
+		case ' ': goto yy536;
+		default: goto yy445;
 	}
-yy498:
+yy536:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy498;
-		case '(': goto yy499;
-		default: goto yy422;
+		case ' ': goto yy536;
+		case '(': goto yy537;
+		default: goto yy445;
 	}
-yy499:
+yy537:
 	++cur;
 	i = yyt1;
-#line 1252 "dvi_special.re2c.c"
+#line 1329 "dvi_special.re2c.c"
 	{
       return colorstack_init(ctx, dc, st, pint(i, lim)) &&
              parse_pdfcolor(&st->gs.colors, cur, lim);
     }
-#line 6507 "dvi_special.c"
+#line 6845 "dvi_special.c"
 }
-#line 1282 "dvi_special.re2c.c"
+#line 1368 "dvi_special.re2c.c"
 
   }
 }
@@ -6515,146 +6853,146 @@ bool dvi_init_special(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t 
   cursor_t i, f0, f1, mar;
 
   
-#line 6519 "dvi_special.c"
+#line 6857 "dvi_special.c"
 {
 	int yych;
 	mar = cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'p': goto yy502;
-		default: goto yy501;
+		case 'p': goto yy540;
+		default: goto yy539;
 	}
-yy501:
-#line 1300 "dvi_special.re2c.c"
+yy539:
+#line 1386 "dvi_special.re2c.c"
 	{ return 0; }
-#line 6531 "dvi_special.c"
-yy502:
+#line 6869 "dvi_special.c"
+yy540:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'd': goto yy504;
-		default: goto yy503;
+		case 'd': goto yy542;
+		default: goto yy541;
 	}
-yy503:
+yy541:
 	cur = mar;
-	goto yy501;
-yy504:
+	goto yy539;
+yy542:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'f': goto yy505;
-		default: goto yy503;
+		case 'f': goto yy543;
+		default: goto yy541;
 	}
-yy505:
+yy543:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'c': goto yy506;
-		default: goto yy503;
+		case 'c': goto yy544;
+		default: goto yy541;
 	}
-yy506:
+yy544:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'o': goto yy507;
-		default: goto yy503;
+		case 'o': goto yy545;
+		default: goto yy541;
 	}
-yy507:
+yy545:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'l': goto yy508;
-		default: goto yy503;
+		case 'l': goto yy546;
+		default: goto yy541;
 	}
-yy508:
+yy546:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'o': goto yy509;
-		default: goto yy503;
+		case 'o': goto yy547;
+		default: goto yy541;
 	}
-yy509:
+yy547:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy510;
-		default: goto yy503;
+		case 'r': goto yy548;
+		default: goto yy541;
 	}
-yy510:
+yy548:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 's': goto yy511;
-		default: goto yy503;
+		case 's': goto yy549;
+		default: goto yy541;
 	}
-yy511:
+yy549:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy512;
-		default: goto yy503;
+		case 't': goto yy550;
+		default: goto yy541;
 	}
-yy512:
+yy550:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'a': goto yy513;
-		default: goto yy503;
+		case 'a': goto yy551;
+		default: goto yy541;
 	}
-yy513:
+yy551:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'c': goto yy514;
-		default: goto yy503;
+		case 'c': goto yy552;
+		default: goto yy541;
 	}
-yy514:
+yy552:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'k': goto yy515;
-		default: goto yy503;
+		case 'k': goto yy553;
+		default: goto yy541;
 	}
-yy515:
+yy553:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'i': goto yy516;
-		default: goto yy503;
+		case 'i': goto yy554;
+		default: goto yy541;
 	}
-yy516:
+yy554:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'n': goto yy517;
-		default: goto yy503;
+		case 'n': goto yy555;
+		default: goto yy541;
 	}
-yy517:
+yy555:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'i': goto yy518;
-		default: goto yy503;
+		case 'i': goto yy556;
+		default: goto yy541;
 	}
-yy518:
+yy556:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy519;
-		default: goto yy503;
+		case 't': goto yy557;
+		default: goto yy541;
 	}
-yy519:
+yy557:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy520;
-		default: goto yy503;
+		case ' ': goto yy558;
+		default: goto yy541;
 	}
-yy520:
+yy558:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy520;
+		case ' ': goto yy558;
 		case '0':
 		case '1':
 		case '2':
@@ -6666,14 +7004,14 @@ yy520:
 		case '8':
 		case '9':
 			yyt1 = cur;
-			goto yy521;
-		default: goto yy503;
+			goto yy559;
+		default: goto yy541;
 	}
-yy521:
+yy559:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy522;
+		case ' ': goto yy560;
 		case '0':
 		case '1':
 		case '2':
@@ -6683,114 +7021,114 @@ yy521:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy521;
-		default: goto yy503;
+		case '9': goto yy559;
+		default: goto yy541;
 	}
-yy522:
+yy560:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy522;
-		case 'p': goto yy523;
-		default: goto yy503;
+		case ' ': goto yy560;
+		case 'p': goto yy561;
+		default: goto yy541;
 	}
-yy523:
+yy561:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'a': goto yy524;
-		default: goto yy503;
+		case 'a': goto yy562;
+		default: goto yy541;
 	}
-yy524:
+yy562:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'g': goto yy525;
-		default: goto yy503;
+		case 'g': goto yy563;
+		default: goto yy541;
 	}
-yy525:
+yy563:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy526;
-		default: goto yy503;
+		case 'e': goto yy564;
+		default: goto yy541;
 	}
-yy526:
+yy564:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy527;
-		default: goto yy503;
+		case ' ': goto yy565;
+		default: goto yy541;
 	}
-yy527:
+yy565:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy527;
-		case 'd': goto yy528;
-		default: goto yy503;
+		case ' ': goto yy565;
+		case 'd': goto yy566;
+		default: goto yy541;
 	}
-yy528:
+yy566:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'i': goto yy529;
-		default: goto yy503;
+		case 'i': goto yy567;
+		default: goto yy541;
 	}
-yy529:
+yy567:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy530;
-		default: goto yy503;
+		case 'r': goto yy568;
+		default: goto yy541;
 	}
-yy530:
+yy568:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy531;
-		default: goto yy503;
+		case 'e': goto yy569;
+		default: goto yy541;
 	}
-yy531:
+yy569:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'c': goto yy532;
-		default: goto yy503;
+		case 'c': goto yy570;
+		default: goto yy541;
 	}
-yy532:
+yy570:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy533;
-		default: goto yy503;
+		case 't': goto yy571;
+		default: goto yy541;
 	}
-yy533:
+yy571:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy534;
-		default: goto yy503;
+		case ' ': goto yy572;
+		default: goto yy541;
 	}
-yy534:
+yy572:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy534;
-		case '(': goto yy535;
-		default: goto yy503;
+		case ' ': goto yy572;
+		case '(': goto yy573;
+		default: goto yy541;
 	}
-yy535:
+yy573:
 	++cur;
 	i = yyt1;
-#line 1294 "dvi_special.re2c.c"
+#line 1380 "dvi_special.re2c.c"
 	{
     return colorstack_init(ctx, dc, st, pint(i, lim)) &&
            parse_pdfcolor(&st->gs.colors, cur, lim);
   }
-#line 6792 "dvi_special.c"
+#line 7130 "dvi_special.c"
 }
-#line 1302 "dvi_special.re2c.c"
+#line 1388 "dvi_special.re2c.c"
 
 }
 
@@ -6801,461 +7139,461 @@ void dvi_prescan_special(cursor_t cur, cursor_t lim, float *width, float *height
   // fprintf(stderr, "prescan: %.*s\n", (int)(lim - cur), cur);
 
   
-#line 6805 "dvi_special.c"
+#line 7143 "dvi_special.c"
 {
 	int yych;
 	mar = cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'l': goto yy538;
-		case 'p': goto yy540;
-		default: goto yy537;
-	}
-yy537:
-#line 1331 "dvi_special.re2c.c"
-	{ return; }
-#line 6818 "dvi_special.c"
-yy538:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'a': goto yy541;
-		default: goto yy539;
-	}
-yy539:
-	cur = mar;
-	goto yy537;
-yy540:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'd': goto yy542;
-		default: goto yy539;
-	}
-yy541:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'n': goto yy543;
-		default: goto yy539;
-	}
-yy542:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'f': goto yy544;
-		default: goto yy539;
-	}
-yy543:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'd': goto yy545;
-		default: goto yy539;
-	}
-yy544:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ':': goto yy546;
-		default: goto yy539;
-	}
-yy545:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 's': goto yy547;
-		default: goto yy539;
-	}
-yy546:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy546;
-		case 'p': goto yy548;
-		default: goto yy539;
-	}
-yy547:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'c': goto yy549;
-		default: goto yy539;
-	}
-yy548:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'a': goto yy550;
-		default: goto yy539;
-	}
-yy549:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'a': goto yy551;
-		default: goto yy539;
-	}
-yy550:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'g': goto yy552;
-		default: goto yy539;
-	}
-yy551:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'p': goto yy553;
-		default: goto yy539;
-	}
-yy552:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'e': goto yy554;
-		default: goto yy539;
-	}
-yy553:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'e': goto yy555;
-		default: goto yy539;
-	}
-yy554:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 's': goto yy556;
-		default: goto yy539;
-	}
-yy555:
-	++cur;
-#line 1314 "dvi_special.re2c.c"
-	{
-    *landscape = 1;
-    return;
-  }
-#line 6942 "dvi_special.c"
-yy556:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'i': goto yy557;
-		default: goto yy539;
-	}
-yy557:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'z': goto yy558;
-		default: goto yy539;
-	}
-yy558:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'e': goto yy559;
-		default: goto yy539;
-	}
-yy559:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy560;
-		default: goto yy539;
-	}
-yy560:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy560;
-		case 'd': goto yy561;
-		case 'w': goto yy562;
-		default: goto yy539;
-	}
-yy561:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'e': goto yy563;
-		default: goto yy539;
-	}
-yy562:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'i': goto yy564;
-		default: goto yy539;
-	}
-yy563:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'f': goto yy565;
-		default: goto yy539;
-	}
-yy564:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'd': goto yy566;
-		default: goto yy539;
-	}
-yy565:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'a': goto yy567;
-		default: goto yy539;
-	}
-yy566:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 't': goto yy568;
-		default: goto yy539;
-	}
-yy567:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'u': goto yy569;
-		default: goto yy539;
-	}
-yy568:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'h': goto yy570;
-		default: goto yy539;
-	}
-yy569:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'l': goto yy571;
-		default: goto yy539;
-	}
-yy570:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy572;
-		default: goto yy539;
-	}
-yy571:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 't': goto yy573;
-		default: goto yy539;
-	}
-yy572:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case ' ': goto yy572;
-		case '-':
-			yyt1 = cur;
-			goto yy574;
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9':
-			yyt1 = cur;
-			goto yy575;
-		default: goto yy539;
-	}
-yy573:
-	++cur;
-#line 1328 "dvi_special.re2c.c"
-	{ *width = 612; *height = 792; return; }
-#line 7083 "dvi_special.c"
-yy574:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9': goto yy575;
-		default: goto yy539;
+		case 'l': goto yy576;
+		case 'p': goto yy578;
+		default: goto yy575;
 	}
 yy575:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case '.': goto yy576;
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9': goto yy575;
-		case 'c':
-		case 'm': goto yy577;
-		case 'i': goto yy578;
-		case 'p': goto yy579;
-		case 't': goto yy580;
-		default: goto yy539;
-	}
+#line 1417 "dvi_special.re2c.c"
+	{ return; }
+#line 7156 "dvi_special.c"
 yy576:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case '0':
-		case '1':
-		case '2':
-		case '3':
-		case '4':
-		case '5':
-		case '6':
-		case '7':
-		case '8':
-		case '9': goto yy576;
-		case 'c':
-		case 'm': goto yy577;
-		case 'i': goto yy578;
-		case 'p': goto yy579;
-		case 't': goto yy580;
-		default: goto yy539;
+		case 'a': goto yy579;
+		default: goto yy577;
 	}
 yy577:
-	++cur;
-	yych = cur < lim ? (unsigned char)*cur : -1;
-	switch (yych) {
-		case 'm': goto yy581;
-		default: goto yy539;
-	}
+	cur = mar;
+	goto yy575;
 yy578:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'n': goto yy581;
-		default: goto yy539;
+		case 'd': goto yy580;
+		default: goto yy577;
 	}
 yy579:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy581;
-		default: goto yy539;
+		case 'n': goto yy581;
+		default: goto yy577;
 	}
 yy580:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy582;
-		default: goto yy539;
+		case 'f': goto yy582;
+		default: goto yy577;
 	}
 yy581:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy583;
-		default: goto yy539;
+		case 'd': goto yy583;
+		default: goto yy577;
 	}
 yy582:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'u': goto yy584;
-		default: goto yy539;
+		case ':': goto yy584;
+		default: goto yy577;
 	}
 yy583:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy583;
-		case 'h': goto yy585;
-		default: goto yy539;
+		case 's': goto yy585;
+		default: goto yy577;
 	}
 yy584:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy586;
-		default: goto yy539;
+		case ' ': goto yy584;
+		case 'p': goto yy586;
+		default: goto yy577;
 	}
 yy585:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy587;
-		default: goto yy539;
+		case 'c': goto yy587;
+		default: goto yy577;
 	}
 yy586:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'c':
-		case 'm': goto yy577;
-		case 'i': goto yy578;
-		case 'p': goto yy579;
-		default: goto yy539;
+		case 'a': goto yy588;
+		default: goto yy577;
 	}
 yy587:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'i': goto yy588;
-		default: goto yy539;
+		case 'a': goto yy589;
+		default: goto yy577;
 	}
 yy588:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'g': goto yy589;
-		default: goto yy539;
+		case 'g': goto yy590;
+		default: goto yy577;
 	}
 yy589:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'h': goto yy590;
-		default: goto yy539;
+		case 'p': goto yy591;
+		default: goto yy577;
 	}
 yy590:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy591;
-		default: goto yy539;
+		case 'e': goto yy592;
+		default: goto yy577;
 	}
 yy591:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy592;
-		default: goto yy539;
+		case 'e': goto yy593;
+		default: goto yy577;
 	}
 yy592:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case ' ': goto yy592;
+		case 's': goto yy594;
+		default: goto yy577;
+	}
+yy593:
+	++cur;
+#line 1400 "dvi_special.re2c.c"
+	{
+    *landscape = 1;
+    return;
+  }
+#line 7280 "dvi_special.c"
+yy594:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'i': goto yy595;
+		default: goto yy577;
+	}
+yy595:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'z': goto yy596;
+		default: goto yy577;
+	}
+yy596:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'e': goto yy597;
+		default: goto yy577;
+	}
+yy597:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy598;
+		default: goto yy577;
+	}
+yy598:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy598;
+		case 'd': goto yy599;
+		case 'w': goto yy600;
+		default: goto yy577;
+	}
+yy599:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'e': goto yy601;
+		default: goto yy577;
+	}
+yy600:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'i': goto yy602;
+		default: goto yy577;
+	}
+yy601:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'f': goto yy603;
+		default: goto yy577;
+	}
+yy602:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'd': goto yy604;
+		default: goto yy577;
+	}
+yy603:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'a': goto yy605;
+		default: goto yy577;
+	}
+yy604:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 't': goto yy606;
+		default: goto yy577;
+	}
+yy605:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'u': goto yy607;
+		default: goto yy577;
+	}
+yy606:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'h': goto yy608;
+		default: goto yy577;
+	}
+yy607:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'l': goto yy609;
+		default: goto yy577;
+	}
+yy608:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy610;
+		default: goto yy577;
+	}
+yy609:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 't': goto yy611;
+		default: goto yy577;
+	}
+yy610:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy610;
+		case '-':
+			yyt1 = cur;
+			goto yy612;
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9':
+			yyt1 = cur;
+			goto yy613;
+		default: goto yy577;
+	}
+yy611:
+	++cur;
+#line 1414 "dvi_special.re2c.c"
+	{ *width = 612; *height = 792; return; }
+#line 7421 "dvi_special.c"
+yy612:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9': goto yy613;
+		default: goto yy577;
+	}
+yy613:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case '.': goto yy614;
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9': goto yy613;
+		case 'c':
+		case 'm': goto yy615;
+		case 'i': goto yy616;
+		case 'p': goto yy617;
+		case 't': goto yy618;
+		default: goto yy577;
+	}
+yy614:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9': goto yy614;
+		case 'c':
+		case 'm': goto yy615;
+		case 'i': goto yy616;
+		case 'p': goto yy617;
+		case 't': goto yy618;
+		default: goto yy577;
+	}
+yy615:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'm': goto yy619;
+		default: goto yy577;
+	}
+yy616:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'n': goto yy619;
+		default: goto yy577;
+	}
+yy617:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 't': goto yy619;
+		default: goto yy577;
+	}
+yy618:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'r': goto yy620;
+		default: goto yy577;
+	}
+yy619:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy621;
+		default: goto yy577;
+	}
+yy620:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'u': goto yy622;
+		default: goto yy577;
+	}
+yy621:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy621;
+		case 'h': goto yy623;
+		default: goto yy577;
+	}
+yy622:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'e': goto yy624;
+		default: goto yy577;
+	}
+yy623:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'e': goto yy625;
+		default: goto yy577;
+	}
+yy624:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'c':
+		case 'm': goto yy615;
+		case 'i': goto yy616;
+		case 'p': goto yy617;
+		default: goto yy577;
+	}
+yy625:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'i': goto yy626;
+		default: goto yy577;
+	}
+yy626:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'g': goto yy627;
+		default: goto yy577;
+	}
+yy627:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 'h': goto yy628;
+		default: goto yy577;
+	}
+yy628:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case 't': goto yy629;
+		default: goto yy577;
+	}
+yy629:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy630;
+		default: goto yy577;
+	}
+yy630:
+	++cur;
+	yych = cur < lim ? (unsigned char)*cur : -1;
+	switch (yych) {
+		case ' ': goto yy630;
 		case '-':
 			yyt2 = cur;
-			goto yy593;
+			goto yy631;
 		case '0':
 		case '1':
 		case '2':
@@ -7267,10 +7605,10 @@ yy592:
 		case '8':
 		case '9':
 			yyt2 = cur;
-			goto yy594;
-		default: goto yy539;
+			goto yy632;
+		default: goto yy577;
 	}
-yy593:
+yy631:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
@@ -7283,14 +7621,14 @@ yy593:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy594;
-		default: goto yy539;
+		case '9': goto yy632;
+		default: goto yy577;
 	}
-yy594:
+yy632:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case '.': goto yy595;
+		case '.': goto yy633;
 		case '0':
 		case '1':
 		case '2':
@@ -7300,15 +7638,15 @@ yy594:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy594;
+		case '9': goto yy632;
 		case 'c':
-		case 'm': goto yy596;
-		case 'i': goto yy597;
-		case 'p': goto yy598;
-		case 't': goto yy599;
-		default: goto yy539;
+		case 'm': goto yy634;
+		case 'i': goto yy635;
+		case 'p': goto yy636;
+		case 't': goto yy637;
+		default: goto yy577;
 	}
-yy595:
+yy633:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
@@ -7321,78 +7659,78 @@ yy595:
 		case '6':
 		case '7':
 		case '8':
-		case '9': goto yy595;
+		case '9': goto yy633;
 		case 'c':
-		case 'm': goto yy596;
-		case 'i': goto yy597;
-		case 'p': goto yy598;
-		case 't': goto yy599;
-		default: goto yy539;
+		case 'm': goto yy634;
+		case 'i': goto yy635;
+		case 'p': goto yy636;
+		case 't': goto yy637;
+		default: goto yy577;
 	}
-yy596:
+yy634:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'm': goto yy600;
-		default: goto yy539;
+		case 'm': goto yy638;
+		default: goto yy577;
 	}
-yy597:
+yy635:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'n': goto yy600;
-		default: goto yy539;
+		case 'n': goto yy638;
+		default: goto yy577;
 	}
-yy598:
+yy636:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 't': goto yy600;
-		default: goto yy539;
+		case 't': goto yy638;
+		default: goto yy577;
 	}
-yy599:
+yy637:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'r': goto yy601;
-		default: goto yy539;
+		case 'r': goto yy639;
+		default: goto yy577;
 	}
-yy600:
+yy638:
 	++cur;
 	f0 = yyt1;
 	f1 = yyt2;
-#line 1321 "dvi_special.re2c.c"
+#line 1407 "dvi_special.re2c.c"
 	{
     *width = pdim(f0, lim);
     *height = pdim(f1, lim);
     return;
   }
-#line 7371 "dvi_special.c"
-yy601:
+#line 7709 "dvi_special.c"
+yy639:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'u': goto yy602;
-		default: goto yy539;
+		case 'u': goto yy640;
+		default: goto yy577;
 	}
-yy602:
+yy640:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
-		case 'e': goto yy603;
-		default: goto yy539;
+		case 'e': goto yy641;
+		default: goto yy577;
 	}
-yy603:
+yy641:
 	++cur;
 	yych = cur < lim ? (unsigned char)*cur : -1;
 	switch (yych) {
 		case 'c':
-		case 'm': goto yy596;
-		case 'i': goto yy597;
-		case 'p': goto yy598;
-		default: goto yy539;
+		case 'm': goto yy634;
+		case 'i': goto yy635;
+		case 'p': goto yy636;
+		default: goto yy577;
 	}
 }
-#line 1333 "dvi_special.re2c.c"
+#line 1419 "dvi_special.re2c.c"
 
 }

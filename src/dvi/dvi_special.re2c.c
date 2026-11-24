@@ -439,6 +439,8 @@ static struct xform_spec xform_spec()
 static bool
 embed_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, struct xform_spec *xf, const char *filename)
 {
+  pdf_page *page = NULL;
+  fz_var(page);
   fz_try(ctx)
   {
     pdf_document *doc = dvi_resmanager_get_pdf(ctx, dc->resmanager, filename);
@@ -446,7 +448,7 @@ embed_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, struct xform_spec *xf
       return 0;
 
     // from mupdf/source/pdf/pdf-page.c: pdf_page_obj_transform
-    pdf_page *page = pdf_load_page(ctx, doc, xf->page ? xf->page - 1 : 0);
+    page = pdf_load_page(ctx, doc, xf->page > 0 ? xf->page - 1 : 0);
     pdf_obj *pageobj = page ? page->obj : NULL;
 
     fz_rect mediabox = pdf_to_rect(ctx, pdf_dict_get_inheritable(ctx, pageobj, PDF_NAME(MediaBox)));
@@ -468,6 +470,10 @@ embed_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, struct xform_spec *xf
     if (dc->annotation_uri) dvi_annotation_bounds(ctx, dc, fz_transform_rect(fz_bound_page(ctx, (fz_page *)page), ctm));
     pdf_run_page(ctx, page, dc->dev, ctm, NULL);
   }
+  fz_always(ctx)
+  {
+    fz_drop_page(ctx, (fz_page *)page);
+  }
   fz_catch(ctx)
   {
     return 0;
@@ -475,41 +481,99 @@ embed_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, struct xform_spec *xf
   return 1;
 }
 
+static uint32_t read_be32(const unsigned char *data)
+{
+  return (uint32_t)data[0] << 24 | (uint32_t)data[1] << 16 |
+         (uint32_t)data[2] << 8 | (uint32_t)data[3];
+}
+
+static void image_size_in_bp(fz_context *ctx, fz_image *img, float *width, float *height)
+{
+  fz_compressed_buffer *compressed = fz_compressed_image_buffer(ctx, img);
+  if (compressed && compressed->params.type == FZ_IMAGE_PNG)
+  {
+    // XeTeX uses the PNG's pixels-per-meter values directly, or 72 dpi
+    // when absent. MuPDF's default DPI and rounded resolution can differ.
+    *width = img->w;
+    *height = img->h;
+    unsigned char *bytes;
+    size_t size = fz_buffer_storage(ctx, compressed->buffer, &bytes);
+    size_t offset = 8; // PNG signature
+    while (offset <= size && size - offset >= 12)
+    {
+      const unsigned char *chunk = bytes + offset;
+      uint32_t length = read_be32(chunk);
+      if (length > size - offset - 12 || !memcmp(chunk + 4, "IDAT", 4))
+        break;
+      if (length == 9 && !memcmp(chunk + 4, "pHYs", 4) && chunk[16] == 1)
+      {
+        uint32_t xppm = read_be32(chunk + 8), yppm = read_be32(chunk + 12);
+        if (xppm) *width = img->w * (72.0 / 0.0254 / xppm);
+        if (yppm) *height = img->h * (72.0 / 0.0254 / yppm);
+        break;
+      }
+      offset += (size_t)length + 12;
+    }
+  }
+  else
+  {
+    int xres, yres;
+    fz_image_resolution(img, &xres, &yres);
+    *width = img->w * (72.f / xres);
+    *height = img->h * (72.f / yres);
+  }
+}
+
 static bool
 embed_image(fz_context *ctx, dvi_context *dc, dvi_state *st, struct xform_spec *xf, const char *filename)
 {
-
-  fz_image *img = NULL;
-  fz_var(img);
+  fz_path *clip = NULL;
+  bool clipped = false;
+  fz_var(clip);
+  fz_var(clipped);
 
   fz_try(ctx)
   {
     fz_image *img = dvi_resmanager_get_img(ctx, dc->resmanager, filename);
     fz_matrix ctm = fz_concat(xf->ctm, dvi_get_ctm(dc, st));
-    // int xres, yres;
-    // fz_image_resolution(img, &xres, &yres);
-    // fprintf(stderr, "RENDERING IMAGE, size: %d %d, res: %d %d\n",
-    //         img->w, img->h, xres, yres);
-    //
-    float ar = (float)img->w / (float)img->h;
+    fz_rect box = xf->bbox;
+    float natural_width = img->w, natural_height = img->h;
+    if (!fz_is_infinite_rect(box) && !fz_is_empty_rect(box))
+      image_size_in_bp(ctx, img, &natural_width, &natural_height);
+    else
+      box = fz_make_rect(0, 0, natural_width, natural_height);
+    float box_width = box.x1 - box.x0, box_height = box.y1 - box.y0;
     float w = xf->width, h = xf->height;
-    if (w != w && h != h)
+    if (isnan(w) && isnan(h))
     {
-      w = img->w;
-      h = img->h;
+      w = box_width;
+      h = box_height;
     }
-    else if (w != w)
-      w = h * ar;
-    else if (h != h)
-      h = w / ar;
-    ctm = fz_pre_scale(fz_pre_translate(ctm, 0, h), w, -h);
-    if (dc->annotation_uri) dvi_annotation_bounds(ctx, dc, fz_transform_rect(fz_unit_rect, ctm));
-    fz_fill_image(ctx, dc->dev, img, ctm, 1.0, color_params);
+    else if (isnan(w))
+      w = h * box_width / box_height;
+    else if (isnan(h))
+      h = w * box_height / box_width;
+    float sx = w / box_width, sy = h / box_height;
+    fz_rect aperture = fz_make_rect(0, 0, w, h);
+    if (xf->clip)
+    {
+      clip = fz_new_path(ctx);
+      fz_rectto(ctx, clip, aperture.x0, aperture.y0, aperture.x1, aperture.y1);
+      fz_clip_path(ctx, dc->dev, clip, 0, ctm, fz_infinite_rect);
+      clipped = true;
+    }
+    fz_matrix image = fz_pre_translate(ctm, -box.x0 * sx, (natural_height - box.y0) * sy);
+    image = fz_pre_scale(image, natural_width * sx, -natural_height * sy);
+    if (dc->annotation_uri)
+      dvi_annotation_bounds(ctx, dc, xf->clip ? fz_transform_rect(aperture, ctm)
+                                           : fz_transform_rect(fz_unit_rect, image));
+    fz_fill_image(ctx, dc->dev, img, image, 1.0, color_params);
   }
   fz_always(ctx)
   {
-    if (img)
-      fz_drop_image(ctx, img);
+    fz_drop_path(ctx, clip);
+    if (clipped)
+      fz_pop_clip(ctx, dc->dev);
   }
   fz_catch(ctx)
   {
@@ -605,8 +669,8 @@ parse_xform_or_dim(struct xform_spec *xf, cursor_t cur, cursor_t lim)
            ws+ @f3 float
     {
       xf->bbox.x0 = pfloat(f0, lim);
-      xf->bbox.x1 = pfloat(f1, lim);
-      xf->bbox.y0 = pfloat(f2, lim);
+      xf->bbox.y0 = pfloat(f1, lim);
+      xf->bbox.x1 = pfloat(f2, lim);
       xf->bbox.y1 = pfloat(f3, lim);
       continue;
     }
@@ -698,12 +762,17 @@ pdf_btrans(dvi_context *dc, dvi_state *st, cursor_t cur, cursor_t lim)
 }
 
 static bool
-pdf_etrans(dvi_context *dc, dvi_state *st)
+pdf_etrans(fz_context *ctx, dvi_context *dc, dvi_state *st)
 {
   if (st->gs_stack.depth == 0)
     return 0;
+  dvi_context_flush_text(ctx, dc, st);
+  int clip_depth = st->gs.clip_depth;
   st->gs_stack.depth -= 1;
   st->gs = st->gs_stack.base[st->gs_stack.depth];
+  if (dc->dev)
+    for (int i = st->gs.clip_depth; i < clip_depth; ++i)
+      fz_pop_clip(ctx, dc->dev);
   return 1;
 }
 
@@ -773,21 +842,15 @@ pdf_code(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t cur, cursor_t
         {
           if (st->gs_stack.depth >= st->gs_stack.limit)
             fz_throw(ctx, 0, "PDF q: stack overflow");
+          dvi_context_flush_text(ctx, dc, st);
           st->gs_stack.base[st->gs_stack.depth] = st->gs;
           st->gs_stack.depth += 1;
           break;
         }
         case PDF_OP_Q:
         {
-          if (st->gs_stack.depth == 0)
+          if (!pdf_etrans(ctx, dc, st))
             fz_throw(ctx, 0, "PDF Q: stack underflow");
-          st->gs_stack.depth -= 1;
-
-          int clip_depth0 = st->gs.clip_depth;
-          st->gs = st->gs_stack.base[st->gs_stack.depth];
-          if (dc->dev)
-            for (int i = st->gs.clip_depth; i < clip_depth0; ++i)
-              fz_pop_clip(ctx, dc->dev);
           break;
         }
         case PDF_OP_G:
@@ -1178,7 +1241,7 @@ dvi_exec_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t cur, curs
   { return pdf_btrans(dc, st, cur, lim); }
 
   ("endtransform" | "etrans" | "et")
-  { return pdf_etrans(dc, st); }
+  { return pdf_etrans(ctx, dc, st); }
 
   @f0 ("bcontent" | "econtent") @f1
   {
@@ -1209,6 +1272,20 @@ dvi_exec_pdf(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t cur, curs
 
   "code"
   { return pdf_code(ctx, dc, st, cur, lim); }
+
+  "literal" ws+ ("direct" ws+)?
+  { return pdf_code(ctx, dc, st, cur, lim); }
+
+  "content" ws+
+  {
+    // dvipdfmx wraps these operators in q/Q. An explicit q in the
+    // content can leave the outer scope open for a later literal Q.
+    static const char save[] = "q";
+    if (!pdf_code(ctx, dc, st, save, save + 1))
+      return 0;
+    bool ok = pdf_code(ctx, dc, st, cur, lim);
+    return pdf_etrans(ctx, dc, st) && ok;
+  }
 
   ''
   { return unhandled("pdf special", cur, lim, 0); }
@@ -1262,6 +1339,15 @@ bool dvi_exec_special(fz_context *ctx, dvi_context *dc, dvi_state *st, cursor_t 
       return colorstack_push(ctx, dc, st, -1) &&
              parse_color(&st->gs.colors, cur, lim);
     }
+
+    "x:gsave" ws*
+    {
+      static const char save[] = "q";
+      return cur == lim && pdf_code(ctx, dc, st, save, save + 1);
+    }
+
+    "x:grestore" ws*
+    { return cur == lim && pdf_etrans(ctx, dc, st); }
 
     "x:"
     {

@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <mupdf/fitz.h>
 #include "engine.h"
+#include "fz_util.h"
 
 struct pdf_engine
 {
@@ -46,6 +47,7 @@ static void engine_destroy(txp_engine *_self, fz_context *ctx)
   SELF;
   fz_free(ctx, self->path);
   fz_drop_document(ctx, self->doc);
+  fz_free(ctx, self);
 }
 
 static fz_display_list *engine_render_page(txp_engine *_self,
@@ -54,8 +56,13 @@ static fz_display_list *engine_render_page(txp_engine *_self,
 {
   SELF;
   fz_page *page = fz_load_page(ctx, self->doc, index);
-  fz_display_list *dl = fz_new_display_list_from_page(ctx, page);
-  fz_drop_page(ctx, page);
+  fz_ptr(fz_display_list, dl);
+  fz_try(ctx)
+    dl = fz_new_display_list_from_page(ctx, page);
+  fz_always(ctx)
+    fz_drop_page(ctx, page);
+  fz_catch(ctx)
+    fz_rethrow(ctx);
   return dl;
 }
 
@@ -153,12 +160,23 @@ txp_engine *txp_create_pdf_engine(fz_context *ctx, const char *pdf_path)
   if (!doc)
     return NULL;
 
-  struct pdf_engine *self = fz_malloc_struct(ctx, struct pdf_engine);
-  self->_class = &_class;
-
-  self->path = fz_strdup(ctx, pdf_path);
-  self->doc = doc;
-  self->page_count = fz_count_pages(ctx, doc);
+  fz_ptr(struct pdf_engine, self);
+  fz_try(ctx)
+  {
+    self = fz_malloc_struct(ctx, struct pdf_engine);
+    self->_class = &_class;
+    self->doc = doc;
+    self->path = fz_strdup(ctx, pdf_path);
+    self->page_count = fz_count_pages(ctx, doc);
+  }
+  fz_catch(ctx)
+  {
+    if (self)
+      engine_destroy((txp_engine*)self, ctx);
+    else
+      fz_drop_document(ctx, doc);
+    fz_rethrow(ctx);
+  }
 
   return (txp_engine*)self;
 }

@@ -45,9 +45,18 @@ void synctex_scan(fz_context *ctx, synctex_t *stx, fz_buffer *buf, const char *d
 
 /* Borrowed filename bytes remain owned by buf. A NULL tags pointer permits all
  * inputs; a non-NULL empty list permits none. Tags are one-based Input IDs. */
-typedef struct { const char *file; int file_len, line, column; } synctex_location;
+typedef struct {
+  const char *file;
+  int file_len, line, column;
+  bool fallback;
+} synctex_location;
+typedef bool (*synctex_generated_input)(void *user, const char *file, int len);
 bool synctex_lookup(fz_context *ctx, synctex_t *stx, fz_buffer *buf, unsigned page,
                    int x, int y, const int *tags, int tag_count, synctex_location *out);
+/* Retry a hit in generated input using only non-generated candidates. */
+bool synctex_lookup_source(fz_context *ctx, synctex_t *stx, fz_buffer *buf, unsigned page,
+                          int x, int y, const int *tags, int tag_count,
+                          synctex_generated_input generated, void *user, synctex_location *out);
 #define SYNCTEX_MAX_RECTS 128
 int synctex_target_rects(synctex_t *stx, fz_buffer *buf, int page, int column,
                          fz_irect *rects, int capacity, int *x, int *y);
