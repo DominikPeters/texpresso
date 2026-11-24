@@ -488,6 +488,14 @@ size_t ttstub_input_get_size(ttbc_input_handle_t *handle)
   return file_stat.st_size;
 }
 
+static size_t seek_file(FILE *file, ssize_t offset, int whence)
+{
+  if (fseeko(file, offset, whence) != 0)
+    return (size_t)-1;
+  // The bridge returns the new byte position, including for provider files.
+  return ftello(file);
+}
+
 size_t ttstub_input_seek(ttbc_input_handle_t *handle,
                          ssize_t offset,
                          int whence)
@@ -496,7 +504,7 @@ size_t ttstub_input_seek(ttbc_input_handle_t *handle,
   {
     txp_input *input = input_as_txp(handle);
     if (input->id == -1)
-      return fseek(input->file, offset, whence);
+      return seek_file(input->file, offset, whence);
 
     int ofs = offset;
     if (whence == SEEK_CUR)
@@ -518,7 +526,7 @@ size_t ttstub_input_seek(ttbc_input_handle_t *handle,
 
     return input->file_pos + input->buf_pos;
   }
-  return fseek(input_as_file(handle), offset, whence);
+  return seek_file(input_as_file(handle), offset, whence);
 }
 
 static ssize_t internal_input_read(ttbc_input_handle_t *handle, char *data, size_t len)

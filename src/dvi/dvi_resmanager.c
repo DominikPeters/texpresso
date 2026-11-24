@@ -136,6 +136,16 @@ tectonic_hooks_open_file(fz_context *ctx, void *env, dvi_reskind kind, const cha
         else
           memcpy(path + root_len, name, name_len);
         path[len] = 0;
+        if (access(path, R_OK) != 0)
+        {
+          const char *resolved = tectonic_get_file_path(name);
+          if (resolved)
+          {
+            free(path);
+            path = (char *)resolved;
+            free_path = false;
+          }
+        }
       }
       break;
 
@@ -278,6 +288,16 @@ texlive_hooks_open_file(fz_context *ctx, void *env, dvi_reskind kind, const char
         else
           memcpy(path + root_len, name, name_len);
         path[len] = 0;
+        if (access(path, R_OK) != 0)
+        {
+          const char *resolved = texmf_file_path(name, NULL);
+          if (resolved)
+          {
+            free(path);
+            path = (char *)resolved;
+            free_path = false;
+          }
+        }
       }
       break;
 
@@ -837,6 +857,8 @@ fz_image *dvi_resmanager_get_img(fz_context *ctx, dvi_resmanager *rm, const char
 
   fz_ptr(cell_image, cell);
   fz_ptr(char, pname);
+  fz_ptr(fz_stream, stream);
+  fz_ptr(fz_buffer, data);
 
   fz_try(ctx)
   {
@@ -844,7 +866,17 @@ fz_image *dvi_resmanager_get_img(fz_context *ctx, dvi_resmanager *rm, const char
     pname = fz_strdup(ctx, filename);
     cell->name = pname;
     cell->next = rm->first_image;
-    cell->img = fz_new_image_from_file(ctx, filename);
+    // Resolve raster graphics through the same provider as imported PDFs.
+    stream = dvi_resmanager_open_file(ctx, rm, RES_PDF, pname);
+    if (!stream)
+      fz_throw(ctx, FZ_ERROR_GENERIC, "cannot open %s", pname);
+    data = fz_read_all(ctx, stream, 0);
+    cell->img = fz_new_image_from_buffer(ctx, data);
+  }
+  fz_always(ctx)
+  {
+    fz_drop_buffer(ctx, data);
+    fz_drop_stream(ctx, stream);
   }
   fz_catch(ctx)
   {
