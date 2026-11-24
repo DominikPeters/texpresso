@@ -1988,6 +1988,15 @@ static fileentry_t *engine_find_file(txp_engine *_self, fz_context *ctx, const c
   return filesystem_lookup_or_create(ctx, self->fs, path);
 }
 
+bool txp_engine_generated_input(void *engine, const char *path, int len)
+{
+  txp_engine *_self = engine;
+  if (_self->_class != &_class) return false;
+  SELF;
+  fileentry_t *entry = filesystem_lookup_span(self->fs, path, len);
+  return entry && entry->saved.level == FILE_WRITE;
+}
+
 txp_engine *txp_create_tex_engine(fz_context *ctx,
                                   const char *engine_path,
                                   bool use_texlive,

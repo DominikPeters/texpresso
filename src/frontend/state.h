@@ -85,6 +85,7 @@ filesystem_t *filesystem_new(fz_context *ctx);
 void filesystem_free(fz_context *ctx, filesystem_t *fs);
 fileentry_t *filesystem_lookup_or_create(fz_context *ctx, filesystem_t *fs, const char *path);
 fileentry_t *filesystem_lookup(filesystem_t *fs, const char *path);
+fileentry_t *filesystem_lookup_span(filesystem_t *fs, const char *path, size_t len);
 fileentry_t *filesystem_scan(filesystem_t *fs, int *index);
 
 log_t *log_new(fz_context *ctx);

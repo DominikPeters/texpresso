@@ -302,7 +302,10 @@ static void ui_mouse_down(struct persistent_state *ps, ui_state *ui, int x, int 
         // pt.y -= 72;
         fprintf(stderr, "click: (%f,%f) mapped:(%f,%f)\n",
                 pt.x, pt.y, f * pt.x, f * pt.y);
-        synctex_scan(ps->ctx, stx, buf, ps->doc_path, ui->page, f * pt.x, f * pt.y);
+        synctex_location hit;
+        if (synctex_lookup_source(ps->ctx, stx, buf, ui->page, f * pt.x, f * pt.y,
+                                 NULL, 0, txp_engine_generated_input, ui->eng, &hit))
+          editor_synctex(ps->doc_path, hit.file, hit.file_len, hit.line, hit.column);
       }
     }
 
@@ -1130,8 +1133,9 @@ static void process_prepared_inverse(struct persistent_state *ps, ui_state *ui)
   if (!stx || !buf || factor <= 0 || page < 0 || synctex_page_count(stx) <= page) return;
   ui->prepared_inverse.pending = false;
   synctex_location hit;
-  if (!synctex_lookup(ps->ctx,stx,buf,page,ui->prepared_inverse.x/factor,ui->prepared_inverse.y/factor,
-      ui->prepared_inverse.restricted?ui->prepared_inverse.tags:NULL,ui->prepared_inverse.tag_count,&hit)) {
+  if (!synctex_lookup_source(ps->ctx, stx, buf, page, ui->prepared_inverse.x/factor,
+      ui->prepared_inverse.y/factor, ui->prepared_inverse.restricted ? ui->prepared_inverse.tags : NULL,
+      ui->prepared_inverse.tag_count, txp_engine_generated_input, ui->eng, &hit)) {
     if (ui->prepared_inverse.precise) editor_inverse_result(ui->prepared_inverse.request,ui->prepared_inverse.revision,
         ui->prepared_inverse.sequence,page,ps->doc_path,NULL,NULL);
     return;
@@ -1140,11 +1144,11 @@ static void process_prepared_inverse(struct persistent_state *ps, ui_state *ui)
   fz_display_list *list=NULL;
   fz_var(word); fz_var(list);
   fz_try(ps->ctx) {
-    if (ui->prepared_inverse.precise) {
+    if (!hit.fallback && ui->prepared_inverse.precise) {
       list=txp_engine_cached_page(ui->eng,ps->ctx,page);
       word=txp_renderer_cached_word(ps->ctx,ui->doc_renderer,list,
         fz_make_point(ui->prepared_inverse.x,ui->prepared_inverse.y));
-    } else if (ui->preview.valid && !ui->preview.background && ui->page==page) {
+    } else if (!hit.fallback && ui->preview.valid && !ui->preview.background && ui->page==page) {
       word=txp_renderer_word_at(ps->ctx,ui->doc_renderer,
         fz_make_point(ui->prepared_inverse.x,ui->prepared_inverse.y));
     }

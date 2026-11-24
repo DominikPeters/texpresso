@@ -534,37 +534,33 @@ struct candidate {
   const char *filename;
 };
 
+struct input_filter {
+  const int *tags;
+  int tag_count;
+  synctex_generated_input generated;
+  void *user;
+};
+
 static double rect_area(fz_irect r)
 {
   return (double)(r.y1 - r.y0) * (double)(r.x1 - r.x0);
 }
 
-static int get_filename(synctex_t *stx, fz_buffer *buf, struct candidate *c, int tag)
+static int get_input(fz_buffer *buf, synctex_t *stx, int index, const char **name)
 {
-  if (tag <= 0 || tag > stx->input_off.len)
-    return 0;
-
-  const uint8_t *filename = &buf->data[int_abs(stx->input_off.ptr[tag - 1])];
+  const char *filename =
+    (const char *)&buf->data[int_abs(stx->input_off.ptr[index])];
   while (*filename != ':')
     filename++;
   filename++;
   while (*filename != ':')
     filename++;
   filename++;
-  const uint8_t *fend = filename;
+  *name = filename;
+  const char *fend = filename;
   while (*fend != '\n')
     fend++;
-  int len = (fend - filename);
-
-  if (len)
-  {
-    c->filename = (const char *)filename;
-    c->len = len;
-  }
-
-  // fprintf(stderr, "tag:%d, filename:%.*s\n", tag, len, filename);
-
-  return len;
+  return (fend - filename);
 }
 
 static fz_irect record_rect(struct record r)
@@ -576,7 +572,8 @@ static fz_irect record_rect(struct record r)
 }
 
 static void consider(synctex_t *stx, fz_buffer *buf, int x, int y,
-                     fz_irect rect, struct link link, struct candidate *c)
+                     fz_irect rect, struct link link, struct candidate *c,
+                     const struct input_filter *filter)
 {
   double dy = fmax(fmax((double)rect.y0 - y, (double)y - rect.y1), 0);
   double dx = fmax(fmax((double)rect.x0 - x, (double)x - rect.x1), 0);
@@ -585,7 +582,11 @@ static void consider(synctex_t *stx, fz_buffer *buf, int x, int y,
    * on that line. Page/paragraph containers are only a last resort. */
   if (c->link.tag && (dy > c->vertical || (dy == c->vertical &&
       (dx > c->horizontal || (dx == c->horizontal && area >= c->area))))) return;
-  if (!get_filename(stx, buf, c, link.tag)) return;
+  if (link.tag <= 0 || link.tag > stx->input_off.len) return;
+  const char *filename;
+  int len = get_input(buf, stx, link.tag - 1, &filename);
+  if (!len || (filter->generated && filter->generated(filter->user, filename, len))) return;
+  c->filename = filename; c->len = len;
   c->vertical = dy; c->horizontal = dx; c->area = area;
   c->rect = rect; c->link = link;
 }
@@ -599,7 +600,7 @@ static bool allowed_tag(int tag, const int *tags, int count)
 
 static void
 parse_tree(synctex_t *stx, fz_buffer *buf, const uint8_t *ptr, int x, int y,
-           const int *tags, int tag_count, struct candidate *c)
+           const struct input_filter *filter, struct candidate *c)
 {
   struct frame { struct record box; unsigned children; } saved[256];
   int nest = 0;
@@ -612,7 +613,8 @@ parse_tree(synctex_t *stx, fz_buffer *buf, const uint8_t *ptr, int x, int y,
     {
       case STEX_ENTER_H:
       case STEX_ENTER_V:
-        if (allowed_tag(r.link.tag,tags,tag_count)) consider(stx, buf, x, y, record_rect(r), r.link, &fallback);
+        if (allowed_tag(r.link.tag, filter->tags, filter->tag_count))
+          consider(stx, buf, x, y, record_rect(r), r.link, &fallback, filter);
         if (nest == sizeof saved / sizeof *saved) return;
         saved[nest++] = (struct frame){r, children};
         break;
@@ -624,9 +626,9 @@ parse_tree(synctex_t *stx, fz_buffer *buf, const uint8_t *ptr, int x, int y,
         {
           /* A glyph-only hbox may have no individual source records. */
           struct record box = saved[nest].box;
-          if (rect_area(record_rect(box)) > 0 && allowed_tag(box.link.tag,tags,tag_count))
+          if (rect_area(record_rect(box)) > 0 && allowed_tag(box.link.tag, filter->tags, filter->tag_count))
           {
-            consider(stx, buf, x, y, record_rect(box), box.link, c);
+            consider(stx, buf, x, y, record_rect(box), box.link, c, filter);
             children++;
           }
         }
@@ -646,14 +648,15 @@ parse_tree(synctex_t *stx, fz_buffer *buf, const uint8_t *ptr, int x, int y,
           }
         /* A kern ends at its recorded position; its width can be negative. */
         if (r.kind == STEX_KERN) r.point.x -= r.size.width;
-        if (allowed_tag(r.link.tag,tags,tag_count)) consider(stx, buf, x, y, record_rect(r), r.link, c);
+        if (allowed_tag(r.link.tag, filter->tags, filter->tag_count))
+          consider(stx, buf, x, y, record_rect(r), r.link, c, filter);
         children++;
         break;
       case STEX_BOX:
         /* Zero-width struts and empty layout boxes do not paint anything. */
-        if (rect_area(record_rect(r)) > 0 && allowed_tag(r.link.tag,tags,tag_count))
+        if (rect_area(record_rect(r)) > 0 && allowed_tag(r.link.tag, filter->tags, filter->tag_count))
         {
-          consider(stx, buf, x, y, record_rect(r), r.link, c);
+          consider(stx, buf, x, y, record_rect(r), r.link, c, filter);
           children++;
         }
         break;
@@ -664,38 +667,42 @@ parse_tree(synctex_t *stx, fz_buffer *buf, const uint8_t *ptr, int x, int y,
   if (!c->link.tag) *c = fallback;
 }
 
-static int get_input(fz_buffer *buf,
-                      synctex_t *stx,
-                      int index,
-                      const char **name)
-{
-  const char *filename =
-    (const char *)&buf->data[int_abs(stx->input_off.ptr[index])];
-  while (*filename != ':')
-    filename++;
-  filename++;
-  while (*filename != ':')
-    filename++;
-  filename++;
-  *name = filename;
-  const char *fend = filename;
-  while (*fend != '\n')
-    fend++;
-  return (fend - filename);
-}
-
-bool synctex_lookup(fz_context *ctx, synctex_t *stx, fz_buffer *buf, unsigned page,
-                   int x, int y, const int *tags, int tag_count, synctex_location *out)
+static bool lookup_with_filter(fz_context *ctx, synctex_t *stx, fz_buffer *buf, unsigned page,
+                               int x, int y, const struct input_filter *filter, synctex_location *out)
 {
   if (!stx || !buf || synctex_page_count(stx)<=page) return false;
   int bop,eop;
   synctex_page_offset(ctx,stx,page,&bop,&eop);
   struct candidate c={0}; c.area=INFINITY;
-  parse_tree(stx,buf,buf->data+bop,x,y,tags,tag_count,&c);
+  parse_tree(stx,buf,buf->data+bop,x,y,filter,&c);
   if (!c.link.tag) return false;
-  out->file_len=get_input(buf,stx,c.link.tag-1,&out->file);
-  out->line=c.link.line; out->column=c.link.column;
+  *out = (synctex_location){c.filename, c.len, c.link.line, c.link.column, false};
   return out->file_len>0 && out->line>0;
+}
+
+bool synctex_lookup(fz_context *ctx, synctex_t *stx, fz_buffer *buf, unsigned page,
+                   int x, int y, const int *tags, int tag_count, synctex_location *out)
+{
+  const struct input_filter filter = {.tags = tags, .tag_count = tag_count};
+  return lookup_with_filter(ctx, stx, buf, page, x, y, &filter, out);
+}
+
+bool synctex_lookup_source(fz_context *ctx, synctex_t *stx, fz_buffer *buf, unsigned page,
+                          int x, int y, const int *tags, int tag_count,
+                          synctex_generated_input generated, void *user, synctex_location *out)
+{
+  if (!synctex_lookup(ctx, stx, buf, page, x, y, tags, tag_count, out))
+    return false;
+  if (!generated(user, out->file, out->file_len))
+    return true;
+
+  const struct input_filter filter = {tags, tag_count, generated, user};
+  if (!lookup_with_filter(ctx, stx, buf, page, x, y, &filter, out))
+    return false;
+  /* The source of the clicked word is the generated file. */
+  out->column = -1;
+  out->fallback = true;
+  return true;
 }
 
 void synctex_scan_word(fz_context *ctx,

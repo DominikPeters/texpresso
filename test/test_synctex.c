@@ -64,6 +64,12 @@ static void forward_stream(fz_context *ctx)
   fz_drop_buffer(ctx, buf); synctex_free(ctx, stx);
 }
 
+static bool is_generated(void *user, const char *file, int len)
+{
+  const char *generated = user;
+  return strlen(generated) == len && memcmp(generated, file, len) == 0;
+}
+
 static void precise_geometry_and_filter(fz_context *ctx)
 {
   const char *records = "Input:1:main.tex\nInput:2:macro.sty\n{1\n"
@@ -81,6 +87,12 @@ static void precise_geometry_and_filter(fz_context *ctx)
   assert(synctex_lookup(ctx,stx,buf,0,200,498,allowed,1,&location));
   assert(location.line==20); /* Filter before choosing: fall back to the next allowed file. */
   assert(!synctex_lookup(ctx,stx,buf,0,200,498,allowed,0,&location));
+  assert(synctex_lookup_source(ctx,stx,buf,0,200,498,NULL,0,is_generated,"macro.sty",&location));
+  assert(location.line==20 && location.column==-1 && location.fallback);
+  int generated_only[]={2};
+  assert(!synctex_lookup_source(ctx,stx,buf,0,200,498,generated_only,1,is_generated,"macro.sty",&location));
+  assert(synctex_lookup_source(ctx,stx,buf,0,200,498,NULL,0,is_generated,"other.sty",&location));
+  assert(location.line==50 && !location.fallback);
   assert(synctex_lookup(ctx,stx,buf,0,495,298,NULL,0,&location));
   assert(location.column==25);
   int page=-1,x=0,y=0; fz_irect rects[128];
