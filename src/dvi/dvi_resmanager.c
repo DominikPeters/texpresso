@@ -477,6 +477,7 @@ void dvi_resmanager_free(fz_context *ctx, dvi_resmanager *rm)
   {
     cell_dvi_font *next = cell->next;
     fz_free(ctx, (void*)cell->font.name);
+    tex_vf_free(ctx, cell->font.vf);
     if (cell->font.tfm)
       tex_tfm_free(ctx, cell->font.tfm);
     if (cell->font.fz)

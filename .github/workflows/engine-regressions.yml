@@ -26,11 +26,12 @@ jobs:
       - name: Build and run native regressions
         run: |
           make -j2 all
-          make test-dvi-strokes test-dvi-annotations test-preview-safety test-preview-png
+          make test-dvi-strokes test-dvi-annotations test-preview-safety test-preview-png test-synctex test-engine-lifecycle
       - name: Test TeX Live preview and rollback
         run: |
           make test-texpresso-texlive test-rerun
           python3 test/test-checkpoint-cleanup.py build/texpresso
+          python3 test/test-synctex-beamer.py build/texpresso
           /usr/bin/python3 test/test-graphics-preview.py build/texpresso texlive
       - name: Install Tectonic
         run: |

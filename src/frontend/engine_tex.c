@@ -488,9 +488,12 @@ static void engine_destroy(txp_engine *_self, fz_context *ctx)
   while (self->process_count > 0)
     pop_process(ctx, self);
   reap_root_children(self, true);
-  channel_profile_finish(self->c);
+  channel_free(self->c);
   incdvi_free(ctx, self->dvi);
   synctex_free(ctx, self->stex);
+  log_free(ctx, self->log);
+  filesystem_free(ctx, self->fs);
+  free(self->trace);
   fz_free(ctx, self->name);
   fz_free(ctx, self->engine_path);
   fz_free(ctx, self->inclusion_path);

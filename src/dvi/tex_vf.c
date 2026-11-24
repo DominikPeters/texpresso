@@ -86,7 +86,7 @@ tex_vf *tex_vf_load(fz_context *ctx, dvi_resmanager *manager, fz_stream *stm)
     if (buffer->data[0] != PRE) FAIL("file doesn't start with preamble");
     if (buffer->data[1] != DVI_VF) FAIL("invalid preamble ID");
 
-    vf->buffer = buffer;
+    vf->buffer = fz_keep_buffer(ctx, buffer);
     vf->comment_len = buffer->data[2];
     vf->comment = buffer->data + 3;
     vf->fonts = dvi_fonttable_new(ctx);
@@ -172,20 +172,25 @@ tex_vf *tex_vf_load(fz_context *ctx, dvi_resmanager *manager, fz_stream *stm)
     if (cursor > end)
       FAIL("truncated file");
   }
+  fz_always(ctx)
+    fz_drop_buffer(ctx, buffer);
   fz_catch(ctx)
   {
-    if (buffer)
-      fz_drop_buffer(ctx, buffer);
-    if (vf)
-    {
-      if (vf->fonts)
-        dvi_fonttable_free(ctx, vf->fonts);
-      fz_free(ctx, vf);
-    }
+    tex_vf_free(ctx, vf);
     fz_rethrow(ctx);
   }
 
   return vf;
+}
+
+void tex_vf_free(fz_context *ctx, tex_vf *vf)
+{
+  if (!vf) return;
+  if (vf->fonts)
+    dvi_fonttable_free(ctx, vf->fonts);
+  fz_free(ctx, vf->chars);
+  fz_drop_buffer(ctx, vf->buffer);
+  fz_free(ctx, vf);
 }
 
 tex_vf_char *tex_vf_get(tex_vf *vf, int code)
