@@ -22,7 +22,7 @@ jobs:
             libfreetype-dev libgumbo-dev libjbig2dec0-dev libjpeg-dev \
             libopenjp2-7-dev libfontconfig-dev libharfbuzz-dev \
             libgraphite2-dev libicu-dev libpng-dev libleptonica-dev libtesseract-dev \
-            texlive-xetex texlive-pictures texlive-latex-extra
+            texlive-xetex texlive-pictures texlive-latex-extra python3-pil
       - name: Build and run native regressions
         run: |
           make -j2 all
@@ -31,6 +31,7 @@ jobs:
         run: |
           make test-texpresso-texlive test-rerun
           python3 test/test-checkpoint-cleanup.py build/texpresso
+          /usr/bin/python3 test/test-graphics-preview.py build/texpresso texlive
       - name: Install Tectonic
         run: |
           asset=tectonic-0.17.0-x86_64-unknown-linux-gnu.tar.gz
@@ -41,4 +42,6 @@ jobs:
           tar -xzf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP" tectonic
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - name: Test Tectonic worker and preview
-        run: make fill-tectonic-cache test-tectonic test-texpresso-tectonic
+        run: |
+          make fill-tectonic-cache test-tectonic test-texpresso-tectonic
+          /usr/bin/python3 test/test-graphics-preview.py build/texpresso tectonic
